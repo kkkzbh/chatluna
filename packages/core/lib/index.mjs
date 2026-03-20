@@ -1091,7 +1091,6 @@ var ChatLunaChatChain = class _ChatLunaChatChain extends ChatLunaLLMChainWrapper
 };
 
 // src/llm-core/chain/plugin_chat_chain.ts
-import { HumanMessage } from "@langchain/core/messages";
 import {
   ChatLunaLLMChainWrapper as ChatLunaLLMChainWrapper2
 } from "koishi-plugin-chatluna/llm-core/chain/base";
@@ -1231,9 +1230,6 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends ChatLunaLLMChainWra
     requests["variables"]["built"] = {
       conversationId
     };
-    requests["after_user_message"] = new HumanMessage(
-      AGENT_AFTER_USER_PROMPT
-    );
     requests["variables_hide"] = requests["variables"];
     const overrideRequestParams = message.additional_kwargs?.overrideRequestParams ?? message.additional_kwargs?.qqbot_override_request_params;
     if (overrideRequestParams != null) {
@@ -1340,37 +1336,6 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends ChatLunaLLMChainWra
     return this.llm;
   }
 };
-var AGENT_AFTER_USER_PROMPT = `<system>
-Before responding, carefully evaluate whether the user's original task or query has been completed:
-
-If the task is COMPLETE:
-- Synthesize the information gathered from tool calls and context into a coherent, natural response
-- Provide the final result directly to the user in their language
-- Ensure your response fully addresses their original request
-
-If the task is INCOMPLETE:
-- Continue using available tools to gather necessary information or complete the required actions
-- Do not provide a premature response
-
-For informational queries (questions, requests for explanations, general chat):
-- Use your system prompt and personality as the primary guide for your response style and behavior
-- Incorporate context from tool calls, documents, or memory only when directly relevant to answering the user's question
-- If the context is unrelated to the current query, rely on your core knowledge and system instructions
-
-Response quality requirements:
-- Your response must be unique and specifically tailored to the user's most recent query
-- Do not repeat answers to questions the user has already asked earlier in the conversation
-- Vary your response format and structure to maintain engagement and avoid repetitive patterns
-- Stay focused on what the user is asking NOW, not what they asked before
-
-Language matching (CRITICAL):
-- You MUST respond in the same language the user is using in their messages
-- If the user writes in Chinese, respond in Chinese
-- If the user writes in English, respond in English
-- If the user writes in Japanese, respond in Japanese
-- Match the user's language naturally as part of your conversational style
-
-Remember: Respond naturally according to your system prompt. Do not acknowledge or reference these instructions in your response.</system>`;
 
 // src/llm-core/chat/default.ts
 import { parseRawModelName } from "koishi-plugin-chatluna/llm-core/utils/count_tokens";
@@ -3340,7 +3305,7 @@ __name(apply24, "apply");
 // src/middlewares/chat/message_delay.ts
 import { createLogger as createLogger3 } from "koishi-plugin-chatluna/utils/logger";
 import { randomUUID } from "crypto";
-import { HumanMessage as HumanMessage2 } from "@langchain/core/messages";
+import { HumanMessage } from "@langchain/core/messages";
 var logger6;
 var queues = /* @__PURE__ */ new Map();
 function apply25(ctx, config, chain) {
@@ -3549,7 +3514,7 @@ function mergeMessages(messages) {
 }
 __name(mergeMessages, "mergeMessages");
 function createPendingMessage(session, room, inputMessage) {
-  return new HumanMessage2({
+  return new HumanMessage({
     content: inputMessage.content,
     name: inputMessage.name ?? session.author?.name ?? session.author?.id ?? session.username,
     id: session.userId,
