@@ -1,0 +1,10 @@
+import { ForkScope, h } from 'koishi';
+import { PromiseLikeDisposable } from 'koishi-plugin-chatluna/utils/types';
+import type { MessageContent } from '@langchain/core/messages';
+export declare function forkScopeToDisposable(scope: ForkScope): PromiseLikeDisposable;
+export declare function transformToMarkdown(source: string, platform?: string): h[];
+export declare function transformToMarkdown(source: TemplateStringsArray, platform: string, ...args: any[]): h[];
+export declare function transformMessageContentToElements(content: MessageContent): h[];
+export declare function pickForwardMessageId(element: h): string | null;
+export declare function isForwardMessageElement(element: h): boolean;
+export declare function normalizeForwardMessageId(value: unknown): string | null;

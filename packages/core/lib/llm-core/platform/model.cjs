@@ -1,0 +1,815 @@
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+// src/llm-core/platform/model.ts
+var model_exports = {};
+__export(model_exports, {
+  ChatLunaBaseEmbeddings: () => ChatLunaBaseEmbeddings,
+  ChatLunaChatModel: () => ChatLunaChatModel,
+  ChatLunaEmbeddings: () => ChatLunaEmbeddings
+});
+module.exports = __toCommonJS(model_exports);
+var import_embeddings = require("@langchain/core/embeddings");
+var import_chat_models = require("@langchain/core/language_models/chat_models");
+var import_koishi = require("koishi");
+var import_count_tokens = require("koishi-plugin-chatluna/llm-core/utils/count_tokens");
+var import_error = require("koishi-plugin-chatluna/utils/error");
+var import_chunk = require("koishi-plugin-chatluna/llm-core/utils/chunk");
+
+// src/llm-core/utils/tiktoken.ts
+var import_path = __toESM(require("path"), 1);
+var import_lite = require("js-tiktoken/lite");
+var import_request = require("koishi-plugin-chatluna/utils/request");
+var import_os = __toESM(require("os"), 1);
+var import_promises = __toESM(require("fs/promises"), 1);
+var cache = {};
+var tiktokenCache = {};
+async function getEncoding(encoding, options) {
+  options = options ?? {};
+  const cacheDir = import_path.default.resolve(import_os.default.tmpdir(), "chatluna", "tiktoken");
+  const cachePath = import_path.default.join(cacheDir, `${encoding}.json`);
+  if (tiktokenCache[encoding]) {
+    return tiktokenCache[encoding];
+  }
+  if (cache[encoding]) {
+    const tiktoken2 = new import_lite.Tiktoken(
+      cache[encoding],
+      options?.extendedSpecialTokens
+    );
+    tiktokenCache[encoding] = tiktoken2;
+    return tiktoken2;
+  }
+  await import_promises.default.mkdir(cacheDir, { recursive: true });
+  try {
+    const cacheContent = await import_promises.default.readFile(cachePath, "utf-8");
+    cache[encoding] = JSON.parse(cacheContent);
+    const tiktoken2 = new import_lite.Tiktoken(
+      cache[encoding],
+      options?.extendedSpecialTokens
+    );
+    tiktokenCache[encoding] = tiktoken2;
+    return tiktoken2;
+  } catch (e) {
+  }
+  const url = import_request.globalProxyAddress.length > 0 ? `https://tiktoken.pages.dev/js/${encoding}.json` : `https://jsd.onmicrosoft.cn/npm/tiktoken@latest/encoders/${encoding}.json`;
+  cache[encoding] = await (0, import_request.chatLunaFetch)(url).then((res) => {
+    if (!res.ok) {
+      throw new Error(
+        `Failed to fetch tiktoken encoding: ${res.status}`
+      );
+    }
+    return res.json();
+  }).catch((e) => {
+    delete cache[encoding];
+    throw e;
+  });
+  await import_promises.default.writeFile(cachePath, JSON.stringify(cache[encoding]));
+  const tiktoken = new import_lite.Tiktoken(
+    cache[encoding],
+    options?.extendedSpecialTokens
+  );
+  tiktokenCache[encoding] = tiktoken;
+  return tiktoken;
+}
+__name(getEncoding, "getEncoding");
+async function encodingForModel(model, options) {
+  const result = await getEncoding((0, import_lite.getEncodingNameForModel)(model), options);
+  return result;
+}
+__name(encodingForModel, "encodingForModel");
+
+// src/llm-core/utils/function_def.ts
+var import_zod = require("zod");
+var import_zod_to_json_schema = require("zod-to-json-schema");
+function isAnyOfProp(prop) {
+  return prop.anyOf !== void 0 && Array.isArray(prop.anyOf);
+}
+__name(isAnyOfProp, "isAnyOfProp");
+function formatFunctionDefinitions(functions) {
+  const lines = ["namespace functions {", ""];
+  for (const f of functions) {
+    if (f.description) {
+      lines.push(`// ${f.description}`);
+    }
+    const schema = f.schema instanceof import_zod.ZodSchema ? (0, import_zod_to_json_schema.zodToJsonSchema)(f.schema) : f.schema;
+    if (Object.keys(schema ?? {}).length > 0) {
+      lines.push(`type ${f.name} = (_: {`);
+      lines.push(formatObjectProperties(schema, 0));
+      lines.push("}) => any;");
+    } else {
+      lines.push(`type ${f.name} = () => any;`);
+    }
+    lines.push("");
+  }
+  lines.push("} // namespace functions");
+  return lines.join("\n");
+}
+__name(formatFunctionDefinitions, "formatFunctionDefinitions");
+function formatObjectProperties(obj, indent) {
+  const lines = [];
+  for (const [name, param] of Object.entries(obj.properties ?? {})) {
+    if (param.description && indent < 2) {
+      lines.push(`// ${param.description}`);
+    }
+    if (obj.required?.includes(name)) {
+      lines.push(`${name}: ${formatType(param, indent)},`);
+    } else {
+      lines.push(`${name}?: ${formatType(param, indent)},`);
+    }
+  }
+  return lines.map((line) => " ".repeat(indent) + line).join("\n");
+}
+__name(formatObjectProperties, "formatObjectProperties");
+function formatType(param, indent) {
+  if (isAnyOfProp(param)) {
+    return param.anyOf.map((v) => formatType(v, indent)).join(" | ");
+  }
+  switch (param.type) {
+    case "string":
+      if (param.enum) {
+        return param.enum.map((v) => `"${v}"`).join(" | ");
+      }
+      return "string";
+    case "number":
+      if (param.enum) {
+        return param.enum.map((v) => `${v}`).join(" | ");
+      }
+      return "number";
+    case "integer":
+      if (param.enum) {
+        return param.enum.map((v) => `${v}`).join(" | ");
+      }
+      return "number";
+    case "boolean":
+      return "boolean";
+    case "null":
+      return "null";
+    case "object":
+      return ["{", formatObjectProperties(param, indent + 2), "}"].join(
+        "\n"
+      );
+    case "array":
+      if (param.items) {
+        return `${formatType(param.items, indent)}[]`;
+      }
+      return "any[]";
+    default:
+      return "";
+  }
+}
+__name(formatType, "formatType");
+
+// src/llm-core/platform/model.ts
+var import_string = require("koishi-plugin-chatluna/utils/string");
+var import_koishi_plugin_chatluna = require("koishi-plugin-chatluna");
+var ChatLunaChatModel = class extends import_chat_models.BaseChatModel {
+  constructor(_options) {
+    super(_options);
+    this._options = _options;
+    this._requester = _options.requester;
+    this._modelName = _options.model ?? _options.modelInfo.name;
+    this._maxModelContextSize = _options.modelMaxContextSize;
+    this._modelInfo = _options.modelInfo;
+    this._isThinkModel = _options.isThinkModel ?? false;
+    this._fileHandlingConfig = _options.fileHandlingConfig;
+  }
+  static {
+    __name(this, "ChatLunaChatModel");
+  }
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  __encoding;
+  _requester;
+  _modelName;
+  _maxModelContextSize;
+  _modelInfo;
+  _isThinkModel;
+  _fileHandlingConfig;
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  lc_serializable = false;
+  get callKeys() {
+    return [
+      ...super.callKeys,
+      "model",
+      "temperature",
+      "maxTokens",
+      "maxTokenLimit",
+      "topP",
+      "frequencyPenalty",
+      "presencePenalty",
+      "n",
+      "logitBias",
+      "id",
+      "variables_hide",
+      "overrideRequestParams",
+      "stream",
+      "tools"
+    ];
+  }
+  /**
+   * Get the parameters used to invoke the model
+   */
+  invocationParams(options) {
+    let maxTokenLimit = options?.maxTokenLimit ?? this._options.maxTokenLimit;
+    if (maxTokenLimit < 0 || maxTokenLimit === 0) {
+      maxTokenLimit = this._maxModelContextSize / 2;
+    }
+    const modelName = options?.model ?? this._modelName;
+    if (maxTokenLimit != null && maxTokenLimit >= this.getModelMaxContextSize()) {
+      maxTokenLimit = this.getModelMaxContextSize();
+    }
+    let id = options?.id ?? this._options.id;
+    if (!id) {
+      id = options?.variables_hide?.["built"]?.["conversationId"];
+    }
+    return {
+      model: modelName,
+      temperature: options?.temperature ?? this._options.temperature,
+      topP: options?.topP ?? this._options.topP,
+      frequencyPenalty: options?.frequencyPenalty ?? this._options.frequencyPenalty,
+      presencePenalty: options?.presencePenalty ?? this._options.presencePenalty,
+      n: options?.n ?? this._options.n,
+      logitBias: options?.logitBias ?? this._options.logitBias,
+      maxTokens: options?.maxTokens ?? this._options.maxTokens,
+      maxTokenLimit,
+      variables: options?.["variables_hide"] ?? options?.["variables"] ?? {},
+      overrideRequestParams: options?.overrideRequestParams ?? this._options.overrideRequestParams ?? {},
+      stop: options?.stop ?? this._options.stop,
+      stream: options?.stream ?? this._options.stream,
+      tools: options?.tools ?? this._options.tools,
+      id,
+      signal: options?.signal ?? this._options.signal,
+      timeout: options?.timeout ?? this._options.timeout
+    };
+  }
+  async *_streamResponseChunks(messages, options, runManager) {
+    const withTool = (options.tools?.length ?? 0) > 0;
+    if (withTool) {
+      ;
+      [messages] = await this.cropMessages(messages, options["tools"]);
+    }
+    const maxRetries = Math.max(1, this._options.maxRetries ?? 1);
+    const streamParams = {
+      ...this.invocationParams(options),
+      input: messages
+    };
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const latestTokenUsage = this._createTokenUsageTracker();
+      let stream = null;
+      let hasChunk = false;
+      let hasToolCallChunk = false;
+      try {
+        stream = await this._createStream(streamParams);
+        for await (const chunk of stream) {
+          hasToolCallChunk = this._handleStreamChunk(
+            chunk,
+            runManager,
+            latestTokenUsage
+          ) || hasToolCallChunk;
+          hasChunk = true;
+          yield chunk;
+        }
+        this._ensureChunksReceived(hasChunk);
+        this._finalizeStream(
+          hasToolCallChunk,
+          latestTokenUsage,
+          runManager
+        );
+        return;
+      } catch (error) {
+        await this._closeStream(stream);
+        if (this._shouldRethrowStreamError(
+          error,
+          hasChunk,
+          attempt,
+          maxRetries
+        )) {
+          if (hasChunk) {
+            import_koishi_plugin_chatluna.logger.debug(
+              "Stream failed after yielding chunks, cannot retry"
+            );
+          }
+          throw error;
+        }
+        import_koishi_plugin_chatluna.logger.debug(
+          `Stream failed before first chunk (attempt ${attempt + 1}/${maxRetries}), retrying...`
+        );
+        await (0, import_koishi.sleep)(2e3);
+      }
+    }
+  }
+  _createTokenUsageTracker() {
+    return {
+      input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0
+    };
+  }
+  _handleStreamChunk(chunk, runManager, latestTokenUsage) {
+    const chunkText = chunk.text ?? "";
+    if (chunkText) {
+      void runManager?.handleLLMNewToken(chunkText);
+    }
+    const message = chunk.message;
+    const hasToolCallChunk = this._hasToolCallChunk(message);
+    if (hasToolCallChunk) {
+      void runManager?.handleCustomEvent("LLMNewChunk", message);
+    }
+    this._updateTokenUsageFromChunk(chunk, latestTokenUsage);
+    return hasToolCallChunk;
+  }
+  _hasToolCallChunk(message) {
+    return (message?.tool_calls?.length ?? 0) > 0 || (message?.tool_call_chunks?.length ?? 0) > 0 || (message?.invalid_tool_calls?.length ?? 0) > 0;
+  }
+  _updateTokenUsageFromChunk(chunk, latestTokenUsage) {
+    const usage = chunk.message.usage_metadata;
+    if (!usage?.total_tokens) {
+      return;
+    }
+    latestTokenUsage.input_tokens = usage.input_tokens;
+    latestTokenUsage.output_tokens = usage.output_tokens;
+    latestTokenUsage.total_tokens = usage.total_tokens;
+    latestTokenUsage.input_token_details = usage.input_token_details;
+    latestTokenUsage.output_token_details = usage.output_token_details;
+  }
+  _ensureChunksReceived(hasChunk) {
+    if (hasChunk) {
+      return;
+    }
+    throw new import_error.ChatLunaError(import_error.ChatLunaErrorCode.API_REQUEST_FAILED);
+  }
+  _finalizeStream(hasToolCallChunk, latestTokenUsage, runManager) {
+    if (hasToolCallChunk) {
+      void runManager?.handleCustomEvent("LLMNewChunk", void 0);
+    }
+    if (latestTokenUsage.total_tokens <= 0) {
+      return;
+    }
+    import_koishi_plugin_chatluna.logger.debug(formatUsageMetadata(latestTokenUsage));
+  }
+  async _closeStream(stream) {
+    if (stream?.return == null) {
+      return;
+    }
+    try {
+      await stream.return(void 0);
+    } catch (error) {
+      import_koishi_plugin_chatluna.logger.debug(
+        "Failed to close stream on retry: %s",
+        error?.message
+      );
+    }
+  }
+  _shouldRethrowStreamError(error, hasChunk, attempt, maxRetries) {
+    return this._isAbortError(error) || hasChunk || attempt === maxRetries - 1;
+  }
+  _isAbortError(error) {
+    if (error instanceof import_error.ChatLunaError) {
+      return error.errorCode === import_error.ChatLunaErrorCode.ABORTED;
+    }
+    return error?.name === "AbortError";
+  }
+  async _generate(messages, options, runManager) {
+    let promptTokens;
+    [messages, promptTokens] = await this.cropMessages(
+      messages,
+      options["tools"]
+    );
+    const response = await this._generateWithRetry(
+      messages,
+      options,
+      runManager
+    );
+    if (response == null) {
+      throw new import_error.ChatLunaError(import_error.ChatLunaErrorCode.API_REQUEST_FAILED);
+    }
+    let usageMetadata = response.message.usage_metadata;
+    if (!usageMetadata?.total_tokens) {
+      const completionTokens = await this.countMessageTokens(
+        response.message
+      );
+      usageMetadata = {
+        input_tokens: promptTokens,
+        output_tokens: completionTokens,
+        total_tokens: completionTokens + promptTokens
+      };
+    } else if (options.stream !== true) {
+      import_koishi_plugin_chatluna.logger.debug(formatUsageMetadata(usageMetadata));
+    }
+    if (response.message.getType() === "ai") {
+      ;
+      response.message.usage_metadata = usageMetadata;
+    }
+    response.generationInfo = {
+      ...response.generationInfo,
+      usage_metadata: usageMetadata
+    };
+    return {
+      generations: [response],
+      llmOutput: response.generationInfo
+    };
+  }
+  _generateWithRetry(messages, options, runManager) {
+    const maxRetries = Math.max(1, this._options.maxRetries ?? 1);
+    const generateWithRetry = /* @__PURE__ */ __name(async () => {
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          let response;
+          if (options.stream) {
+            const stream = this._streamResponseChunks(
+              messages,
+              options,
+              runManager
+            );
+            let responseChunk;
+            for await (const chunk of stream) {
+              responseChunk = responseChunk != null ? responseChunk.concat(chunk) : chunk;
+            }
+            response = responseChunk;
+          } else {
+            response = await this._completion({
+              ...this.invocationParams(options),
+              input: messages
+            });
+          }
+          return response;
+        } catch (error) {
+          if (options.stream || this._isAbortError(error) || attempt === maxRetries - 1) {
+            throw error;
+          }
+          await (0, import_koishi.sleep)(2e3);
+        }
+      }
+      throw new import_error.ChatLunaError(import_error.ChatLunaErrorCode.API_REQUEST_FAILED);
+    }, "generateWithRetry");
+    return generateWithRetry();
+  }
+  async _withTimeout(func, timeout) {
+    let timeoutError = null;
+    try {
+      throw new import_error.ChatLunaError(
+        import_error.ChatLunaErrorCode.API_REQUEST_TIMEOUT,
+        null,
+        true
+      );
+    } catch (e) {
+      timeoutError = e;
+    }
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(timeoutError);
+      }, timeout);
+    });
+    try {
+      return await Promise.race([func(), timeoutPromise]);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+  _createStream(params) {
+    return this._withTimeout(
+      async () => this._requester.completionStream(params),
+      params.timeout
+    );
+  }
+  /** @ignore */
+  async _completion(params) {
+    return this._withTimeout(
+      () => this._requester.completion(params),
+      params.timeout
+    );
+  }
+  async cropMessages(messages, tools, systemMessageLength = 1) {
+    messages = messages.concat([]);
+    const maxTokenLimit = this.invocationParams().maxTokenLimit;
+    let totalTokens = 0;
+    if (tools) {
+      const promptDefinitions = formatFunctionDefinitions(tools);
+      totalTokens += await this.getNumTokens(promptDefinitions);
+      totalTokens += 9;
+    }
+    if (tools && messages.find((m) => m.getType() === "system")) {
+      totalTokens -= 4;
+    }
+    const systemMessages = [];
+    let index = 0;
+    if (messages.length < systemMessageLength) {
+      throw new import_error.ChatLunaError(
+        import_error.ChatLunaErrorCode.UNKNOWN_ERROR,
+        new Error("Message length is less than system message length")
+      );
+    }
+    while (index < systemMessageLength) {
+      const message = messages.shift();
+      systemMessages.push(message);
+      totalTokens += await this.countMessageTokens(message);
+      index++;
+    }
+    const buildConversationRounds = /* @__PURE__ */ __name((items) => {
+      const rounds = [];
+      let current = [];
+      for (const message of items) {
+        if (message.getType() === "human") {
+          if (current.length > 0) {
+            rounds.push(current);
+          }
+          current = [message];
+        } else {
+          if (current.length === 0) {
+            current = [message];
+          } else {
+            current.push(message);
+          }
+        }
+      }
+      if (current.length > 0) {
+        rounds.push(current);
+      }
+      return rounds;
+    }, "buildConversationRounds");
+    const countMessagesTokens = /* @__PURE__ */ __name(async (items) => {
+      let tokens = 0;
+      for (const item of items) {
+        tokens += await this.countMessageTokens(item);
+      }
+      return tokens;
+    }, "countMessagesTokens");
+    const conversationRounds = buildConversationRounds(messages);
+    const selectedRounds = [];
+    let truncated = false;
+    for (let i = conversationRounds.length - 1; i >= 0; i--) {
+      const round = conversationRounds[i];
+      const roundTokens = await countMessagesTokens(round);
+      const exceedsLimit = maxTokenLimit != null && maxTokenLimit > 0 ? totalTokens + roundTokens > maxTokenLimit : false;
+      if (exceedsLimit && selectedRounds.length > 0) {
+        truncated = true;
+        break;
+      }
+      totalTokens += roundTokens;
+      selectedRounds.unshift(round);
+      if (exceedsLimit) {
+        truncated = true;
+        break;
+      }
+    }
+    if (conversationRounds.length > 0 && selectedRounds.length === 0) {
+      const round = conversationRounds[conversationRounds.length - 1];
+      totalTokens += await countMessagesTokens(round);
+      selectedRounds.unshift(round);
+      truncated = maxTokenLimit != null && maxTokenLimit > 0;
+    }
+    const flattenedRounds = selectedRounds.reduce(
+      (acc, round) => acc.concat(round),
+      []
+    );
+    const result = systemMessages.concat(flattenedRounds);
+    if (truncated) {
+      import_koishi_plugin_chatluna.logger?.warn(
+        `Message length exceeds token limit. ${totalTokens} > ${maxTokenLimit}. Try increasing the adapter token limit or reducing the message length.`
+      );
+    }
+    totalTokens += 3;
+    return [result, totalTokens];
+  }
+  async countMessageTokens(message) {
+    let totalCount = 0;
+    let tokensPerMessage = 0;
+    let tokensPerName = 0;
+    if (this.modelName === "gpt-3.5-turbo-0301") {
+      tokensPerMessage = 4;
+      tokensPerName = -1;
+    } else {
+      tokensPerMessage = 3;
+      tokensPerName = 1;
+    }
+    const textCount = await this.getNumTokens(
+      (0, import_string.getMessageContent)(message.content) ?? ""
+    );
+    const roleCount = await this.getNumTokens(
+      (0, import_count_tokens.messageTypeToOpenAIRole)(message.getType())
+    );
+    const nameCount = message.name !== void 0 ? tokensPerName + await this.getNumTokens(message.name) : 0;
+    let count = textCount + tokensPerMessage + roleCount + nameCount;
+    const openAIMessage = message;
+    if (openAIMessage.getType() === "function") {
+      count -= 2;
+    }
+    if (openAIMessage.additional_kwargs?.function_call) {
+      count += 3;
+    }
+    if (openAIMessage?.additional_kwargs.function_call?.name) {
+      count += await this.getNumTokens(
+        openAIMessage.additional_kwargs.function_call?.name
+      );
+    }
+    if (openAIMessage.additional_kwargs.function_call?.arguments && typeof openAIMessage.additional_kwargs.function_call.arguments === "string") {
+      count += await this.getNumTokens(
+        // Remove newlines and spaces
+        JSON.stringify(
+          JSON.parse(
+            openAIMessage.additional_kwargs.function_call?.arguments
+          )
+        )
+      );
+    }
+    totalCount += count;
+    totalCount += 3;
+    return totalCount;
+  }
+  async clearContext(id) {
+    await this._requester.dispose(this.modelName, id);
+  }
+  getModelMaxContextSize(modelName = this._modelName) {
+    if (this._maxModelContextSize != null) {
+      return this._maxModelContextSize;
+    }
+    return (0, import_count_tokens.getModelContextSize)(modelName);
+  }
+  async getNumTokens(text, modelName = this.modelName) {
+    let numTokens = Math.ceil(text.length / 4);
+    if (!this.__encoding) {
+      try {
+        this.__encoding = await encodingForModel(
+          "modelName" in this ? (0, import_count_tokens.getModelNameForTiktoken)(modelName) : "gpt2"
+        );
+      } catch (error) {
+      }
+    }
+    if (this.__encoding) {
+      numTokens = this.__encoding.encode(text)?.length ?? numTokens;
+    }
+    return numTokens;
+  }
+  _llmType() {
+    return this._options?.llmType ?? "openai";
+  }
+  get modelName() {
+    return this._modelName;
+  }
+  get modelInfo() {
+    return this._modelInfo;
+  }
+  get isThinkModel() {
+    return this._isThinkModel;
+  }
+  get fileHandlingConfig() {
+    return this._fileHandlingConfig;
+  }
+  _modelType() {
+    return "base_chat_model";
+  }
+  /** @ignore */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  _combineLLMOutput(...llmOutputs) {
+  }
+};
+var ChatLunaBaseEmbeddings = class extends import_embeddings.Embeddings {
+  static {
+    __name(this, "ChatLunaBaseEmbeddings");
+  }
+};
+var ChatLunaEmbeddings = class extends ChatLunaBaseEmbeddings {
+  static {
+    __name(this, "ChatLunaEmbeddings");
+  }
+  modelName = "text-embedding-ada-002";
+  batchSize = 30;
+  stripNewLines = true;
+  timeout;
+  _client;
+  constructor(fields) {
+    super(fields);
+    this.batchSize = fields?.batchSize ?? this.batchSize;
+    this.stripNewLines = fields?.stripNewLines ?? this.stripNewLines;
+    this.timeout = fields?.timeout ?? 1e3 * 60;
+    this.modelName = fields?.model ?? this.modelName;
+    this._client = fields?.client;
+  }
+  async embedDocuments(texts) {
+    const subPrompts = (0, import_chunk.chunkArray)(
+      this.stripNewLines ? texts.map((t) => t.replaceAll("\n", " ")) : texts,
+      this.batchSize
+    );
+    const embeddings = [];
+    for (let i = 0; i < subPrompts.length; i += 1) {
+      const input = subPrompts[i];
+      const data = await this._embeddingWithRetry({
+        model: this.modelName,
+        input
+      });
+      for (let j = 0; j < input.length; j += 1) {
+        embeddings.push(data[j]);
+      }
+    }
+    return embeddings;
+  }
+  async embedQuery(text) {
+    const data = await this._embeddingWithRetry({
+      model: this.modelName,
+      input: this.stripNewLines ? text.replaceAll("\n", " ") : text
+    });
+    if (data[0] instanceof Array) {
+      return data[0];
+    }
+    return data;
+  }
+  async _embeddingWithRetry(request) {
+    request.timeout = request.timeout ?? this.timeout;
+    let timeoutError = null;
+    try {
+      throw new import_error.ChatLunaError(
+        import_error.ChatLunaErrorCode.API_REQUEST_TIMEOUT,
+        new Error(`timeout when calling ${this.modelName} embeddings`),
+        true
+      );
+    } catch (e) {
+      timeoutError = e;
+    }
+    const makeRequest = /* @__PURE__ */ __name(async () => {
+      let timeoutId;
+      const timeoutPromise = new Promise(
+        // eslint-disable-next-line promise/param-names
+        (_, reject) => {
+          timeoutId = setTimeout(() => {
+            reject(timeoutError);
+          }, request.timeout);
+        }
+      );
+      try {
+        const data = await Promise.race([
+          this._client.embeddings(request),
+          timeoutPromise
+        ]);
+        return data;
+      } catch (e) {
+        if (e instanceof import_error.ChatLunaError) {
+          throw e;
+        }
+        throw new import_error.ChatLunaError(import_error.ChatLunaErrorCode.API_REQUEST_FAILED, e);
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }, "makeRequest");
+    try {
+      return await this.caller.call(makeRequest);
+    } catch (e) {
+      throw new import_error.ChatLunaError(import_error.ChatLunaErrorCode.API_REQUEST_FAILED, e);
+    }
+  }
+};
+function formatUsageMetadata(usage) {
+  const result = [
+    `Token usage from API: input=${usage.input_tokens}`,
+    `output=${usage.output_tokens}`,
+    `total=${usage.total_tokens}`
+  ];
+  const input = [
+    ...usage.input_token_details?.audio != null ? [`audio=${usage.input_token_details.audio}`] : [],
+    ...usage.input_token_details?.cache_read != null ? [`cache_read=${usage.input_token_details.cache_read}`] : [],
+    ...usage.input_token_details?.cache_creation != null ? [`cache_creation=${usage.input_token_details.cache_creation}`] : []
+  ];
+  const output = [
+    ...usage.output_token_details?.audio != null ? [`audio=${usage.output_token_details.audio}`] : [],
+    ...usage.output_token_details?.reasoning != null ? [`reasoning=${usage.output_token_details.reasoning}`] : []
+  ];
+  if (input.length > 0) {
+    result.push(`| input(${input.join(", ")})`);
+  }
+  if (output.length > 0) {
+    result.push(`| output(${output.join(", ")})`);
+  }
+  return result.join(" ");
+}
+__name(formatUsageMetadata, "formatUsageMetadata");
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  ChatLunaBaseEmbeddings,
+  ChatLunaChatModel,
+  ChatLunaEmbeddings
+});

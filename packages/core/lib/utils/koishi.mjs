@@ -1,0 +1,167 @@
+var __defProp = Object.defineProperty;
+var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
+
+// src/utils/koishi.ts
+import { h } from "koishi";
+import { Marked } from "marked";
+import { isMessageContentImageUrl } from "koishi-plugin-chatluna/utils/langchain";
+var marked = new Marked({
+  tokenizer: {
+    del(src) {
+      const match = src.match(/^~~(?=\S)([\s\S]*?\S)~~/);
+      if (match) {
+        return {
+          type: "del",
+          raw: match[0],
+          text: match[1],
+          tokens: this.lexer.inlineTokens(match[1])
+        };
+      }
+      return null;
+    }
+  }
+});
+function forkScopeToDisposable(scope) {
+  return () => {
+    scope.dispose();
+  };
+}
+__name(forkScopeToDisposable, "forkScopeToDisposable");
+var tagRegExp = /<(\/?)([^!\s>/]+)([^>]*?)\s*(\/?)>/;
+function renderInlineToken(token, platform) {
+  if (token.type === "code") {
+    return h(
+      platform === "discord" || platform === "telegram" ? "code-block" : "code",
+      {
+        language: token["lang"],
+        content: token.text,
+        children: token.text
+      }
+    );
+  } else if (token.type === "codespan") {
+    return h("code", {
+      content: token.text,
+      children: token.text
+    });
+  } else if (token.type === "image") {
+    return h.image(token.href);
+  } else if (token.type === "blockquote") {
+    return h("text", { content: token.text + "\n" });
+  } else if (token.type === "text") {
+    return h("text", { content: token.text });
+  } else if (token.type === "html") {
+    const cap = tagRegExp.exec(token.text);
+    if (!cap) {
+      return h("text", { content: token.text });
+    }
+    if (cap[2] === "img") {
+      if (cap[1]) return;
+      const src = cap[3].match(/src="([^"]+)"/);
+      if (src) return h.image(src[1]);
+    }
+  }
+}
+__name(renderInlineToken, "renderInlineToken");
+function renderToken(token, platform) {
+  let children = [];
+  if (token["tokens"] && token["tokens"].length > 0) {
+    children = render(token["tokens"], platform);
+  }
+  if (token.type === "list" && platform === "discord") {
+    return h(token.ordered ? "ol" : "ul", render(token.items, platform));
+  }
+  if (children.length > 0) {
+    if (token.type === "paragraph") {
+      return h("p", children);
+    } else if (token.type === "em") {
+      return h("em", children);
+    } else if (token.type === "strong") {
+      return h("strong", children);
+    } else if (token.type === "del") {
+      return h("del", children);
+    } else if (token.type === "link") {
+      return h("a", { href: token.href }, children);
+    } else if (token.type === "list_item") {
+      if (!token.loose) {
+        children = render(
+          token.tokens[0]?.["tokens"] ?? token.tokens,
+          platform
+        );
+      }
+      children = token.loose ? [h("p", children)] : children;
+      if (platform === "discord") {
+        return h("li", children);
+      }
+      return children;
+    }
+    const inlineToken = renderInlineToken(token, platform);
+    if (inlineToken) return inlineToken;
+    else return children;
+  } else {
+    const inlineToken = renderInlineToken(token, platform);
+    if (inlineToken) return inlineToken;
+  }
+  return h("text", { content: token.raw });
+}
+__name(renderToken, "renderToken");
+function render(tokens, platform) {
+  return tokens.flatMap((token) => renderToken(token, platform)).filter(Boolean);
+}
+__name(render, "render");
+function transformToMarkdown(source, platform = "onebot", ...args) {
+  if (!source) return [];
+  if (Array.isArray(source)) {
+    source = args.map((arg, index) => source[index] + arg).join("") + source[args.length];
+  }
+  const result = render(marked.lexer(source), platform);
+  return result;
+}
+__name(transformToMarkdown, "transformToMarkdown");
+function transformMessageContentToElements(content) {
+  if (typeof content === "string") {
+    return [h.text(content)];
+  }
+  return content.map((message) => {
+    if (isMessageContentImageUrl(message)) {
+      const imageUrl = message.image_url;
+      return typeof imageUrl === "string" ? h.image(imageUrl) : h.image(imageUrl.url);
+    }
+    return h.text(message.text);
+  });
+}
+__name(transformMessageContentToElements, "transformMessageContentToElements");
+function pickForwardMessageId(element) {
+  const attrs = element.attrs ?? {};
+  for (const key of ["message_id", "messageId"]) {
+    const normalizedId = normalizeForwardMessageId(attrs[key]);
+    if (normalizedId) return normalizedId;
+  }
+  return null;
+}
+__name(pickForwardMessageId, "pickForwardMessageId");
+function isForwardMessageElement(element) {
+  if (!element) return false;
+  if (element.type === "forward") return true;
+  if (element.type !== "message") return false;
+  return ["true", "1"].includes(String(element.attrs?.["forward"]));
+}
+__name(isForwardMessageElement, "isForwardMessageElement");
+function normalizeForwardMessageId(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+__name(normalizeForwardMessageId, "normalizeForwardMessageId");
+export {
+  forkScopeToDisposable,
+  isForwardMessageElement,
+  normalizeForwardMessageId,
+  pickForwardMessageId,
+  transformMessageContentToElements,
+  transformToMarkdown
+};
