@@ -120,6 +120,12 @@ export class ChatLunaChatChain
             conversationId
         }
         requests['variables_hide'] = requests['variables']
+        const overrideRequestParams =
+            message.additional_kwargs?.overrideRequestParams ??
+            message.additional_kwargs?.qqbot_override_request_params
+        if (overrideRequestParams != null) {
+            requests['overrideRequestParams'] = overrideRequestParams
+        }
         requests['configurable'] = {
             session,
             conversationId

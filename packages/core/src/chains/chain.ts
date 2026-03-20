@@ -350,6 +350,15 @@ export class ChatChain {
         error: Error
     ) {
         if (error instanceof ChatLunaError) {
+            const state = (session as Session & { state?: Record<string, any> })
+                .state
+            if (
+                error.errorCode === ChatLunaErrorCode.ABORTED &&
+                (state?.chatluna?.suppressAbortNotice === true ||
+                    state?.qqReplyTransport?.suppressAbortNotice === true)
+            ) {
+                return
+            }
             const message =
                 error.errorCode === ChatLunaErrorCode.ABORTED
                     ? session.text('chatluna.aborted')
