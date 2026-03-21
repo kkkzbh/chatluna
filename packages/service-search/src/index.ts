@@ -61,7 +61,7 @@ export function apply(ctx: Context, config: Config) {
                                 : 'networkidle2',
                         timeout:
                             summaryType !== SummaryType.Quality
-                                ? 6 * Time.second
+                                ? 60 * Time.second
                                 : 30 * Time.second,
                         idleTimeout: 3 * Time.minute
                     }

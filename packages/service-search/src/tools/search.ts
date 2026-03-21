@@ -11,7 +11,10 @@ import { ChatLunaChatModel } from 'koishi-plugin-chatluna/llm-core/platform/mode
 import { PromptTemplate } from '@langchain/core/prompts'
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
 /* import fs from 'fs/promises' */
-import { emptyEmbeddings } from 'koishi-plugin-chatluna/llm-core/model/in_memory'
+import {
+    EmptyEmbeddings,
+    emptyEmbeddings
+} from 'koishi-plugin-chatluna/llm-core/model/in_memory'
 import { logger } from '..'
 import { removeProperty } from '../utils/parse'
 import { ChatLunaToolRunnable } from 'koishi-plugin-chatluna/llm-core/platform/types'
@@ -68,6 +71,42 @@ export class SearchTool extends Tool {
         )
     }
 
+    private shouldUseBrowserContent(content: string | null | undefined): content is string {
+        const normalized = content?.trim()
+
+        if (!normalized || normalized === '[none]') {
+            return false
+        }
+
+        return !normalized.startsWith('Error:')
+    }
+
+    private collectUniqueResults(documents: Document[]): SearchResult[] {
+        const deduped = new Map<string, SearchResult>()
+
+        for (const document of documents) {
+            const metadata = document.metadata as SearchResult
+            const key = `${metadata.url ?? ''}\u0000${metadata.title ?? ''}`
+
+            if (!deduped.has(key)) {
+                deduped.set(key, metadata)
+            }
+        }
+
+        return Array.from(deduped.values()).slice(
+            0,
+            this.searchManager.config.topK * 2
+        )
+    }
+
+    private fallbackOriginalResults(
+        documents: Document[],
+        reason: string
+    ): SearchResult[] {
+        logger.warn(reason)
+        return this.collectUniqueResults(documents)
+    }
+
     private async fetchSearchResult(query: string) {
         const results = await this.searchManager.search(query)
 
@@ -84,15 +123,7 @@ export class SearchTool extends Tool {
                                 params: query
                             })
 
-                        if (
-                            !browserContent.includes(
-                                'Error getting page text:'
-                            ) &&
-                            !browserContent.includes(
-                                'Error summarizing page:'
-                            ) &&
-                            browserContent !== '[none]'
-                        ) {
+                        if (this.shouldUseBrowserContent(browserContent)) {
                             pageContent = browserContent
                         }
                     }
@@ -133,15 +164,7 @@ export class SearchTool extends Tool {
                                 action: 'text'
                             })
 
-                        if (
-                            !browserContent.includes(
-                                'Error getting page text:'
-                            ) &&
-                            !browserContent.includes(
-                                'Error summarizing page:'
-                            ) &&
-                            browserContent !== '[none]'
-                        ) {
+                        if (this.shouldUseBrowserContent(browserContent)) {
                             pageContent = browserContent
                         }
                     }
@@ -177,11 +200,19 @@ export class SearchTool extends Tool {
     }
 
     private async _reRankDocuments(query: string, documents: Document[]) {
-        if (this.embeddings === emptyEmbeddings) {
-            logger.warn('Embeddings is empty, try check your config')
-            return documents
-                .map((document) => document.metadata as SearchResult)
-                .slice(0, this.searchManager.config.topK * 2)
+        if (documents.length === 0) {
+            return []
+        }
+
+        if (
+            this.embeddings == null ||
+            this.embeddings === emptyEmbeddings ||
+            this.embeddings instanceof EmptyEmbeddings
+        ) {
+            return this.fallbackOriginalResults(
+                documents,
+                'Embeddings is empty, fallback to original search results.'
+            )
         }
 
         const vectorStore = new MemoryVectorStore(this.embeddings)
@@ -197,13 +228,31 @@ export class SearchTool extends Tool {
             await fs.writeFile(`tmp/tmp-${index}.txt`, result[0].pageContent)
         } */
 
-        return searchResult
-            .filter(
-                (result) =>
-                    result[1] > this.searchManager.config.searchThreshold
+        const validSearchResult = searchResult.filter((result) =>
+            Number.isFinite(result[1])
+        )
+
+        if (validSearchResult.length === 0) {
+            return this.fallbackOriginalResults(
+                documents,
+                'Embeddings rerank returned no finite scores, fallback to original search results.'
             )
-            .map((result) => result[0].metadata as SearchResult)
-            .slice(0, this.searchManager.config.topK)
+        }
+
+        const thresholdedResults = validSearchResult.filter(
+            (result) => result[1] > this.searchManager.config.searchThreshold
+        )
+
+        if (thresholdedResults.length === 0) {
+            return this.fallbackOriginalResults(
+                documents,
+                `Embeddings rerank filtered all results below threshold ${this.searchManager.config.searchThreshold}, fallback to original search results.`
+            )
+        }
+
+        return this.collectUniqueResults(
+            thresholdedResults.map((result) => result[0])
+        ).slice(0, this.searchManager.config.topK)
     }
 }
 
