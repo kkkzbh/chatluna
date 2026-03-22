@@ -1,5 +1,6 @@
 import { Context, Logger } from 'koishi';
 import { Config } from './config';
+import './services/types';
 export * from './config';
 export * from './render';
 export * from './types';

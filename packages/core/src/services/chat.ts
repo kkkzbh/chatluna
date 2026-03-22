@@ -47,7 +47,13 @@ import {
 } from 'koishi-plugin-chatluna/utils/error'
 import { RequestIdQueue } from 'koishi-plugin-chatluna/utils/queue'
 import { MessageTransformer } from './message_transform'
-import { ChatEvents, ToolMaskArg, ToolMaskResolver } from './types'
+import {
+    AllowReplyResolver,
+    AllowReplyResolverArg,
+    ChatEvents,
+    ToolMaskArg,
+    ToolMaskResolver
+} from './types'
 import { chatLunaFetch, ws } from 'koishi-plugin-chatluna/utils/request'
 import * as fetchType from 'undici/types/fetch'
 import { ClientOptions, WebSocket } from 'ws'
@@ -64,6 +70,7 @@ import { RunnableConfig } from '@langchain/core/runnables'
 import { randomUUID } from 'crypto'
 import type { Notifier } from '@koishijs/plugin-notifier'
 import { ChatLunaContextManagerService } from 'koishi-plugin-chatluna/llm-core/prompt'
+import type { ReplyAgentHistoryNormalizationResult } from 'koishi-plugin-chatluna/llm-core/memory/message'
 
 export class ChatLunaService extends Service<Config> {
     private _plugins: Record<string, ChatLunaPlugin> = {}
@@ -77,6 +84,7 @@ export class ChatLunaService extends Service<Config> {
     private readonly _promptRenderer: ChatLunaPromptRenderService
     private readonly _contextManager: ChatLunaContextManagerService
     private _toolMaskResolvers: Record<string, ToolMaskResolver> = {}
+    private _allowReplyResolvers = new Map<string, AllowReplyResolver>()
 
     declare public config: Config
 
@@ -209,6 +217,25 @@ export class ChatLunaService extends Service<Config> {
         }
     }
 
+    registerAllowReplyResolver(name: string, resolver: AllowReplyResolver) {
+        this._allowReplyResolvers.set(name, resolver)
+
+        return () => {
+            this._allowReplyResolvers.delete(name)
+        }
+    }
+
+    async resolveAllowReply(arg: AllowReplyResolverArg) {
+        for (const resolver of this._allowReplyResolvers.values()) {
+            const allowed = await resolver(arg)
+            if (allowed) {
+                return true
+            }
+        }
+
+        return false
+    }
+
     getPlugin(platformName: string) {
         return this._plugins[platformName]
     }
@@ -289,6 +316,21 @@ export class ChatLunaService extends Service<Config> {
             this._chatInterfaceWrapper ?? this._createChatInterfaceWrapper()
 
         return chatBridger.compressContext(room, force)
+    }
+
+    async normalizeReplyAgentHistory(
+        room: ConversationRoom,
+        finalVisibleText: string,
+        updatedAt: Date = new Date()
+    ): Promise<ReplyAgentHistoryNormalizationResult> {
+        const chatBridger =
+            this._chatInterfaceWrapper ?? this._createChatInterfaceWrapper()
+
+        return chatBridger.normalizeReplyAgentHistory(
+            room,
+            finalVisibleText,
+            updatedAt
+        )
     }
 
     getCachedInterfaceWrapper() {
@@ -1097,6 +1139,7 @@ class ChatInterfaceWrapper {
 
             return {
                 content: aiMessage.content as string,
+                additional_kwargs: aiMessage.additional_kwargs,
                 additionalReplyMessages
             }
         } finally {
@@ -1132,7 +1175,11 @@ class ChatInterfaceWrapper {
         message: HumanMessage,
         chatMode?: string
     ): Promise<boolean> {
-        if (chatMode != null && chatMode !== 'plugin') {
+        if (
+            chatMode != null &&
+            chatMode !== 'plugin' &&
+            chatMode !== 'reply-agent'
+        ) {
             return false
         }
 
@@ -1141,7 +1188,10 @@ class ChatInterfaceWrapper {
         if (activeRequest == null) {
             return false
         }
-        if (activeRequest.chatMode !== 'plugin') {
+        if (
+            activeRequest.chatMode !== 'plugin' &&
+            activeRequest.chatMode !== 'reply-agent'
+        ) {
             return false
         }
 
@@ -1238,6 +1288,28 @@ class ChatInterfaceWrapper {
                 this._conversationQueue.remove(conversationId, requestId),
                 this._modelQueue.remove(platform, modelRequestId)
             ])
+        }
+    }
+
+    async normalizeReplyAgentHistory(
+        room: ConversationRoom,
+        finalVisibleText: string,
+        updatedAt: Date = new Date()
+    ) {
+        const { conversationId } = room
+        const requestId = randomUUID()
+
+        try {
+            await this._conversationQueue.add(conversationId, requestId)
+            await this._conversationQueue.wait(conversationId, requestId, 0)
+
+            const chatInterface = await this.query(room, true)
+            return await chatInterface.normalizeReplyAgentHistory(
+                finalVisibleText,
+                updatedAt
+            )
+        } finally {
+            await this._conversationQueue.remove(conversationId, requestId)
         }
     }
 

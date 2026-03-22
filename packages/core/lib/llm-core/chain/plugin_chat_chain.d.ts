@@ -9,6 +9,7 @@ import { ChatLunaChatPrompt } from 'koishi-plugin-chatluna/llm-core/chain/prompt
 import type { ChatLunaPromptRenderService } from 'koishi-plugin-chatluna/services/chat';
 import { ComputedRef } from '@vue/reactivity';
 import type { ChatLunaContextManagerService } from 'koishi-plugin-chatluna/llm-core/prompt';
+import type { AgentFinishContract } from '../agent/reply_plan';
 export interface ChatLunaPluginChainInput {
     prompt: ChatLunaChatPrompt;
     historyMemory: BufferMemory;
@@ -18,6 +19,7 @@ export interface ChatLunaPluginChainInput {
     preset: ComputedRef<PresetTemplate>;
     contextManager: ChatLunaContextManagerService;
     toolMask?: ToolMask;
+    finishContract?: AgentFinishContract;
 }
 export declare class ChatLunaPluginChain extends ChatLunaLLMChainWrapper implements ChatLunaPluginChainInput {
     executor: ComputedRef<AgentExecutor>;
@@ -32,12 +34,13 @@ export declare class ChatLunaPluginChain extends ChatLunaLLMChainWrapper impleme
     contextManager: ChatLunaContextManagerService;
     agentMode?: 'tool-calling' | 'react';
     toolMask?: ToolMask;
+    finishContract?: AgentFinishContract;
     private _toolsRef;
-    constructor({ historyMemory, prompt, llm, tools, preset, embeddings, agentMode, contextManager, toolMask }: ChatLunaPluginChainInput & {
+    constructor({ historyMemory, prompt, llm, tools, preset, embeddings, agentMode, contextManager, toolMask, finishContract }: ChatLunaPluginChainInput & {
         tools: ComputedRef<ChatLunaTool[]>;
         llm: ChatLunaChatModel;
     });
-    static fromLLMAndTools(llm: ChatLunaChatModel, tools: ComputedRef<ChatLunaTool[]>, { historyMemory, preset, embeddings, agentMode, variableService, contextManager, toolMask }: Omit<ChatLunaPluginChainInput, 'prompt'>): ChatLunaPluginChain;
+    static fromLLMAndTools(llm: ChatLunaChatModel, tools: ComputedRef<ChatLunaTool[]>, { historyMemory, preset, embeddings, agentMode, variableService, contextManager, toolMask, finishContract }: Omit<ChatLunaPluginChainInput, 'prompt'>): ChatLunaPluginChain;
     private _createExecutor;
     call({ message, signal, session, events, conversationId, variables, maxToken, messageQueue, onAgentEvent, toolMask: callToolMask, subagentContext }: ChatLunaLLMCallArg): Promise<ChainValues>;
     get model(): ChatLunaChatModel;

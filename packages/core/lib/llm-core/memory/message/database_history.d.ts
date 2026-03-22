@@ -2,6 +2,12 @@ import { Context } from 'koishi';
 import { AIMessage, BaseMessage, MessageContent, MessageType } from '@langchain/core/messages';
 import { BaseChatMessageHistory } from '@langchain/core/chat_history';
 import type { AgentStep } from '../../agent/types';
+export interface ReplyAgentHistoryNormalizationResult {
+    deletedMessageIds: string[];
+    latestId: string | null;
+    normalizedMessageId: string | null;
+    normalizedText: string;
+}
 export declare class KoishiChatMessageHistory extends BaseChatMessageHistory {
     private _maxMessagesCount;
     lc_namespace: string[];
@@ -20,6 +26,7 @@ export declare class KoishiChatMessageHistory extends BaseChatMessageHistory {
     addMessage(message: BaseMessage): Promise<void>;
     addMessages(messages: BaseMessage[]): Promise<void>;
     addAgentToolBatch(steps: AgentStep[]): Promise<void>;
+    normalizeReplyAgentHistory(finalVisibleText: string, updatedAt?: Date): Promise<ReplyAgentHistoryNormalizationResult>;
     clear(): Promise<void>;
     delete(): Promise<void>;
     updateAdditionalArg(key: string, value: string): Promise<void>;

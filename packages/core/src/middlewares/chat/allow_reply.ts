@@ -11,6 +11,10 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
 
             context.options.reply_status = false
 
+            if (await isAllowedByExternalTrigger()) {
+                return await checkReplyPermission()
+            }
+
             const content = h
                 .select(session.elements, 'text')
                 .join('')
@@ -86,6 +90,15 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             }
 
             return ChainMiddlewareRunStatus.STOP
+
+            async function isAllowedByExternalTrigger() {
+                return Boolean(
+                    await ctx.chatluna.resolveAllowReply({
+                        session,
+                        context
+                    })
+                )
+            }
 
             // 辅助函数：检查回复权限
             async function checkReplyPermission() {

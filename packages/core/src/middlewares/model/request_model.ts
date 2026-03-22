@@ -256,6 +256,10 @@ function createToolCallHandler(
     ) => {
         logger.debug(`Call tool: ${tool} with ${JSON.stringify(arg)}`)
 
+        if (context.options.room?.chatMode === 'reply-agent') {
+            return
+        }
+
         if (
             content != null &&
             ((typeof content === 'string' && content.trim().length > 0) ||

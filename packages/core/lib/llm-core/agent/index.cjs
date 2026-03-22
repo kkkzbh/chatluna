@@ -22,6 +22,11 @@ var agent_exports = {};
 __export(agent_exports, {
   AgentExecutor: () => AgentExecutor,
   MessageQueue: () => MessageQueue,
+  REPLY_AGENT_CHAT_MODE: () => REPLY_AGENT_CHAT_MODE,
+  REPLY_AGENT_DEFAULT_TOOL_MASK: () => REPLY_AGENT_DEFAULT_TOOL_MASK,
+  REPLY_AGENT_FINISH_CONTRACT: () => REPLY_AGENT_FINISH_CONTRACT,
+  REPLY_AGENT_FINISH_TOOL: () => REPLY_AGENT_FINISH_TOOL,
+  SubmitReplyPlanTool: () => SubmitReplyPlanTool,
   _formatIntermediateSteps: () => _formatIntermediateSteps,
   applyToolMask: () => applyToolMask,
   coerceToAgentObservation: () => coerceToAgentObservation,
@@ -29,8 +34,14 @@ __export(agent_exports, {
   createAgentExecutor: () => createAgentExecutor,
   createOpenAIAgent: () => createOpenAIAgent,
   createReactAgent: () => createReactAgent,
+  createSubmitReplyPlanTool: () => createSubmitReplyPlanTool,
   createToolsRef: () => createToolsRef,
+  ensureToolMaskAllows: () => ensureToolMaskAllows,
   formatLogToString: () => formatLogToString,
+  intersectToolMasks: () => intersectToolMasks,
+  isReplyAgentChatMode: () => isReplyAgentChatMode,
+  replyPlanSchema: () => replyPlanSchema,
+  replyPlanSegmentSchema: () => replyPlanSegmentSchema,
   runAgent: () => runAgent,
   toToolInputErrorObservation: () => toToolInputErrorObservation
 });
@@ -348,6 +359,43 @@ function applyToolMask(name, mask) {
   return !mask.deny.includes(name);
 }
 __name(applyToolMask, "applyToolMask");
+function intersectToolMasks(toolNames, ...masks) {
+  const activeMasks = masks.filter((mask) => mask != null);
+  if (activeMasks.length < 1) {
+    return void 0;
+  }
+  const allowed = toolNames.filter(
+    (name) => activeMasks.every((mask) => applyToolMask(name, mask))
+  );
+  const toolCallMasks = activeMasks.map((mask) => mask.toolCallMask).filter((mask) => mask != null);
+  return {
+    mode: "allow",
+    allow: allowed,
+    deny: [],
+    ...toolCallMasks.length > 0 ? {
+      toolCallMask: intersectToolMasks(allowed, ...toolCallMasks)
+    } : {}
+  };
+}
+__name(intersectToolMasks, "intersectToolMasks");
+function ensureToolMaskAllows(mask, toolNames) {
+  if (mask == null || mask.mode !== "allow") {
+    return mask;
+  }
+  const allow = Array.from(/* @__PURE__ */ new Set([...mask.allow, ...toolNames]));
+  const toolCallMask = mask.toolCallMask == null || mask.toolCallMask.mode !== "allow" ? mask.toolCallMask : {
+    ...mask.toolCallMask,
+    allow: Array.from(
+      /* @__PURE__ */ new Set([...mask.toolCallMask.allow, ...toolNames])
+    )
+  };
+  return {
+    ...mask,
+    allow,
+    toolCallMask
+  };
+}
+__name(ensureToolMaskAllows, "ensureToolMaskAllows");
 
 // src/llm-core/agent/executor.ts
 async function executeTools(actions, toolMap, config, signal, handleParsingErrors, handleToolRuntimeErrors) {
@@ -458,6 +506,8 @@ async function* runAgent(options) {
   );
   const maxIterations = options.maxIterations ?? 105;
   const handleParsingErrors = options.handleParsingErrors ?? true;
+  const finishContract = options.finishContract;
+  let finishRetries = 0;
   let iterations = 0;
   while (iterations < maxIterations) {
     checkAborted(signal);
@@ -492,6 +542,28 @@ async function* runAgent(options) {
     }
     checkAborted(signal);
     if (isAgentFinish(output)) {
+      if (finishContract != null) {
+        const maxRetries = finishContract.maxRetries ?? 1;
+        if (finishRetries < maxRetries) {
+          finishRetries += 1;
+          const retryMessage = new import_messages3.HumanMessage(
+            finishContract.retryMessage
+          );
+          scratchpad.push({
+            type: "human_update",
+            messages: [retryMessage]
+          });
+          yield {
+            type: "human-update",
+            messages: [retryMessage]
+          };
+          iterations += 1;
+          continue;
+        }
+        throw new Error(
+          finishContract.errorMessage ?? `Agent finished without calling ${finishContract.toolName}.`
+        );
+      }
       const message = output.returnValues["message"];
       yield {
         type: "round-decision",
@@ -544,6 +616,15 @@ async function* runAgent(options) {
     const last = newSteps[newSteps.length - 1];
     const tool = last ? toolMap[last.action.tool?.toLowerCase()] : void 0;
     if (tool?.returnDirect && last != null) {
+      const message = new import_messages3.AIMessage({
+        content: toOutput(last.observation),
+        additional_kwargs: {
+          chatluna_agent_terminal_tool: {
+            name: last.action.tool,
+            input: last.action.toolInput
+          }
+        }
+      });
       const pending2 = options.messageQueue?.drain() ?? [];
       if (pending2.length > 0) {
         yield {
@@ -555,7 +636,8 @@ async function* runAgent(options) {
         type: "done",
         output: toOutput(last.observation),
         log: last.action.log,
-        steps
+        steps,
+        message
       };
       return;
     }
@@ -585,6 +667,7 @@ var AgentExecutor = class _AgentExecutor extends import_base.BaseChain {
   maxIterations;
   handleParsingErrors;
   handleToolRuntimeErrors;
+  finishContract;
   constructor(fields) {
     super(fields);
     this.agent = fields.agent;
@@ -593,6 +676,7 @@ var AgentExecutor = class _AgentExecutor extends import_base.BaseChain {
     this.maxIterations = fields.maxIterations;
     this.handleParsingErrors = fields.handleParsingErrors;
     this.handleToolRuntimeErrors = fields.handleToolRuntimeErrors;
+    this.finishContract = fields.finishContract;
   }
   get inputKeys() {
     return ["input"];
@@ -614,7 +698,8 @@ var AgentExecutor = class _AgentExecutor extends import_base.BaseChain {
       maxIterations: this.maxIterations,
       handleParsingErrors: this.handleParsingErrors,
       handleToolRuntimeErrors: this.handleToolRuntimeErrors,
-      config
+      config,
+      finishContract: this.finishContract
     });
     for await (const event of runner) {
       if (event.type === "tool-call") {
@@ -1090,7 +1175,8 @@ function createAgentExecutor(options) {
       agent: cfg.value.agent,
       tools: cfg.value.tools,
       returnIntermediateSteps: options.returnIntermediateSteps,
-      handleParsingErrors: options.handleParsingErrors
+      handleParsingErrors: options.handleParsingErrors,
+      finishContract: options.finishContract
     })
   );
 }
@@ -1137,10 +1223,111 @@ function createToolsRef(options) {
   };
 }
 __name(createToolsRef, "createToolsRef");
+
+// src/llm-core/agent/reply_plan.ts
+var import_tools2 = require("@langchain/core/tools");
+var import_zod = require("zod");
+var REPLY_AGENT_CHAT_MODE = "reply-agent";
+var REPLY_AGENT_FINISH_TOOL = "submit_reply_plan";
+var replyTextSegmentSchema = import_zod.z.object({
+  kind: import_zod.z.enum(["text", "multiline", "voice", "sticker"]),
+  content: import_zod.z.string().min(1)
+});
+var replyImageSegmentSchema = import_zod.z.object({
+  kind: import_zod.z.literal("image"),
+  asset_ref: import_zod.z.string().min(1),
+  alt: import_zod.z.string().optional()
+});
+var replyPlanSegmentSchema = import_zod.z.discriminatedUnion("kind", [
+  replyTextSegmentSchema,
+  replyImageSegmentSchema
+]);
+var replyPlanSchema = import_zod.z.object({
+  segments: import_zod.z.array(replyPlanSegmentSchema).min(1)
+});
+var REPLY_AGENT_FINISH_CONTRACT = {
+  toolName: REPLY_AGENT_FINISH_TOOL,
+  maxRetries: 1,
+  retryMessage: [
+    "Protocol violation: reply-agent must finish by calling submit_reply_plan.",
+    "You may continue thinking, searching, and using tools, but do not answer with plain text or raw JSON.",
+    "Call submit_reply_plan({ segments: [...] }) now.",
+    "segments support: text, multiline, voice, sticker, image.",
+    "text / multiline / voice / sticker require content.",
+    "image requires asset_ref and may include alt. Do not invent image assets."
+  ].join("\n"),
+  errorMessage: "reply-agent protocol violation: the agent finished without calling submit_reply_plan."
+};
+var REPLY_AGENT_DENY_TOOLS = [
+  "bash",
+  "cron",
+  "file_edit",
+  "file_publish",
+  "file_read",
+  "file_write",
+  "glob",
+  "grep",
+  "group_mute",
+  "koishi_command_execute",
+  "memory_add",
+  "memory_delete",
+  "memory_update",
+  "question",
+  "skill",
+  "task",
+  "todos",
+  "user_confirm",
+  "web_post"
+];
+var REPLY_AGENT_DEFAULT_TOOL_MASK = {
+  mode: "deny",
+  allow: [],
+  deny: REPLY_AGENT_DENY_TOOLS,
+  toolCallMask: {
+    mode: "deny",
+    allow: [],
+    deny: REPLY_AGENT_DENY_TOOLS
+  }
+};
+var SubmitReplyPlanTool = class extends import_tools2.StructuredTool {
+  static {
+    __name(this, "SubmitReplyPlanTool");
+  }
+  name = REPLY_AGENT_FINISH_TOOL;
+  description = "Submit the final structured reply plan for the user. This is the only valid way to finish reply-agent mode.";
+  returnDirect = true;
+  schema = replyPlanSchema;
+  async _call(_) {
+    return "";
+  }
+};
+function createSubmitReplyPlanTool() {
+  return {
+    id: REPLY_AGENT_FINISH_TOOL,
+    name: REPLY_AGENT_FINISH_TOOL,
+    description: "Submit the final structured reply plan. Use this exactly once as the final step.",
+    selector() {
+      return true;
+    },
+    createTool() {
+      return new SubmitReplyPlanTool();
+    }
+  };
+}
+__name(createSubmitReplyPlanTool, "createSubmitReplyPlanTool");
+function isReplyAgentChatMode(chatMode) {
+  return chatMode === REPLY_AGENT_CHAT_MODE;
+}
+__name(isReplyAgentChatMode, "isReplyAgentChatMode");
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   AgentExecutor,
   MessageQueue,
+  REPLY_AGENT_CHAT_MODE,
+  REPLY_AGENT_DEFAULT_TOOL_MASK,
+  REPLY_AGENT_FINISH_CONTRACT,
+  REPLY_AGENT_FINISH_TOOL,
+  SubmitReplyPlanTool,
   _formatIntermediateSteps,
   applyToolMask,
   coerceToAgentObservation,
@@ -1148,8 +1335,14 @@ __name(createToolsRef, "createToolsRef");
   createAgentExecutor,
   createOpenAIAgent,
   createReactAgent,
+  createSubmitReplyPlanTool,
   createToolsRef,
+  ensureToolMaskAllows,
   formatLogToString,
+  intersectToolMasks,
+  isReplyAgentChatMode,
+  replyPlanSchema,
+  replyPlanSegmentSchema,
   runAgent,
   toToolInputErrorObservation
 });

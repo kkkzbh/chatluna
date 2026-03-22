@@ -268,7 +268,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
     //  .before("lifecycle-request_model")
 }
 
-export type ChatMode = 'plugin' | 'chat' | 'browsing'
+export type ChatMode = 'plugin' | 'chat' | 'browsing' | 'reply-agent'
 async function pickContextualRoom(
     ctx: Context,
     session: Session,

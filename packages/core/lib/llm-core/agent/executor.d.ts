@@ -5,6 +5,7 @@ import { StructuredTool, ToolInputParsingException } from '@langchain/core/tools
 import type { ChainValues } from '@langchain/core/utils/types';
 import { BaseChain, ChainInputs } from 'koishi-plugin-chatluna/llm-core/chain/base';
 import { AgentEvent, AgentObservation, AgentStep, MessageQueue } from './types';
+import type { AgentFinishContract } from './reply_plan';
 export declare function runAgent(options: RunAgentOptions): AsyncGenerator<AgentEvent>;
 export declare class AgentExecutor extends BaseChain<ChainValues, AgentExecutorOutput> {
     lc_serializable: boolean;
@@ -14,6 +15,7 @@ export declare class AgentExecutor extends BaseChain<ChainValues, AgentExecutorO
     maxIterations?: number;
     handleParsingErrors?: boolean | string | ((e: Error) => string);
     handleToolRuntimeErrors?: (e: Error) => string;
+    finishContract?: AgentFinishContract;
     constructor(fields: AgentExecutorInput);
     get inputKeys(): string[];
     get outputKeys(): string[];
@@ -31,6 +33,7 @@ export interface RunAgentOptions {
     handleParsingErrors?: boolean | string | ((e: Error) => string);
     handleToolRuntimeErrors?: (e: Error) => string;
     config?: RunnableConfig;
+    finishContract?: AgentFinishContract;
 }
 export interface AgentExecutorInput extends ChainInputs {
     agent: Runnable;
@@ -39,6 +42,7 @@ export interface AgentExecutorInput extends ChainInputs {
     maxIterations?: number;
     handleParsingErrors?: boolean | string | ((e: Error) => string);
     handleToolRuntimeErrors?: (e: Error) => string;
+    finishContract?: AgentFinishContract;
 }
 export interface AgentExecutorOutput extends ChainValues {
     output: string;

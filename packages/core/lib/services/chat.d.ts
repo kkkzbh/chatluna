@@ -13,7 +13,7 @@ import { ChatLunaTool, CreateChatLunaLLMChainParams, CreateVectorStoreFunction, 
 import { PresetService } from 'koishi-plugin-chatluna/preset';
 import { ConversationRoom, Message } from '../types';
 import { MessageTransformer } from './message_transform';
-import { ChatEvents, ToolMaskArg, ToolMaskResolver } from './types';
+import { AllowReplyResolver, AllowReplyResolverArg, ChatEvents, ToolMaskArg, ToolMaskResolver } from './types';
 import * as fetchType from 'undici/types/fetch';
 import { ClientOptions, WebSocket } from 'ws';
 import { ClientRequestArgs } from 'http';
@@ -24,6 +24,7 @@ import { ChatLunaPromptRenderService } from './prompt_renderer';
 import { ComputedRef } from '@vue/reactivity';
 import { Embeddings } from '@langchain/core/embeddings';
 import { ChatLunaContextManagerService } from 'koishi-plugin-chatluna/llm-core/prompt';
+import type { ReplyAgentHistoryNormalizationResult } from 'koishi-plugin-chatluna/llm-core/memory/message';
 export declare class ChatLunaService extends Service<Config> {
     readonly ctx: Context;
     private _plugins;
@@ -37,6 +38,7 @@ export declare class ChatLunaService extends Service<Config> {
     private readonly _promptRenderer;
     private readonly _contextManager;
     private _toolMaskResolvers;
+    private _allowReplyResolvers;
     config: Config;
     currentConfig: Config;
     constructor(ctx: Context, config: Config);
@@ -45,6 +47,8 @@ export declare class ChatLunaService extends Service<Config> {
     uninstallPlugin(plugin: ChatLunaPlugin | string): void;
     registerToolMaskResolver(name: string, resolver: ToolMaskResolver): () => void;
     resolveToolMask(arg: ToolMaskArg): Promise<ToolMask>;
+    registerAllowReplyResolver(name: string, resolver: AllowReplyResolver): () => void;
+    resolveAllowReply(arg: AllowReplyResolverArg): Promise<boolean>;
     getPlugin(platformName: string): ChatLunaPlugin<ClientConfig, ChatLunaPlugin.Config>;
     /**
      * @internal
@@ -55,6 +59,7 @@ export declare class ChatLunaService extends Service<Config> {
     queryInterfaceWrapper(room: ConversationRoom, autoCreate?: boolean): ChatInterfaceWrapper;
     clearChatHistory(room: ConversationRoom): Promise<void>;
     compressContext(room: ConversationRoom, force?: boolean): Promise<import("../llm-core/chat/infinite_context").CompressContextResult>;
+    normalizeReplyAgentHistory(room: ConversationRoom, finalVisibleText: string, updatedAt?: Date): Promise<ReplyAgentHistoryNormalizationResult>;
     getCachedInterfaceWrapper(): ChatInterfaceWrapper;
     clearCache(room: ConversationRoom): Promise<boolean>;
     createChatModel(platform: string, modelName: string): Promise<ComputedRef<ChatLunaChatModel | undefined>>;
@@ -116,6 +121,7 @@ declare class ChatInterfaceWrapper {
     query(room: ConversationRoom, create?: boolean): Promise<ChatInterface>;
     clearChatHistory(room: ConversationRoom): Promise<void>;
     compressContext(room: ConversationRoom, force?: boolean): Promise<import("../llm-core/chat/infinite_context").CompressContextResult>;
+    normalizeReplyAgentHistory(room: ConversationRoom, finalVisibleText: string, updatedAt?: Date): Promise<ReplyAgentHistoryNormalizationResult>;
     clearCache(room: ConversationRoom): Promise<boolean>;
     getCachedConversations(): [string, ChatHubChatBridgerInfo][];
     delete(room: ConversationRoom): Promise<void>;

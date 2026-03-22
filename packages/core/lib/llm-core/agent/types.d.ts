@@ -202,3 +202,5 @@ export declare class MessageQueue {
     get pending(): boolean;
 }
 export declare function applyToolMask(name: string, mask?: ToolMask): boolean;
+export declare function intersectToolMasks(toolNames: string[], ...masks: (ToolMask | undefined)[]): ToolMask | undefined;
+export declare function ensureToolMaskAllows(mask: ToolMask | undefined, toolNames: string[]): ToolMask | undefined;

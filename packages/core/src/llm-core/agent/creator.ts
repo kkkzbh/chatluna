@@ -13,6 +13,7 @@ import { Session } from 'koishi'
 import type { Runnable } from '@langchain/core/runnables'
 import { AgentExecutor } from './executor'
 import { applyToolMask, ToolMask } from './types'
+import type { AgentFinishContract } from './reply_plan'
 
 export interface CreateAgentConfigOptions {
     llm: ComputedRef<ChatLunaChatModel>
@@ -37,6 +38,7 @@ export interface CreateAgentExecutorOptions {
     returnIntermediateSteps?: boolean
     handleParsingErrors?: boolean
     instructions?: ComputedRef<string>
+    finishContract?: AgentFinishContract
 }
 
 export function createAgentConfig(options: CreateAgentConfigOptions) {
@@ -85,7 +87,8 @@ export function createAgentExecutor(
             agent: cfg.value.agent,
             tools: cfg.value.tools,
             returnIntermediateSteps: options.returnIntermediateSteps,
-            handleParsingErrors: options.handleParsingErrors
+            handleParsingErrors: options.handleParsingErrors,
+            finishContract: options.finishContract
         })
     )
 }

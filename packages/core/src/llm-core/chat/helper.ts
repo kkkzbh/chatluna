@@ -103,7 +103,7 @@ export async function initModel(
 export function supportChatMode(modelInfo: ModelInfo, chatMode: string) {
     if (
         !modelInfo.capabilities.includes(ModelCapabilities.ToolCall) &&
-        chatMode === 'plugin'
+        (chatMode === 'plugin' || chatMode === 'reply-agent')
     ) {
         return false
     }

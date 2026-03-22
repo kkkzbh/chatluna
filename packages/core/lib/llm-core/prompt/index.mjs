@@ -108,7 +108,12 @@ var EMPTY_PRESET = {
 };
 
 // src/llm-core/prompt/context_manager.ts
-import { BaseMessage as BaseMessage2, HumanMessage as HumanMessage2 } from "@langchain/core/messages";
+import {
+  AIMessage as AIMessage2,
+  BaseMessage as BaseMessage2,
+  HumanMessage as HumanMessage2,
+  SystemMessage as SystemMessage2
+} from "@langchain/core/messages";
 var STAGE_ORDER = {
   system_prompts: 0,
   after_system_prompts: 50,
@@ -478,12 +483,59 @@ var ChatLunaContextManagerService = class _ChatLunaContextManagerService {
     }
   }
 };
+function isPlainPromptMessage(input) {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) {
+    return false;
+  }
+  if (!("content" in input)) {
+    return false;
+  }
+  const role = typeof input.role === "string" ? input.role : typeof input.type === "string" ? input.type : void 0;
+  return role === "system" || role === "human" || role === "ai" || role === "assistant";
+}
+__name(isPlainPromptMessage, "isPlainPromptMessage");
+function createMessageFromPlainObject(input) {
+  const content = typeof input.content === "string" ? input.content : String(input.content ?? "");
+  if (content.trim().length < 1) return [];
+  const role = input.role ?? input.type;
+  const baseFields = {
+    content,
+    name: input.name,
+    id: input.id,
+    additional_kwargs: input.additional_kwargs,
+    response_metadata: input.response_metadata
+  };
+  switch (role) {
+    case "system":
+      return [new SystemMessage2(baseFields)];
+    case "human":
+      return [new HumanMessage2(baseFields)];
+    case "ai":
+    case "assistant":
+      return [
+        new AIMessage2({
+          ...baseFields,
+          tool_calls: Array.isArray(input.tool_calls) ? input.tool_calls : void 0,
+          additional_kwargs: {
+            ...input.additional_kwargs ?? {},
+            ...input.tool_call_id != null ? { tool_call_id: input.tool_call_id } : {}
+          }
+        })
+      ];
+    default:
+      return [];
+  }
+}
+__name(createMessageFromPlainObject, "createMessageFromPlainObject");
 function toMessages(input) {
   if (input == null) return [];
   if (Array.isArray(input)) {
     return input.flatMap((item) => toMessages(item));
   }
   if (input instanceof BaseMessage2) return [input];
+  if (isPlainPromptMessage(input)) {
+    return createMessageFromPlainObject(input);
+  }
   if (typeof input === "string") {
     if (input.trim().length < 1) return [];
     return [new HumanMessage2(input)];
@@ -493,7 +545,7 @@ function toMessages(input) {
 __name(toMessages, "toMessages");
 
 // src/llm-core/prompt/system_prompts.ts
-import { SystemMessage as SystemMessage2 } from "@langchain/core/messages";
+import { SystemMessage as SystemMessage3 } from "@langchain/core/messages";
 import { HumanMessagePromptTemplate } from "@langchain/core/prompts";
 import { logger as logger2 } from "koishi-plugin-chatluna";
 import { getMessageContent } from "koishi-plugin-chatluna/utils/string";
@@ -527,7 +579,7 @@ function createSystemPromptsMiddleware() {
     const variables = runtime.variables;
     const configurable = runtime.configurable;
     if (runtime.instructions) {
-      const msg = new SystemMessage2(runtime.instructions);
+      const msg = new SystemMessage3(runtime.instructions);
       const tokens = await countMessageTokens(msg, runtime.tokenCounter);
       runtime.result.push(msg);
       runtime.usedTokens += tokens;
@@ -753,7 +805,7 @@ function registerLongHistoryMiddleware(contextManager) {
 __name(registerLongHistoryMiddleware, "registerLongHistoryMiddleware");
 
 // src/llm-core/prompt/lore_books.ts
-import { AIMessage as AIMessage2 } from "@langchain/core/messages";
+import { AIMessage as AIMessage3 } from "@langchain/core/messages";
 import { HumanMessagePromptTemplate as HumanMessagePromptTemplate2 } from "@langchain/core/prompts";
 import { logger as logger4 } from "koishi-plugin-chatluna";
 function createLoreBooksMiddleware() {
@@ -813,7 +865,7 @@ async function formatLoreBooks(loreBooks, usedTokens, result, variables, runtime
     if (position === "default") {
       if (hasLongMemory) {
         const index = result.findIndex(
-          (msg) => msg instanceof AIMessage2 && msg.content === "Ok. I will remember."
+          (msg) => msg instanceof AIMessage3 && msg.content === "Ok. I will remember."
         );
         index !== -1 ? result.splice(index - 1, 0, message) : result.push(message);
       } else {

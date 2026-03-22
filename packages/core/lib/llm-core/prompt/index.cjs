@@ -522,12 +522,59 @@ var ChatLunaContextManagerService = class _ChatLunaContextManagerService {
     }
   }
 };
+function isPlainPromptMessage(input) {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) {
+    return false;
+  }
+  if (!("content" in input)) {
+    return false;
+  }
+  const role = typeof input.role === "string" ? input.role : typeof input.type === "string" ? input.type : void 0;
+  return role === "system" || role === "human" || role === "ai" || role === "assistant";
+}
+__name(isPlainPromptMessage, "isPlainPromptMessage");
+function createMessageFromPlainObject(input) {
+  const content = typeof input.content === "string" ? input.content : String(input.content ?? "");
+  if (content.trim().length < 1) return [];
+  const role = input.role ?? input.type;
+  const baseFields = {
+    content,
+    name: input.name,
+    id: input.id,
+    additional_kwargs: input.additional_kwargs,
+    response_metadata: input.response_metadata
+  };
+  switch (role) {
+    case "system":
+      return [new import_messages2.SystemMessage(baseFields)];
+    case "human":
+      return [new import_messages2.HumanMessage(baseFields)];
+    case "ai":
+    case "assistant":
+      return [
+        new import_messages2.AIMessage({
+          ...baseFields,
+          tool_calls: Array.isArray(input.tool_calls) ? input.tool_calls : void 0,
+          additional_kwargs: {
+            ...input.additional_kwargs ?? {},
+            ...input.tool_call_id != null ? { tool_call_id: input.tool_call_id } : {}
+          }
+        })
+      ];
+    default:
+      return [];
+  }
+}
+__name(createMessageFromPlainObject, "createMessageFromPlainObject");
 function toMessages(input) {
   if (input == null) return [];
   if (Array.isArray(input)) {
     return input.flatMap((item) => toMessages(item));
   }
   if (input instanceof import_messages2.BaseMessage) return [input];
+  if (isPlainPromptMessage(input)) {
+    return createMessageFromPlainObject(input);
+  }
   if (typeof input === "string") {
     if (input.trim().length < 1) return [];
     return [new import_messages2.HumanMessage(input)];

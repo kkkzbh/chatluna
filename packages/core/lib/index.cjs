@@ -1139,6 +1139,7 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends import_base2.ChatLu
   contextManager;
   agentMode;
   toolMask;
+  finishContract;
   _toolsRef;
   constructor({
     historyMemory,
@@ -1149,7 +1150,8 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends import_base2.ChatLu
     embeddings,
     agentMode,
     contextManager,
-    toolMask
+    toolMask,
+    finishContract
   }) {
     super();
     this.historyMemory = historyMemory;
@@ -1161,6 +1163,7 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends import_base2.ChatLu
     this.preset = preset;
     this.contextManager = contextManager;
     this.toolMask = toolMask;
+    this.finishContract = finishContract;
     this._toolsRef = (0, import_agent.createToolsRef)({
       tools: this.tools,
       embeddings: this.embeddings,
@@ -1175,7 +1178,8 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends import_base2.ChatLu
     agentMode,
     variableService,
     contextManager,
-    toolMask
+    toolMask,
+    finishContract
   }) {
     const prompt = new import_prompt2.ChatLunaChatPrompt({
       preset,
@@ -1194,7 +1198,8 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends import_base2.ChatLu
       preset,
       variableService,
       contextManager,
-      toolMask
+      toolMask,
+      finishContract
     });
   }
   _createExecutor() {
@@ -1205,6 +1210,7 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends import_base2.ChatLu
       agentMode: this.agentMode,
       returnIntermediateSteps: this.agentMode === "tool-calling",
       handleParsingErrors: true,
+      finishContract: this.finishContract,
       instructions: (0, import_reactivity.computed)(() => {
         if (this.agentMode === "react") {
           return this.preset.value.config.reActInstruction;
@@ -1230,7 +1236,15 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends import_base2.ChatLu
       input: message
     };
     const nextVars = Object.assign({}, variables ?? {});
-    const toolMask = subagentContext?.toolMask ?? callToolMask;
+    const finishToolName = this.finishContract?.toolName;
+    const toolMask = (0, import_agent.ensureToolMaskAllows)(
+      (0, import_agent.intersectToolMasks)(
+        this.tools.value.map((tool) => tool.name).filter((name2) => Boolean(name2)),
+        this.toolMask,
+        subagentContext?.toolMask ?? callToolMask
+      ),
+      finishToolName ? [finishToolName] : []
+    );
     const chatHistory = this.historyMemory.chatHistory;
     const messages = await chatHistory.getMessages();
     if (this.agentMode === "react") {
@@ -1355,6 +1369,100 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends import_base2.ChatLu
 var import_count_tokens = require("koishi-plugin-chatluna/llm-core/utils/count_tokens");
 var import_reactivity2 = require("@vue/reactivity");
 var import_schema = require("koishi-plugin-chatluna/utils/schema");
+
+// src/llm-core/agent/reply_plan.ts
+var import_tools = require("@langchain/core/tools");
+var import_zod = require("zod");
+var REPLY_AGENT_CHAT_MODE = "reply-agent";
+var REPLY_AGENT_FINISH_TOOL = "submit_reply_plan";
+var replyTextSegmentSchema = import_zod.z.object({
+  kind: import_zod.z.enum(["text", "multiline", "voice", "sticker"]),
+  content: import_zod.z.string().min(1)
+});
+var replyImageSegmentSchema = import_zod.z.object({
+  kind: import_zod.z.literal("image"),
+  asset_ref: import_zod.z.string().min(1),
+  alt: import_zod.z.string().optional()
+});
+var replyPlanSegmentSchema = import_zod.z.discriminatedUnion("kind", [
+  replyTextSegmentSchema,
+  replyImageSegmentSchema
+]);
+var replyPlanSchema = import_zod.z.object({
+  segments: import_zod.z.array(replyPlanSegmentSchema).min(1)
+});
+var REPLY_AGENT_FINISH_CONTRACT = {
+  toolName: REPLY_AGENT_FINISH_TOOL,
+  maxRetries: 1,
+  retryMessage: [
+    "Protocol violation: reply-agent must finish by calling submit_reply_plan.",
+    "You may continue thinking, searching, and using tools, but do not answer with plain text or raw JSON.",
+    "Call submit_reply_plan({ segments: [...] }) now.",
+    "segments support: text, multiline, voice, sticker, image.",
+    "text / multiline / voice / sticker require content.",
+    "image requires asset_ref and may include alt. Do not invent image assets."
+  ].join("\n"),
+  errorMessage: "reply-agent protocol violation: the agent finished without calling submit_reply_plan."
+};
+var REPLY_AGENT_DENY_TOOLS = [
+  "bash",
+  "cron",
+  "file_edit",
+  "file_publish",
+  "file_read",
+  "file_write",
+  "glob",
+  "grep",
+  "group_mute",
+  "koishi_command_execute",
+  "memory_add",
+  "memory_delete",
+  "memory_update",
+  "question",
+  "skill",
+  "task",
+  "todos",
+  "user_confirm",
+  "web_post"
+];
+var REPLY_AGENT_DEFAULT_TOOL_MASK = {
+  mode: "deny",
+  allow: [],
+  deny: REPLY_AGENT_DENY_TOOLS,
+  toolCallMask: {
+    mode: "deny",
+    allow: [],
+    deny: REPLY_AGENT_DENY_TOOLS
+  }
+};
+var SubmitReplyPlanTool = class extends import_tools.StructuredTool {
+  static {
+    __name(this, "SubmitReplyPlanTool");
+  }
+  name = REPLY_AGENT_FINISH_TOOL;
+  description = "Submit the final structured reply plan for the user. This is the only valid way to finish reply-agent mode.";
+  returnDirect = true;
+  schema = replyPlanSchema;
+  async _call(_) {
+    return "";
+  }
+};
+function createSubmitReplyPlanTool() {
+  return {
+    id: REPLY_AGENT_FINISH_TOOL,
+    name: REPLY_AGENT_FINISH_TOOL,
+    description: "Submit the final structured reply plan. Use this exactly once as the final step.",
+    selector() {
+      return true;
+    },
+    createTool() {
+      return new SubmitReplyPlanTool();
+    }
+  };
+}
+__name(createSubmitReplyPlanTool, "createSubmitReplyPlanTool");
+
+// src/llm-core/chat/default.ts
 async function defaultFactory(ctx, service) {
   (0, import_schema.modelSchema)(ctx, true);
   (0, import_schema.vectorStoreSchema)(ctx);
@@ -1380,7 +1488,7 @@ async function defaultFactory(ctx, service) {
       return;
     }
     wrapper.getCachedConversations().filter(
-      ([_, conversation]) => conversation?.chatInterface?.chatMode === "plugin" || conversation?.chatInterface?.chatMode === "browsing"
+      ([_, conversation]) => conversation?.chatInterface?.chatMode === "plugin" || conversation?.chatInterface?.chatMode === "browsing" || conversation?.chatInterface?.chatMode === REPLY_AGENT_CHAT_MODE
     ).forEach(async ([id, info]) => {
       const result = await wrapper.clearCache(info.room);
       if (result) {
@@ -1418,6 +1526,27 @@ async function defaultFactory(ctx, service) {
       }
     )
   );
+  service.registerChatChain(
+    REPLY_AGENT_CHAT_MODE,
+    {
+      "zh-CN": "回复 Agent 模式",
+      "en-US": "Reply agent mode"
+    },
+    (params) => ChatLunaPluginChain.fromLLMAndTools(
+      params.model,
+      getReplyAgentTools(service),
+      {
+        variableService: ctx.chatluna.promptRenderer,
+        contextManager: ctx.chatluna.contextManager,
+        preset: params.preset,
+        historyMemory: params.historyMemory,
+        embeddings: params.embeddings,
+        agentMode: params.supportChatChain ? "tool-calling" : "react",
+        toolMask: REPLY_AGENT_DEFAULT_TOOL_MASK,
+        finishContract: REPLY_AGENT_FINISH_CONTRACT
+      }
+    )
+  );
 }
 __name(defaultFactory, "defaultFactory");
 function getTools(service) {
@@ -1425,6 +1554,14 @@ function getTools(service) {
   return (0, import_reactivity2.computed)(() => tools.value.map((name2) => service.getTool(name2)));
 }
 __name(getTools, "getTools");
+function getReplyAgentTools(service) {
+  const tools = service.getTools();
+  return (0, import_reactivity2.computed)(() => [
+    ...tools.value.map((name2) => service.getTool(name2)),
+    createSubmitReplyPlanTool()
+  ]);
+}
+__name(getReplyAgentTools, "getReplyAgentTools");
 
 // src/llm-core/memory/lore_book/index.ts
 var import_koishi_plugin_chatluna3 = require("koishi-plugin-chatluna");
@@ -2926,6 +3063,9 @@ function apply20(ctx, config, chain) {
   chain.middleware("allow_reply", async (session, context) => {
     if (ctx.bots[session.uid]) return 1 /* STOP */;
     context.options.reply_status = false;
+    if (await isAllowedByExternalTrigger()) {
+      return await checkReplyPermission();
+    }
     const content = import_koishi5.h.select(session.elements, "text").join("").trimStart();
     if (session.isDirect && config.allowPrivate && (context.command != null || config.privateChatWithoutCommand)) {
       return await checkReplyPermission();
@@ -2959,6 +3099,15 @@ function apply20(ctx, config, chain) {
       return 2 /* CONTINUE */;
     }
     return 1 /* STOP */;
+    async function isAllowedByExternalTrigger() {
+      return Boolean(
+        await ctx.chatluna.resolveAllowReply({
+          session,
+          context
+        })
+      );
+    }
+    __name(isAllowedByExternalTrigger, "isAllowedByExternalTrigger");
     async function checkReplyPermission() {
       const notReply = await ctx.serial(
         "chatluna/before-check-sender",
@@ -3321,7 +3470,7 @@ function apply25(ctx, config, chain) {
     const conversationId = room.conversationId;
     const userName = inputMessage.name || "unknown";
     const messageId = context.options.messageId;
-    if (room.chatMode === "plugin" && await ctx.chatluna.appendPendingMessage(
+    if ((room.chatMode === "plugin" || room.chatMode === "reply-agent") && await ctx.chatluna.appendPendingMessage(
       conversationId,
       createPendingMessage(session, room, inputMessage),
       room.chatMode
@@ -4732,6 +4881,9 @@ __name(createQueueWaitingHandler, "createQueueWaitingHandler");
 function createToolCallHandler(context, config) {
   return async (tool, arg, content, log) => {
     logger8.debug(`Call tool: ${tool} with ${JSON.stringify(arg)}`);
+    if (context.options.room?.chatMode === "reply-agent") {
+      return;
+    }
     if (content != null && (typeof content === "string" && content.trim().length > 0 || Array.isArray(content) && content.length > 0)) {
       await sendRenderedMessage(
         context,

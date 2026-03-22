@@ -3,6 +3,7 @@ import { ConversationRoom, ConversationRoomGroupInfo, ConversationRoomMemberInfo
 import { ChatLunaService } from './chat';
 import { BaseMessageChunk } from '@langchain/core/messages';
 import { AgentAction, SubagentContext, ToolMask } from 'koishi-plugin-chatluna/llm-core/agent';
+import type { ChainMiddlewareContext } from '../chains';
 export interface ChatEvents {
     'llm-new-token'?: (token: string) => Promise<void>;
     'llm-queue-waiting'?: (size: number) => Promise<void>;
@@ -37,3 +38,8 @@ export interface ToolMaskArg {
     room?: ConversationRoom;
 }
 export type ToolMaskResolver = (arg: ToolMaskArg) => Awaitable<ToolMask | undefined>;
+export interface AllowReplyResolverArg {
+    session: Session;
+    context: ChainMiddlewareContext;
+}
+export type AllowReplyResolver = (arg: AllowReplyResolverArg) => Awaitable<boolean | void>;

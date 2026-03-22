@@ -75,6 +75,14 @@ function createAgentToolMessages(steps) {
   ];
 }
 __name(createAgentToolMessages, "createAgentToolMessages");
+function isReplyAgentTailRole(role) {
+  return role === "ai" || role === "tool" || role === "function";
+}
+__name(isReplyAgentTailRole, "isReplyAgentTailRole");
+function isConversationBoundaryRole(role) {
+  return role === "human" || role === "system";
+}
+__name(isConversationBoundaryRole, "isConversationBoundaryRole");
 var KoishiChatMessageHistory = class extends import_chat_history.BaseChatMessageHistory {
   constructor(ctx, conversationId, _maxMessagesCount) {
     super();
@@ -150,6 +158,78 @@ var KoishiChatMessageHistory = class extends import_chat_history.BaseChatMessage
       return;
     }
     await this.addMessages(createAgentToolMessages(steps));
+  }
+  async normalizeReplyAgentHistory(finalVisibleText, updatedAt = /* @__PURE__ */ new Date()) {
+    await this.loadConversation();
+    const latestId = this._latestId;
+    if (latestId == null) {
+      throw new Error(
+        `reply-agent history normalization failed: conversation has no latestId (${this.conversationId})`
+      );
+    }
+    const messageMap = /* @__PURE__ */ new Map(
+      this._serializedChatHistory.map((message) => [message.id, message])
+    );
+    let current = messageMap.get(latestId);
+    if (!current) {
+      throw new Error(
+        `reply-agent history normalization failed: latest message missing (${this.conversationId})`
+      );
+    }
+    const deletedMessageIds = [];
+    let boundaryParentId = null;
+    while (current) {
+      if (isConversationBoundaryRole(current.role)) {
+        boundaryParentId = current.id;
+        break;
+      }
+      if (!isReplyAgentTailRole(current.role)) {
+        throw new Error(
+          `reply-agent history normalization failed: unsupported tail role ${String(current.role ?? "")} (${this.conversationId})`
+        );
+      }
+      deletedMessageIds.push(current.id);
+      if (current.parent == null) {
+        current = void 0;
+        break;
+      }
+      const parent = messageMap.get(current.parent);
+      if (!parent) {
+        throw new Error(
+          `reply-agent history normalization failed: broken parent chain at ${current.id} (${this.conversationId})`
+        );
+      }
+      current = parent;
+    }
+    if (deletedMessageIds.length === 0) {
+      throw new Error(
+        `reply-agent history normalization failed: no reply-agent tail found (${this.conversationId})`
+      );
+    }
+    const normalizedText = finalVisibleText.trim();
+    await this._ctx.database.remove("chathub_message", {
+      id: deletedMessageIds
+    });
+    let normalizedMessageId = null;
+    if (normalizedText.length > 0) {
+      const normalizedMessage = await serializeMessage(
+        new import_messages.AIMessage(normalizedText),
+        this.conversationId,
+        boundaryParentId
+      );
+      normalizedMessageId = normalizedMessage.id;
+      await this._ctx.database.upsert("chathub_message", [normalizedMessage]);
+    }
+    this._latestId = normalizedMessageId ?? boundaryParentId;
+    this._updatedAt = updatedAt;
+    await this._saveConversation(updatedAt);
+    this._chatHistory = await this._loadMessages();
+    return {
+      deletedMessageIds,
+      latestId: this._latestId,
+      normalizedMessageId,
+      normalizedText
+    };
   }
   async clear() {
     await this._ctx.database.remove("chathub_message", {

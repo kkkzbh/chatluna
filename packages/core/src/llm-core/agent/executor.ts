@@ -1,5 +1,5 @@
 import { CallbackManagerForChainRun } from '@langchain/core/callbacks/manager'
-import { AIMessage, AIMessageChunk } from '@langchain/core/messages'
+import { AIMessage, AIMessageChunk, HumanMessage } from '@langchain/core/messages'
 import { OutputParserException } from '@langchain/core/output_parsers'
 import {
     patchConfig,
@@ -30,6 +30,7 @@ import {
     MessageQueue,
     ScratchpadEntry
 } from './types'
+import type { AgentFinishContract } from './reply_plan'
 
 async function executeTools(
     actions: AgentAction[],
@@ -183,6 +184,8 @@ export async function* runAgent(
     )
     const maxIterations = options.maxIterations ?? 105
     const handleParsingErrors = options.handleParsingErrors ?? true
+    const finishContract = options.finishContract
+    let finishRetries = 0
 
     let iterations = 0
 
@@ -227,6 +230,31 @@ export async function* runAgent(
         checkAborted(signal)
 
         if (isAgentFinish(output)) {
+            if (finishContract != null) {
+                const maxRetries = finishContract.maxRetries ?? 1
+                if (finishRetries < maxRetries) {
+                    finishRetries += 1
+                    const retryMessage = new HumanMessage(
+                        finishContract.retryMessage
+                    )
+                    scratchpad.push({
+                        type: 'human_update',
+                        messages: [retryMessage]
+                    })
+                    yield {
+                        type: 'human-update',
+                        messages: [retryMessage]
+                    }
+                    iterations += 1
+                    continue
+                }
+
+                throw new Error(
+                    finishContract.errorMessage ??
+                        `Agent finished without calling ${finishContract.toolName}.`
+                )
+            }
+
             const message = output.returnValues['message'] as AIMessageChunk
 
             yield {
@@ -291,6 +319,15 @@ export async function* runAgent(
         const tool = last ? toolMap[last.action.tool?.toLowerCase()] : undefined
 
         if (tool?.returnDirect && last != null) {
+            const message = new AIMessage({
+                content: toOutput(last.observation),
+                additional_kwargs: {
+                    chatluna_agent_terminal_tool: {
+                        name: last.action.tool,
+                        input: last.action.toolInput
+                    }
+                }
+            })
             const pending = options.messageQueue?.drain() ?? []
             if (pending.length > 0) {
                 yield {
@@ -303,7 +340,8 @@ export async function* runAgent(
                 type: 'done',
                 output: toOutput(last.observation),
                 log: last.action.log,
-                steps
+                steps,
+                message
             }
 
             return
@@ -341,6 +379,8 @@ export class AgentExecutor extends BaseChain<ChainValues, AgentExecutorOutput> {
 
     handleToolRuntimeErrors?: (e: Error) => string
 
+    finishContract?: AgentFinishContract
+
     constructor(fields: AgentExecutorInput) {
         super(fields)
         this.agent = fields.agent
@@ -349,6 +389,7 @@ export class AgentExecutor extends BaseChain<ChainValues, AgentExecutorOutput> {
         this.maxIterations = fields.maxIterations
         this.handleParsingErrors = fields.handleParsingErrors
         this.handleToolRuntimeErrors = fields.handleToolRuntimeErrors
+        this.finishContract = fields.finishContract
     }
 
     get inputKeys() {
@@ -382,7 +423,8 @@ export class AgentExecutor extends BaseChain<ChainValues, AgentExecutorOutput> {
             maxIterations: this.maxIterations,
             handleParsingErrors: this.handleParsingErrors,
             handleToolRuntimeErrors: this.handleToolRuntimeErrors,
-            config
+            config,
+            finishContract: this.finishContract
         })
 
         for await (const event of runner) {
@@ -439,6 +481,7 @@ export interface RunAgentOptions {
     handleParsingErrors?: boolean | string | ((e: Error) => string)
     handleToolRuntimeErrors?: (e: Error) => string
     config?: RunnableConfig
+    finishContract?: AgentFinishContract
 }
 
 export interface AgentExecutorInput extends ChainInputs {
@@ -448,6 +491,7 @@ export interface AgentExecutorInput extends ChainInputs {
     maxIterations?: number
     handleParsingErrors?: boolean | string | ((e: Error) => string)
     handleToolRuntimeErrors?: (e: Error) => string
+    finishContract?: AgentFinishContract
 }
 
 export interface AgentExecutorOutput extends ChainValues {

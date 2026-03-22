@@ -1,4 +1,9 @@
-import { BaseMessage } from '@langchain/core/messages'
+import {
+    AIMessage,
+    BaseMessage,
+    FunctionMessage,
+    ToolMessage
+} from '@langchain/core/messages'
 import { ChainValues } from '@langchain/core/utils/types'
 import { Session } from 'koishi'
 import {
@@ -15,7 +20,9 @@ import {
     AgentAction,
     AgentExecutor,
     createAgentExecutor,
+    ensureToolMaskAllows,
     createToolsRef,
+    intersectToolMasks,
     ToolMask
 } from 'koishi-plugin-chatluna/llm-core/agent'
 import { BufferMemory } from 'koishi-plugin-chatluna/llm-core/memory/langchain'
@@ -34,6 +41,7 @@ import {
     sanitizeToolLogValue
 } from 'koishi-plugin-chatluna/utils/string'
 import type { ChatLunaContextManagerService } from 'koishi-plugin-chatluna/llm-core/prompt'
+import type { AgentFinishContract } from '../agent/reply_plan'
 
 export interface ChatLunaPluginChainInput {
     prompt: ChatLunaChatPrompt
@@ -44,6 +52,111 @@ export interface ChatLunaPluginChainInput {
     preset: ComputedRef<PresetTemplate>
     contextManager: ChatLunaContextManagerService
     toolMask?: ToolMask
+    finishContract?: AgentFinishContract
+}
+
+function cloneAIMessage(
+    message: AIMessage,
+    toolCalls: AIMessage['tool_calls']
+): AIMessage {
+    return new AIMessage({
+        content: message.content,
+        id: message.id,
+        name: message.name,
+        additional_kwargs: { ...message.additional_kwargs },
+        response_metadata: { ...message.response_metadata },
+        tool_calls: toolCalls,
+        invalid_tool_calls: [],
+        usage_metadata: message.usage_metadata
+    })
+}
+
+function filterHistoricalMessages(
+    messages: BaseMessage[],
+    allowedToolNames: string[]
+): BaseMessage[] {
+    const allowedNames = new Set(allowedToolNames)
+    const allowedToolCallIds = new Set<string>()
+    const filtered: BaseMessage[] = []
+
+    for (const message of messages) {
+        const role = message.getType()
+
+        if (role === 'ai') {
+            const aiMessage = message as AIMessage
+            const nextToolCalls =
+                aiMessage.tool_calls?.filter(
+                    (toolCall) =>
+                        toolCall?.name != null &&
+                        allowedNames.has(toolCall.name)
+                ) ?? []
+
+            nextToolCalls.forEach((toolCall) => {
+                if (toolCall.id) {
+                    allowedToolCallIds.add(toolCall.id)
+                }
+            })
+
+            if (nextToolCalls.length < 1) {
+                if (
+                    typeof aiMessage.content === 'string'
+                        ? aiMessage.content.length > 0
+                        : aiMessage.content.length > 0
+                ) {
+                    filtered.push(cloneAIMessage(aiMessage, []))
+                }
+                continue
+            }
+
+            filtered.push(cloneAIMessage(aiMessage, nextToolCalls))
+            continue
+        }
+
+        if (role === 'tool') {
+            const toolMessage = message as ToolMessage
+            if (
+                toolMessage.tool_call_id != null &&
+                allowedToolCallIds.has(toolMessage.tool_call_id)
+            ) {
+                filtered.push(toolMessage)
+            }
+            continue
+        }
+
+        if (role === 'function') {
+            const functionMessage = message as FunctionMessage
+            if (
+                functionMessage.name != null &&
+                allowedNames.has(functionMessage.name)
+            ) {
+                filtered.push(functionMessage)
+            }
+            continue
+        }
+
+        filtered.push(message)
+    }
+
+    return filtered
+}
+
+function resolveAllowedHistoryToolNames(
+    toolNames: string[],
+    toolMask: ToolMask,
+    finishToolName?: string
+): string[] {
+    const allowed =
+        toolMask.mode === 'all'
+            ? toolNames
+            : toolMask.mode === 'allow'
+              ? toolNames.filter((name) => toolMask.allow.includes(name))
+              : toolNames.filter((name) => !toolMask.deny.includes(name))
+
+    if (finishToolName != null && !allowed.includes(finishToolName)) {
+        allowed.push(finishToolName)
+    }
+
+    return allowed
 }
 
 export class ChatLunaPluginChain
@@ -74,6 +187,8 @@ export class ChatLunaPluginChain
 
     toolMask?: ToolMask
 
+    finishContract?: AgentFinishContract
+
     private _toolsRef: ReturnType<typeof createToolsRef>
 
     constructor({
@@ -85,7 +200,8 @@ export class ChatLunaPluginChain
         embeddings,
         agentMode,
         contextManager,
-        toolMask
+        toolMask,
+        finishContract
     }: ChatLunaPluginChainInput & {
         tools: ComputedRef<ChatLunaTool[]>
         llm: ChatLunaChatModel
@@ -101,6 +217,7 @@ export class ChatLunaPluginChain
         this.preset = preset
         this.contextManager = contextManager
         this.toolMask = toolMask
+        this.finishContract = finishContract
 
         this._toolsRef = createToolsRef({
             tools: this.tools,
@@ -121,7 +238,8 @@ export class ChatLunaPluginChain
             agentMode,
             variableService,
             contextManager,
-            toolMask
+            toolMask,
+            finishContract
         }: Omit<ChatLunaPluginChainInput, 'prompt'>
     ): ChatLunaPluginChain {
         const prompt = new ChatLunaChatPrompt({
@@ -144,7 +262,8 @@ export class ChatLunaPluginChain
             preset,
             variableService,
             contextManager,
-            toolMask
+            toolMask,
+            finishContract
         })
     }
 
@@ -156,6 +275,7 @@ export class ChatLunaPluginChain
             agentMode: this.agentMode,
             returnIntermediateSteps: this.agentMode === 'tool-calling',
             handleParsingErrors: true,
+            finishContract: this.finishContract,
             instructions: computed(() => {
                 if (this.agentMode === 'react') {
                     return this.preset.value.config.reActInstruction
@@ -186,12 +306,31 @@ export class ChatLunaPluginChain
             input: message
         }
         const nextVars = Object.assign({}, variables ?? {})
-        const toolMask = subagentContext?.toolMask ?? callToolMask
+        const finishToolName = this.finishContract?.toolName
+        const toolMask = ensureToolMaskAllows(
+            intersectToolMasks(
+            this.tools.value
+                .map((tool) => tool.name)
+                .filter((name): name is string => Boolean(name)),
+            this.toolMask,
+            subagentContext?.toolMask ?? callToolMask
+            ),
+            finishToolName ? [finishToolName] : []
+        )
 
         const chatHistory = this.historyMemory
             .chatHistory as KoishiChatMessageHistory
 
-        const messages = await chatHistory.getMessages()
+        const messages = filterHistoricalMessages(
+            await chatHistory.getMessages(),
+            resolveAllowedHistoryToolNames(
+                this.tools.value
+                    .map((tool) => tool.name)
+                    .filter((name): name is string => Boolean(name)),
+                toolMask,
+                finishToolName
+            )
+        )
 
         if (this.agentMode === 'react') {
             await chatHistory.removeAllToolAndFunctionMessages()

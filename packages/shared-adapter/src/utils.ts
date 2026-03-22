@@ -100,9 +100,11 @@ export async function langchainMessageToOpenAIMessage(
     const normalizedModel = model ? normalizeOpenAIModelName(model) : model
     for (const rawMessage of messages) {
         const role = messageTypeToOpenAIRole(rawMessage.getType())
+        const content =
+            rawMessage.content == null ? '' : rawMessage.content
 
         const msg = {
-            content: rawMessage.content === '' ? null : rawMessage.content,
+            content,
             name:
                 role === 'assistant' || role === 'tool'
                     ? rawMessage.name

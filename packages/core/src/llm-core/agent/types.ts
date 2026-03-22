@@ -282,3 +282,58 @@ export function applyToolMask(name: string, mask?: ToolMask) {
 
     return !mask.deny.includes(name)
 }
+
+export function intersectToolMasks(
+    toolNames: string[],
+    ...masks: (ToolMask | undefined)[]
+): ToolMask | undefined {
+    const activeMasks = masks.filter((mask) => mask != null)
+
+    if (activeMasks.length < 1) {
+        return undefined
+    }
+
+    const allowed = toolNames.filter((name) =>
+        activeMasks.every((mask) => applyToolMask(name, mask))
+    )
+    const toolCallMasks = activeMasks
+        .map((mask) => mask.toolCallMask)
+        .filter((mask) => mask != null)
+
+    return {
+        mode: 'allow',
+        allow: allowed,
+        deny: [],
+        ...(toolCallMasks.length > 0
+            ? {
+                  toolCallMask: intersectToolMasks(allowed, ...toolCallMasks)
+              }
+            : {})
+    }
+}
+
+export function ensureToolMaskAllows(
+    mask: ToolMask | undefined,
+    toolNames: string[]
+): ToolMask | undefined {
+    if (mask == null || mask.mode !== 'allow') {
+        return mask
+    }
+
+    const allow = Array.from(new Set([...mask.allow, ...toolNames]))
+    const toolCallMask =
+        mask.toolCallMask == null || mask.toolCallMask.mode !== 'allow'
+            ? mask.toolCallMask
+            : {
+                  ...mask.toolCallMask,
+                  allow: Array.from(
+                      new Set([...mask.toolCallMask.allow, ...toolNames])
+                  )
+              }
+
+    return {
+        ...mask,
+        allow,
+        toolCallMask
+    }
+}

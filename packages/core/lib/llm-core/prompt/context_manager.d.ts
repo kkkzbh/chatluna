@@ -123,6 +123,17 @@ export interface InjectPromptContextOptions {
     once?: boolean;
     priority?: number;
 }
+export interface PlainPromptMessage {
+    role?: 'system' | 'human' | 'ai' | 'assistant';
+    type?: 'system' | 'human' | 'ai' | 'assistant';
+    content: unknown;
+    name?: string;
+    id?: string;
+    tool_calls?: unknown;
+    tool_call_id?: string;
+    additional_kwargs?: Record<string, unknown>;
+    response_metadata?: Record<string, unknown>;
+}
 export interface CollectPromptContextOptions {
     variables?: ChainValues;
     configurable?: RenderConfigurable;

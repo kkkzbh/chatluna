@@ -7,7 +7,10 @@ import { Context, Session } from 'koishi'
 import { parseRawModelName } from 'koishi-plugin-chatluna/llm-core/utils/count_tokens'
 import { BufferMemory } from 'koishi-plugin-chatluna/llm-core/memory/langchain'
 import { logger } from 'koishi-plugin-chatluna'
-import { KoishiChatMessageHistory } from 'koishi-plugin-chatluna/llm-core/memory/message'
+import {
+    KoishiChatMessageHistory,
+    type ReplyAgentHistoryNormalizationResult
+} from 'koishi-plugin-chatluna/llm-core/memory/message'
 import { ChatLunaChatModel } from 'koishi-plugin-chatluna/llm-core/platform/model'
 import { ModelInfo } from 'koishi-plugin-chatluna/llm-core/platform/types'
 import { PresetTemplate } from 'koishi-plugin-chatluna/llm-core/prompt'
@@ -390,6 +393,20 @@ export class ChatInterface {
         await this._chatHistory.clear()
 
         await this._chain?.value?.model.clearContext(this._input.conversationId)
+    }
+
+    async normalizeReplyAgentHistory(
+        finalVisibleText: string,
+        updatedAt: Date = new Date()
+    ): Promise<ReplyAgentHistoryNormalizationResult> {
+        if (this._chatHistory == null) {
+            await this._createChatHistory()
+        }
+
+        return this._chatHistory.normalizeReplyAgentHistory(
+            finalVisibleText,
+            updatedAt
+        )
     }
 
     async compressContext(force = false): Promise<CompressContextResult> {

@@ -1,4 +1,9 @@
-import { BaseMessage, HumanMessage } from '@langchain/core/messages'
+import {
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage
+} from '@langchain/core/messages'
 import { Document } from '@langchain/core/documents'
 import { ChainValues } from '@langchain/core/utils/types'
 import { AuthorsNote, PresetTemplate, RoleBook } from './type'
@@ -214,6 +219,18 @@ export interface InjectPromptContextOptions {
     once?: boolean
 
     priority?: number
+}
+
+export interface PlainPromptMessage {
+    role?: 'system' | 'human' | 'ai' | 'assistant'
+    type?: 'system' | 'human' | 'ai' | 'assistant'
+    content: unknown
+    name?: string
+    id?: string
+    tool_calls?: unknown
+    tool_call_id?: string
+    additional_kwargs?: Record<string, unknown>
+    response_metadata?: Record<string, unknown>
 }
 
 // ---------------------------------------------------------------------------
@@ -741,6 +758,70 @@ export class ChatLunaContextManagerService {
 // Utility
 // ---------------------------------------------------------------------------
 
+function isPlainPromptMessage(input: unknown): input is PlainPromptMessage {
+    if (input == null || typeof input !== 'object' || Array.isArray(input)) {
+        return false
+    }
+
+    if (!('content' in input)) {
+        return false
+    }
+
+    const role =
+        typeof (input as PlainPromptMessage).role === 'string'
+            ? (input as PlainPromptMessage).role
+            : typeof (input as PlainPromptMessage).type === 'string'
+              ? (input as PlainPromptMessage).type
+              : undefined
+
+    return (
+        role === 'system' ||
+        role === 'human' ||
+        role === 'ai' ||
+        role === 'assistant'
+    )
+}
+
+function createMessageFromPlainObject(input: PlainPromptMessage): BaseMessage[] {
+    const content =
+        typeof input.content === 'string' ? input.content : String(input.content ?? '')
+    if (content.trim().length < 1) return []
+
+    const role = input.role ?? input.type
+    const baseFields = {
+        content,
+        name: input.name,
+        id: input.id,
+        additional_kwargs: input.additional_kwargs,
+        response_metadata: input.response_metadata
+    }
+
+    switch (role) {
+        case 'system':
+            return [new SystemMessage(baseFields)]
+        case 'human':
+            return [new HumanMessage(baseFields)]
+        case 'ai':
+        case 'assistant':
+            return [
+                new AIMessage({
+                    ...baseFields,
+                    tool_calls: Array.isArray(input.tool_calls)
+                        ? (input.tool_calls as AIMessage['tool_calls'])
+                        : undefined,
+                    additional_kwargs: {
+                        ...(input.additional_kwargs ?? {}),
+                        ...(input.tool_call_id != null
+                            ? { tool_call_id: input.tool_call_id }
+                            : {})
+                    }
+                })
+            ]
+        default:
+            return []
+    }
+}
+
 export function toMessages(input: unknown): BaseMessage[] {
     if (input == null) return []
 
@@ -749,6 +830,10 @@ export function toMessages(input: unknown): BaseMessage[] {
     }
 
     if (input instanceof BaseMessage) return [input]
+
+    if (isPlainPromptMessage(input)) {
+        return createMessageFromPlainObject(input)
+    }
 
     if (typeof input === 'string') {
         if (input.trim().length < 1) return []

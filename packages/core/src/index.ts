@@ -16,6 +16,7 @@ import { defaultFactory } from './llm-core/chat/default'
 import { apply as loreBook } from './llm-core/memory/lore_book'
 import { apply as authorsNote } from './llm-core/memory/authors_note'
 import { middleware } from './middleware'
+import './services/types'
 import { deleteConversationRoom } from 'koishi-plugin-chatluna/chains'
 import { ConversationRoom } from './types'
 

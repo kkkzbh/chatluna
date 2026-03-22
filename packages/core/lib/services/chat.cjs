@@ -1640,12 +1640,59 @@ var ChatLunaContextManagerService = class _ChatLunaContextManagerService {
     }
   }
 };
+function isPlainPromptMessage(input) {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) {
+    return false;
+  }
+  if (!("content" in input)) {
+    return false;
+  }
+  const role = typeof input.role === "string" ? input.role : typeof input.type === "string" ? input.type : void 0;
+  return role === "system" || role === "human" || role === "ai" || role === "assistant";
+}
+__name(isPlainPromptMessage, "isPlainPromptMessage");
+function createMessageFromPlainObject(input) {
+  const content = typeof input.content === "string" ? input.content : String(input.content ?? "");
+  if (content.trim().length < 1) return [];
+  const role = input.role ?? input.type;
+  const baseFields = {
+    content,
+    name: input.name,
+    id: input.id,
+    additional_kwargs: input.additional_kwargs,
+    response_metadata: input.response_metadata
+  };
+  switch (role) {
+    case "system":
+      return [new import_messages2.SystemMessage(baseFields)];
+    case "human":
+      return [new import_messages2.HumanMessage(baseFields)];
+    case "ai":
+    case "assistant":
+      return [
+        new import_messages2.AIMessage({
+          ...baseFields,
+          tool_calls: Array.isArray(input.tool_calls) ? input.tool_calls : void 0,
+          additional_kwargs: {
+            ...input.additional_kwargs ?? {},
+            ...input.tool_call_id != null ? { tool_call_id: input.tool_call_id } : {}
+          }
+        })
+      ];
+    default:
+      return [];
+  }
+}
+__name(createMessageFromPlainObject, "createMessageFromPlainObject");
 function toMessages(input) {
   if (input == null) return [];
   if (Array.isArray(input)) {
     return input.flatMap((item) => toMessages(item));
   }
   if (input instanceof import_messages2.BaseMessage) return [input];
+  if (isPlainPromptMessage(input)) {
+    return createMessageFromPlainObject(input);
+  }
   if (typeof input === "string") {
     if (input.trim().length < 1) return [];
     return [new import_messages2.HumanMessage(input)];
@@ -1686,6 +1733,7 @@ var ChatLunaService = class extends import_koishi4.Service {
   _promptRenderer;
   _contextManager;
   _toolMaskResolvers = {};
+  _allowReplyResolvers = /* @__PURE__ */ new Map();
   async installPlugin(plugin) {
     const platformName = plugin.platformName;
     if (this._plugins[platformName]) {
@@ -1761,6 +1809,21 @@ var ChatLunaService = class extends import_koishi4.Service {
       }
     }
   }
+  registerAllowReplyResolver(name, resolver) {
+    this._allowReplyResolvers.set(name, resolver);
+    return () => {
+      this._allowReplyResolvers.delete(name);
+    };
+  }
+  async resolveAllowReply(arg) {
+    for (const resolver of this._allowReplyResolvers.values()) {
+      const allowed = await resolver(arg);
+      if (allowed) {
+        return true;
+      }
+    }
+    return false;
+  }
   getPlugin(platformName) {
     return this._plugins[platformName];
   }
@@ -1808,6 +1871,14 @@ var ChatLunaService = class extends import_koishi4.Service {
   async compressContext(room, force = false) {
     const chatBridger = this._chatInterfaceWrapper ?? this._createChatInterfaceWrapper();
     return chatBridger.compressContext(room, force);
+  }
+  async normalizeReplyAgentHistory(room, finalVisibleText, updatedAt = /* @__PURE__ */ new Date()) {
+    const chatBridger = this._chatInterfaceWrapper ?? this._createChatInterfaceWrapper();
+    return chatBridger.normalizeReplyAgentHistory(
+      room,
+      finalVisibleText,
+      updatedAt
+    );
   }
   getCachedInterfaceWrapper() {
     return this._chatInterfaceWrapper;
@@ -2434,6 +2505,7 @@ ${reasoningContent}`
       }
       return {
         content: aiMessage.content,
+        additional_kwargs: aiMessage.additional_kwargs,
         additionalReplyMessages
       };
     } finally {
@@ -2461,14 +2533,14 @@ ${reasoningContent}`
     return true;
   }
   async appendPendingMessage(conversationId, message, chatMode) {
-    if (chatMode != null && chatMode !== "plugin") {
+    if (chatMode != null && chatMode !== "plugin" && chatMode !== "reply-agent") {
       return false;
     }
     const activeRequest = this._activeRequests.get(conversationId);
     if (activeRequest == null) {
       return false;
     }
-    if (activeRequest.chatMode !== "plugin") {
+    if (activeRequest.chatMode !== "plugin" && activeRequest.chatMode !== "reply-agent") {
       return false;
     }
     if (activeRequest.lastDecision != null) {
@@ -2545,6 +2617,21 @@ ${reasoningContent}`
         this._conversationQueue.remove(conversationId, requestId),
         this._modelQueue.remove(platform, modelRequestId)
       ]);
+    }
+  }
+  async normalizeReplyAgentHistory(room, finalVisibleText, updatedAt = /* @__PURE__ */ new Date()) {
+    const { conversationId } = room;
+    const requestId = (0, import_crypto.randomUUID)();
+    try {
+      await this._conversationQueue.add(conversationId, requestId);
+      await this._conversationQueue.wait(conversationId, requestId, 0);
+      const chatInterface = await this.query(room, true);
+      return await chatInterface.normalizeReplyAgentHistory(
+        finalVisibleText,
+        updatedAt
+      );
+    } finally {
+      await this._conversationQueue.remove(conversationId, requestId);
     }
   }
   async clearCache(room) {

@@ -88,7 +88,7 @@ async function initModel(ctx, service, llmPlatform, llmModelName) {
 }
 __name(initModel, "initModel");
 function supportChatMode(modelInfo, chatMode) {
-  if (!modelInfo.capabilities.includes(ModelCapabilities.ToolCall) && chatMode === "plugin") {
+  if (!modelInfo.capabilities.includes(ModelCapabilities.ToolCall) && (chatMode === "plugin" || chatMode === "reply-agent")) {
     return false;
   }
   return true;
@@ -657,6 +657,15 @@ var ChatInterface = class {
     );
     await this._chatHistory.clear();
     await this._chain?.value?.model.clearContext(this._input.conversationId);
+  }
+  async normalizeReplyAgentHistory(finalVisibleText, updatedAt = /* @__PURE__ */ new Date()) {
+    if (this._chatHistory == null) {
+      await this._createChatHistory();
+    }
+    return this._chatHistory.normalizeReplyAgentHistory(
+      finalVisibleText,
+      updatedAt
+    );
   }
   async compressContext(force = false) {
     const wrapper = await this.getChatLunaLLMChainWrapper();

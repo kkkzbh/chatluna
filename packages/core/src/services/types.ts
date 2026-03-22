@@ -12,6 +12,7 @@ import {
     SubagentContext,
     ToolMask
 } from 'koishi-plugin-chatluna/llm-core/agent'
+import type { ChainMiddlewareContext } from '../chains'
 
 export interface ChatEvents {
     'llm-new-token'?: (token: string) => Promise<void>
@@ -63,3 +64,12 @@ export interface ToolMaskArg {
 export type ToolMaskResolver = (
     arg: ToolMaskArg
 ) => Awaitable<ToolMask | undefined>
+
+export interface AllowReplyResolverArg {
+    session: Session
+    context: ChainMiddlewareContext
+}
+
+export type AllowReplyResolver = (
+    arg: AllowReplyResolverArg
+) => Awaitable<boolean | void>
