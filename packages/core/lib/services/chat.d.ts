@@ -24,7 +24,7 @@ import { ChatLunaPromptRenderService } from './prompt_renderer';
 import { ComputedRef } from '@vue/reactivity';
 import { Embeddings } from '@langchain/core/embeddings';
 import { ChatLunaContextManagerService } from 'koishi-plugin-chatluna/llm-core/prompt';
-import type { ReplyAgentHistoryNormalizationResult } from 'koishi-plugin-chatluna/llm-core/memory/message';
+import type { ResearchReplyHistoryNormalizationResult } from 'koishi-plugin-chatluna/llm-core/memory/message';
 export declare class ChatLunaService extends Service<Config> {
     readonly ctx: Context;
     private _plugins;
@@ -59,7 +59,7 @@ export declare class ChatLunaService extends Service<Config> {
     queryInterfaceWrapper(room: ConversationRoom, autoCreate?: boolean): ChatInterfaceWrapper;
     clearChatHistory(room: ConversationRoom): Promise<void>;
     compressContext(room: ConversationRoom, force?: boolean): Promise<import("../llm-core/chat/infinite_context").CompressContextResult>;
-    normalizeReplyAgentHistory(room: ConversationRoom, finalVisibleText: string, updatedAt?: Date): Promise<ReplyAgentHistoryNormalizationResult>;
+    normalizeResearchReplyHistory(room: ConversationRoom, finalVisibleText: string, updatedAt?: Date): Promise<ResearchReplyHistoryNormalizationResult>;
     getCachedInterfaceWrapper(): ChatInterfaceWrapper;
     clearCache(room: ConversationRoom): Promise<boolean>;
     createChatModel(platform: string, modelName: string): Promise<ComputedRef<ChatLunaChatModel | undefined>>;
@@ -121,7 +121,7 @@ declare class ChatInterfaceWrapper {
     query(room: ConversationRoom, create?: boolean): Promise<ChatInterface>;
     clearChatHistory(room: ConversationRoom): Promise<void>;
     compressContext(room: ConversationRoom, force?: boolean): Promise<import("../llm-core/chat/infinite_context").CompressContextResult>;
-    normalizeReplyAgentHistory(room: ConversationRoom, finalVisibleText: string, updatedAt?: Date): Promise<ReplyAgentHistoryNormalizationResult>;
+    normalizeResearchReplyHistory(room: ConversationRoom, finalVisibleText: string, updatedAt?: Date): Promise<ResearchReplyHistoryNormalizationResult>;
     clearCache(room: ConversationRoom): Promise<boolean>;
     getCachedConversations(): [string, ChatHubChatBridgerInfo][];
     delete(room: ConversationRoom): Promise<void>;

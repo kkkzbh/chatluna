@@ -4,7 +4,7 @@ import { AIMessage, HumanMessage } from '@langchain/core/messages';
 import { ChainValues } from '@langchain/core/utils/types';
 import { ComputedRef } from '@vue/reactivity';
 import { Context, Session } from 'koishi';
-import { type ReplyAgentHistoryNormalizationResult } from 'koishi-plugin-chatluna/llm-core/memory/message';
+import { type ResearchReplyHistoryNormalizationResult } from 'koishi-plugin-chatluna/llm-core/memory/message';
 import { PresetTemplate } from 'koishi-plugin-chatluna/llm-core/prompt';
 import { ConversationRoom } from '../../types';
 import { ChatLunaLLMCallArg, ChatLunaLLMChainWrapper } from '../chain/base';
@@ -31,7 +31,7 @@ export declare class ChatInterface {
     get preset(): ComputedRef<PresetTemplate>;
     delete(ctx: Context, room: ConversationRoom): Promise<void>;
     clearChatHistory(): Promise<void>;
-    normalizeReplyAgentHistory(finalVisibleText: string, updatedAt?: Date): Promise<ReplyAgentHistoryNormalizationResult>;
+    normalizeResearchReplyHistory(finalVisibleText: string, updatedAt?: Date): Promise<ResearchReplyHistoryNormalizationResult>;
     compressContext(force?: boolean): Promise<CompressContextResult>;
     private _createChatHistory;
     private _createHistoryMemory;

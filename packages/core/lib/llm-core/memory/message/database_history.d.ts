@@ -2,7 +2,29 @@ import { Context } from 'koishi';
 import { AIMessage, BaseMessage, MessageContent, MessageType } from '@langchain/core/messages';
 import { BaseChatMessageHistory } from '@langchain/core/chat_history';
 import type { AgentStep } from '../../agent/types';
-export interface ReplyAgentHistoryNormalizationResult {
+export declare const INTERNAL_ADDITIONAL_ARG_PREFIX = "__chatluna_internal_";
+export declare const TOOL_MEMORY_STORAGE_KEY = "__chatluna_internal_tool_memory_v1";
+export declare const DEFAULT_TOOL_MEMORY_MAX_ENTRIES = 3;
+export interface ToolMemoryEntry {
+    turnId: string;
+    createdAt: string;
+    toolName: string;
+    inputDigest: string;
+    snippetFormat: 'text' | 'json';
+    snippet: string;
+    freshnessHint: string;
+}
+export interface ToolMemoryStoreOptions {
+    storageKey?: string;
+    maxEntries?: number;
+}
+export declare function parseToolMemoryEntries(raw: string | null | undefined): ToolMemoryEntry[];
+export declare function buildToolMemoryEntriesFromSteps(steps: AgentStep[], options: {
+    turnId: string;
+    createdAt?: Date;
+    finishToolName?: string;
+}): ToolMemoryEntry[];
+export interface ResearchReplyHistoryNormalizationResult {
     deletedMessageIds: string[];
     latestId: string | null;
     normalizedMessageId: string | null;
@@ -26,7 +48,7 @@ export declare class KoishiChatMessageHistory extends BaseChatMessageHistory {
     addMessage(message: BaseMessage): Promise<void>;
     addMessages(messages: BaseMessage[]): Promise<void>;
     addAgentToolBatch(steps: AgentStep[]): Promise<void>;
-    normalizeReplyAgentHistory(finalVisibleText: string, updatedAt?: Date): Promise<ReplyAgentHistoryNormalizationResult>;
+    normalizeResearchReplyHistory(finalVisibleText: string, updatedAt?: Date): Promise<ResearchReplyHistoryNormalizationResult>;
     clear(): Promise<void>;
     delete(): Promise<void>;
     updateAdditionalArg(key: string, value: string): Promise<void>;
@@ -35,6 +57,7 @@ export declare class KoishiChatMessageHistory extends BaseChatMessageHistory {
         [key: string]: string;
     }>;
     deleteAdditionalArg(key: string): Promise<void>;
+    storeToolMemoryEntries(entries: ToolMemoryEntry[], options?: ToolMemoryStoreOptions): Promise<void>;
     removeAllToolAndFunctionMessages(): Promise<void>;
     overrideAdditionalArgs(kwargs: {
         [key: string]: string;

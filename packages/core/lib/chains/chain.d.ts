@@ -46,7 +46,7 @@ export declare class ChainMiddleware {
     constructor(name: string, execute: ChainMiddlewareFunction, graph: ChatChainDependencyGraph);
     before<T extends keyof ChainMiddlewareName>(name: T): this;
     after<T extends keyof ChainMiddlewareName>(name: T): this;
-    run(session: Session, options: ChainMiddlewareContext): Promise<string | ChainMiddlewareRunStatus | h[] | h[][]>;
+    run(session: Session, options: ChainMiddlewareContext): Promise<string | h[] | ChainMiddlewareRunStatus | h[][]>;
 }
 export interface ChainMiddlewareContext {
     config: Config;

@@ -14,10 +14,22 @@ import { BaseMemory } from '@langchain/core/memory';
 import type { PostHandler } from '../../utils/types';
 import type { AgentEvent, MessageQueue } from '../agent/types';
 export type SystemPrompts = BaseMessage[];
+export interface ToolMemoryPersistencePolicy {
+    enabled: boolean;
+    storageKey: string;
+    maxEntries: number;
+    finishToolName?: string;
+}
+export interface ChatHistoryPersistencePolicy {
+    persistIntermediateAgentMessages: boolean;
+    toolMemory?: ToolMemoryPersistencePolicy | null;
+}
+export declare const DEFAULT_CHAT_HISTORY_PERSISTENCE_POLICY: ChatHistoryPersistencePolicy;
 export declare abstract class ChatLunaLLMChainWrapper {
     abstract call(arg: ChatLunaLLMCallArg): Promise<ChainValues>;
     abstract historyMemory: BufferMemory;
     abstract get model(): ChatLunaChatModel;
+    getHistoryPersistencePolicy(): ChatHistoryPersistencePolicy;
 }
 export interface ChatLunaLLMCallArg {
     message: HumanMessage;
