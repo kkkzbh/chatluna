@@ -58,6 +58,7 @@ import { chatLunaFetch, ws } from 'koishi-plugin-chatluna/utils/request'
 import * as fetchType from 'undici/types/fetch'
 import { ClientOptions, WebSocket } from 'ws'
 import { ClientRequestArgs } from 'http'
+import { serializeQqbotHumanMessageContent } from '../utils/qqbot_speaker'
 import { Config } from '../config'
 import { DefaultRenderer, Renderer } from 'koishi-plugin-chatluna'
 import type { PostHandler } from '../utils/types'
@@ -1059,7 +1060,10 @@ class ChatInterfaceWrapper {
             this._activeRequests.set(conversationId, activeRequest)
 
             const humanMessage = new HumanMessage({
-                content: message.content,
+                content: serializeQqbotHumanMessageContent(
+                    message.content,
+                    message.additional_kwargs
+                ),
                 name: message.name,
                 id: session.userId,
                 additional_kwargs: {
