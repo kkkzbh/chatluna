@@ -3455,7 +3455,7 @@ import { randomUUID } from "crypto";
 import { HumanMessage } from "@langchain/core/messages";
 
 // src/utils/qqbot_speaker.ts
-import { isMessageContentText as isMessageContentText2 } from "./utils/langchain.cjs";
+import { isMessageContentText as isMessageContentText2 } from "koishi-plugin-chatluna/utils/langchain";
 function formatSpeakerName(name2) {
   return JSON.stringify(name2);
 }

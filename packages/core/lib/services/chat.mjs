@@ -1129,7 +1129,7 @@ User's message: ${currentText}`;
 import { chatLunaFetch, ws } from "koishi-plugin-chatluna/utils/request";
 
 // src/utils/qqbot_speaker.ts
-import { isMessageContentText as isMessageContentText2 } from "../utils/langchain.cjs";
+import { isMessageContentText as isMessageContentText2 } from "koishi-plugin-chatluna/utils/langchain";
 function formatSpeakerName(name) {
   return JSON.stringify(name);
 }

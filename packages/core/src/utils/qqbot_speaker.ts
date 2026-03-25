@@ -1,5 +1,5 @@
 import type { MessageContent, MessageContentComplex } from '@langchain/core/messages'
-import { isMessageContentText } from './langchain.js'
+import { isMessageContentText } from 'koishi-plugin-chatluna/utils/langchain'
 
 type QqbotSpeakerFormatMeta = {
     version?: string

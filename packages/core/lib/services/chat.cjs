@@ -1115,7 +1115,7 @@ User's message: ${currentText}`;
 var import_request = require("koishi-plugin-chatluna/utils/request");
 
 // src/utils/qqbot_speaker.ts
-var import_langchain = require("./langchain.js");
+var import_langchain = require("koishi-plugin-chatluna/utils/langchain");
 function formatSpeakerName(name) {
   return JSON.stringify(name);
 }

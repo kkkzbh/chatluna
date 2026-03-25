@@ -3441,7 +3441,7 @@ var import_crypto4 = require("crypto");
 var import_messages4 = require("@langchain/core/messages");
 
 // src/utils/qqbot_speaker.ts
-var import_langchain = require("./langchain.js");
+var import_langchain = require("koishi-plugin-chatluna/utils/langchain");
 function formatSpeakerName(name2) {
   return JSON.stringify(name2);
 }
