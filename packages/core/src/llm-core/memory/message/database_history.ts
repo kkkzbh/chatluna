@@ -88,7 +88,231 @@ function isConversationBoundaryRole(
     return role === 'human' || role === 'system'
 }
 
-export interface ReplyAgentHistoryNormalizationResult {
+export const INTERNAL_ADDITIONAL_ARG_PREFIX = '__chatluna_internal_'
+export const TOOL_MEMORY_STORAGE_KEY = `${INTERNAL_ADDITIONAL_ARG_PREFIX}tool_memory_v1`
+export const DEFAULT_TOOL_MEMORY_MAX_ENTRIES = 3
+const TOOL_MEMORY_SNIPPET_MAX_CHARS = 1200
+const TOOL_MEMORY_INPUT_DIGEST_MAX_CHARS = 240
+
+export interface ToolMemoryEntry {
+    turnId: string
+    createdAt: string
+    toolName: string
+    inputDigest: string
+    snippetFormat: 'text' | 'json'
+    snippet: string
+    freshnessHint: string
+}
+
+export interface ToolMemoryStoreOptions {
+    storageKey?: string
+    maxEntries?: number
+}
+
+function truncateText(value: string, maxChars: number): string {
+    if (value.length <= maxChars) {
+        return value
+    }
+
+    return `${value.slice(0, maxChars - 1)}…`
+}
+
+function stableStringify(value: unknown): string {
+    if (typeof value === 'string') {
+        return value.trim()
+    }
+
+    try {
+        return JSON.stringify(value, null, 2).trim()
+    } catch {
+        return String(value ?? '').trim()
+    }
+}
+
+function isSemanticallyEmptySnippet(snippet: string): boolean {
+    if (!snippet) {
+        return true
+    }
+
+    if (['[]', '{}', 'null', '""'].includes(snippet)) {
+        return true
+    }
+
+    try {
+        const parsed = JSON.parse(snippet) as unknown
+        if (Array.isArray(parsed)) {
+            return parsed.length === 0
+        }
+
+        if (
+            parsed != null &&
+            typeof parsed === 'object' &&
+            Object.keys(parsed as Record<string, unknown>).length === 0
+        ) {
+            return true
+        }
+    } catch {}
+
+    return false
+}
+
+function serializeToolObservation(
+    observation: AgentStep['observation']
+): Pick<ToolMemoryEntry, 'snippetFormat' | 'snippet'> | null {
+    if (typeof observation === 'string') {
+        const snippet = observation.trim()
+        if (isSemanticallyEmptySnippet(snippet)) {
+            return null
+        }
+
+        return {
+            snippetFormat: 'text',
+            snippet: truncateText(snippet, TOOL_MEMORY_SNIPPET_MAX_CHARS)
+        }
+    }
+
+    if (Array.isArray(observation)) {
+        if (observation.length === 0) {
+            return null
+        }
+
+        const snippet = stableStringify(observation)
+        if (isSemanticallyEmptySnippet(snippet)) {
+            return null
+        }
+
+        return {
+            snippetFormat: 'json',
+            snippet: truncateText(snippet, TOOL_MEMORY_SNIPPET_MAX_CHARS)
+        }
+    }
+
+    return null
+}
+
+export function parseToolMemoryEntries(raw: string | null | undefined): ToolMemoryEntry[] {
+    if (typeof raw !== 'string' || raw.trim().length === 0) {
+        return []
+    }
+
+    let parsed: unknown
+
+    try {
+        parsed = JSON.parse(raw)
+    } catch {
+        return []
+    }
+
+    if (!Array.isArray(parsed)) {
+        return []
+    }
+
+    return parsed
+        .map((entry) => {
+            if (entry == null || typeof entry !== 'object') {
+                return null
+            }
+
+            const candidate = entry as Record<string, unknown>
+            const turnId = String(candidate.turnId ?? '').trim()
+            const createdAt = String(candidate.createdAt ?? '').trim()
+            const toolName = String(candidate.toolName ?? '').trim()
+            const inputDigest = String(candidate.inputDigest ?? '').trim()
+            const snippetFormat =
+                candidate.snippetFormat === 'json' ? 'json' : 'text'
+            const snippet = String(candidate.snippet ?? '').trim()
+            const freshnessHint = String(candidate.freshnessHint ?? '').trim()
+
+            if (!turnId || !createdAt || !toolName || !snippet) {
+                return null
+            }
+
+            return {
+                turnId,
+                createdAt,
+                toolName,
+                inputDigest,
+                snippetFormat,
+                snippet,
+                freshnessHint: freshnessHint || createdAt
+            } satisfies ToolMemoryEntry
+        })
+        .filter((entry): entry is ToolMemoryEntry => entry != null)
+}
+
+function mergeToolMemoryEntries(
+    currentEntries: ToolMemoryEntry[],
+    newEntries: ToolMemoryEntry[],
+    maxEntries: number
+): ToolMemoryEntry[] {
+    const merged = [...currentEntries]
+
+    for (const entry of newEntries) {
+        const duplicateIndex = merged.findIndex(
+            (item) =>
+                item.toolName === entry.toolName &&
+                item.inputDigest === entry.inputDigest
+        )
+
+        if (duplicateIndex >= 0) {
+            merged.splice(duplicateIndex, 1)
+        }
+
+        merged.unshift(entry)
+    }
+
+    return merged.slice(0, maxEntries)
+}
+
+export function buildToolMemoryEntriesFromSteps(
+    steps: AgentStep[],
+    options: {
+        turnId: string
+        createdAt?: Date
+        finishToolName?: string
+    }
+): ToolMemoryEntry[] {
+    const createdAt = (options.createdAt ?? new Date()).toISOString()
+    const finishToolName = options.finishToolName?.trim().toLowerCase()
+    const entries: ToolMemoryEntry[] = []
+
+    for (const step of steps) {
+        if (step.outcome !== 'success') {
+            continue
+        }
+
+        const toolName = step.action.tool?.trim()
+        if (!toolName) {
+            continue
+        }
+
+        if (finishToolName != null && toolName.toLowerCase() === finishToolName) {
+            continue
+        }
+
+        const serialized = serializeToolObservation(step.observation)
+        if (serialized == null) {
+            continue
+        }
+
+        entries.push({
+            turnId: options.turnId,
+            createdAt,
+            toolName,
+            inputDigest: truncateText(
+                stableStringify(step.action.toolInput),
+                TOOL_MEMORY_INPUT_DIGEST_MAX_CHARS
+            ),
+            snippetFormat: serialized.snippetFormat,
+            snippet: serialized.snippet,
+            freshnessHint: createdAt
+        })
+    }
+
+    return entries
+}
+
+export interface ResearchReplyHistoryNormalizationResult {
     deletedMessageIds: string[]
     latestId: string | null
     normalizedMessageId: string | null
@@ -197,16 +421,16 @@ export class KoishiChatMessageHistory extends BaseChatMessageHistory {
         await this.addMessages(createAgentToolMessages(steps))
     }
 
-    async normalizeReplyAgentHistory(
+    async normalizeResearchReplyHistory(
         finalVisibleText: string,
         updatedAt: Date = new Date()
-    ): Promise<ReplyAgentHistoryNormalizationResult> {
+    ): Promise<ResearchReplyHistoryNormalizationResult> {
         await this.loadConversation()
 
         const latestId = this._latestId
         if (latestId == null) {
             throw new Error(
-                `reply-agent history normalization failed: conversation has no latestId (${this.conversationId})`
+                `research reply history normalization failed: conversation has no latestId (${this.conversationId})`
             )
         }
 
@@ -217,12 +441,13 @@ export class KoishiChatMessageHistory extends BaseChatMessageHistory {
         let current = messageMap.get(latestId)
         if (!current) {
             throw new Error(
-                `reply-agent history normalization failed: latest message missing (${this.conversationId})`
+                `research reply history normalization failed: latest message missing (${this.conversationId})`
             )
         }
 
         const deletedMessageIds: string[] = []
         let boundaryParentId: string | null = null
+        const latestRole = current.role
 
         while (current) {
             if (isConversationBoundaryRole(current.role)) {
@@ -232,7 +457,7 @@ export class KoishiChatMessageHistory extends BaseChatMessageHistory {
 
             if (!isReplyAgentTailRole(current.role)) {
                 throw new Error(
-                    `reply-agent history normalization failed: unsupported tail role ${String(current.role ?? '')} (${this.conversationId})`
+                    `research reply history normalization failed: unsupported tail role ${String(current.role ?? '')} (${this.conversationId})`
                 )
             }
 
@@ -246,7 +471,7 @@ export class KoishiChatMessageHistory extends BaseChatMessageHistory {
             const parent = messageMap.get(current.parent)
             if (!parent) {
                 throw new Error(
-                    `reply-agent history normalization failed: broken parent chain at ${current.id} (${this.conversationId})`
+                    `research reply history normalization failed: broken parent chain at ${current.id} (${this.conversationId})`
                 )
             }
 
@@ -254,8 +479,40 @@ export class KoishiChatMessageHistory extends BaseChatMessageHistory {
         }
 
         if (deletedMessageIds.length === 0) {
+            if (isConversationBoundaryRole(latestRole)) {
+                const normalizedText = finalVisibleText.trim()
+                let normalizedMessageId: string | null = null
+
+                if (normalizedText.length > 0) {
+                    const normalizedMessage = await serializeMessage(
+                        new AIMessage(normalizedText),
+                        this.conversationId,
+                        boundaryParentId
+                    )
+
+                    normalizedMessageId = normalizedMessage.id
+                    await this._ctx.database.upsert('chathub_message', [
+                        normalizedMessage
+                    ])
+                }
+
+                this._latestId = normalizedMessageId ?? boundaryParentId
+                this._updatedAt = updatedAt
+
+                await this._saveConversation(updatedAt)
+
+                this._chatHistory = await this._loadMessages()
+
+                return {
+                    deletedMessageIds,
+                    latestId: this._latestId,
+                    normalizedMessageId,
+                    normalizedText
+                }
+            }
+
             throw new Error(
-                `reply-agent history normalization failed: no reply-agent tail found (${this.conversationId})`
+                `research reply history normalization failed: no research tail found (${this.conversationId})`
             )
         }
 
@@ -338,6 +595,34 @@ export class KoishiChatMessageHistory extends BaseChatMessageHistory {
     async deleteAdditionalArg(key: string): Promise<void> {
         await this.loadConversation()
         delete this._additional_kwargs[key]
+        await this._saveConversation()
+    }
+
+    async storeToolMemoryEntries(
+        entries: ToolMemoryEntry[],
+        options: ToolMemoryStoreOptions = {}
+    ): Promise<void> {
+        if (entries.length === 0) {
+            return
+        }
+
+        await this.loadConversation()
+
+        const storageKey = options.storageKey ?? TOOL_MEMORY_STORAGE_KEY
+        const maxEntries = Math.max(
+            1,
+            Math.floor(options.maxEntries ?? DEFAULT_TOOL_MEMORY_MAX_ENTRIES)
+        )
+        const currentEntries = parseToolMemoryEntries(
+            this._additional_kwargs[storageKey]
+        )
+        const nextEntries = mergeToolMemoryEntries(
+            currentEntries,
+            entries,
+            maxEntries
+        )
+
+        this._additional_kwargs[storageKey] = JSON.stringify(nextEntries)
         await this._saveConversation()
     }
 

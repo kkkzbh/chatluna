@@ -9,7 +9,7 @@ import {
     isMessageContentImageUrl,
     isMessageContentText
 } from 'koishi-plugin-chatluna/utils/string'
-import { MessageContent } from '@langchain/core/messages'
+import { MessageContent, MessageContentComplex } from '@langchain/core/messages'
 
 interface TransformFunctionWithPriority {
     func: MessageTransformFunction
@@ -24,6 +24,43 @@ interface BeforeTransformFunctionWithPriority {
 export interface MessageTransformOptions {
     quote: boolean
     includeQuoteReply: boolean
+}
+
+function toContentParts(content: MessageContent): MessageContentComplex[] {
+    if (Array.isArray(content)) {
+        return [...content]
+    }
+
+    if (typeof content === 'string') {
+        return content.trim().length > 0 ? [{ type: 'text', text: content }] : []
+    }
+
+    return []
+}
+
+function extractText(content: MessageContent) {
+    if (typeof content === 'string') return content
+    return Array.isArray(content)
+        ? content
+              .filter((item) => isMessageContentText(item))
+              .map((item) => item.text)
+              .join('')
+        : ''
+}
+
+function extractImages(content: MessageContent) {
+    return Array.isArray(content)
+        ? content.filter((item) => isMessageContentImageUrl(item))
+        : []
+}
+
+function upsertLeadingTextPart(
+    content: MessageContent,
+    text: string
+): MessageContentComplex[] {
+    const parts = toContentParts(content)
+    const remaining = parts.filter((item) => !isMessageContentText(item))
+    return [{ type: 'text', text }, ...remaining]
 }
 
 export class MessageTransformer {
@@ -90,21 +127,6 @@ export class MessageTransformer {
                 }
             )
 
-            const extractText = (content: MessageContent) => {
-                if (typeof content === 'string') return content
-                return Array.isArray(content)
-                    ? content
-                          .filter((item) => isMessageContentText(item))
-                          .map((item) => item.text)
-                          .join('')
-                    : ''
-            }
-
-            const extractImages = (content: MessageContent) =>
-                Array.isArray(content)
-                    ? content.filter((item) => isMessageContentImageUrl(item))
-                    : []
-
             const quoteText = extractText(quoteMessage.content)
             const quoteImages = extractImages(quoteMessage.content)
             const hasImages =
@@ -131,27 +153,18 @@ export class MessageTransformer {
                 : quoteUsername
 
             if (hasImages) {
-                if (typeof message.content === 'string') {
-                    message.content =
-                        message.content.trim().length > 0
-                            ? [{ type: 'text', text: message.content }]
-                            : []
-                }
+                const currentParts = toContentParts(message.content)
 
                 if (quoteText && quoteText !== '[image]') {
-                    const currentText = extractText(message.content)
+                    const currentText = extractText(currentParts)
                     const quotedContent = `Referenced message: [${quoteHeader} ${quoteSaid}："${quoteText}"]\n\nUser's message: ${currentText}`
-
-                    message.content = message.content.filter(
-                        (item) => item.type !== 'text'
-                    )
-                    message.content.unshift({
-                        type: 'text',
-                        text: quotedContent
-                    })
+                    message.content = [
+                        ...quoteImages,
+                        ...upsertLeadingTextPart(currentParts, quotedContent)
+                    ]
+                } else {
+                    message.content = [...quoteImages, ...currentParts]
                 }
-
-                message.content = [...quoteImages, ...message.content]
             } else if (quoteText && quoteText !== '[image]') {
                 const currentText = extractText(message.content)
                 message.content = `Referenced message: [${quoteHeader} ${quoteSaid}："${quoteText}"]\n\nUser's message: ${currentText}`

@@ -7,8 +7,7 @@ import { BaseMessage } from '@langchain/core/messages';
 import { Session } from 'koishi';
 import type { Runnable } from '@langchain/core/runnables';
 import { AgentExecutor } from './executor';
-import { ToolMask } from './types';
-import type { AgentFinishContract } from './reply_plan';
+import { ToolMask, type AgentFinishContract } from './types';
 export interface CreateAgentConfigOptions {
     llm: ComputedRef<ChatLunaChatModel>;
     tools: ComputedRef<StructuredTool[]>;

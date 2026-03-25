@@ -163,7 +163,7 @@ export async function langchainMessageToOpenAIMessage(
                             type: 'image_url',
                             image_url: {
                                 url,
-                                detail: 'low'
+                                detail: 'high'
                             }
                         } as const
                     } catch {
@@ -186,7 +186,7 @@ export async function langchainMessageToOpenAIMessage(
                             type: 'image_url',
                             image_url: {
                                 url,
-                                detail: 'low'
+                                detail: 'high'
                             }
                         }
                     } catch {

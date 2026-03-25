@@ -45,6 +45,7 @@ export interface ModelRequestParams extends BaseRequestParams {
     input: BaseMessage[];
     id?: string;
     tools?: StructuredTool[];
+    tool_choice?: string;
     variables?: Record<string, any>;
     /**
      * Override request params for this request only.

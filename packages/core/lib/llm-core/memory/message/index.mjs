@@ -70,6 +70,165 @@ function isConversationBoundaryRole(role) {
   return role === "human" || role === "system";
 }
 __name(isConversationBoundaryRole, "isConversationBoundaryRole");
+var INTERNAL_ADDITIONAL_ARG_PREFIX = "__chatluna_internal_";
+var TOOL_MEMORY_STORAGE_KEY = `${INTERNAL_ADDITIONAL_ARG_PREFIX}tool_memory_v1`;
+var DEFAULT_TOOL_MEMORY_MAX_ENTRIES = 3;
+var TOOL_MEMORY_SNIPPET_MAX_CHARS = 1200;
+var TOOL_MEMORY_INPUT_DIGEST_MAX_CHARS = 240;
+function truncateText(value, maxChars) {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, maxChars - 1)}…`;
+}
+__name(truncateText, "truncateText");
+function stableStringify(value) {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  try {
+    return JSON.stringify(value, null, 2).trim();
+  } catch {
+    return String(value ?? "").trim();
+  }
+}
+__name(stableStringify, "stableStringify");
+function isSemanticallyEmptySnippet(snippet) {
+  if (!snippet) {
+    return true;
+  }
+  if (["[]", "{}", "null", '""'].includes(snippet)) {
+    return true;
+  }
+  try {
+    const parsed = JSON.parse(snippet);
+    if (Array.isArray(parsed)) {
+      return parsed.length === 0;
+    }
+    if (parsed != null && typeof parsed === "object" && Object.keys(parsed).length === 0) {
+      return true;
+    }
+  } catch {
+  }
+  return false;
+}
+__name(isSemanticallyEmptySnippet, "isSemanticallyEmptySnippet");
+function serializeToolObservation(observation) {
+  if (typeof observation === "string") {
+    const snippet = observation.trim();
+    if (isSemanticallyEmptySnippet(snippet)) {
+      return null;
+    }
+    return {
+      snippetFormat: "text",
+      snippet: truncateText(snippet, TOOL_MEMORY_SNIPPET_MAX_CHARS)
+    };
+  }
+  if (Array.isArray(observation)) {
+    if (observation.length === 0) {
+      return null;
+    }
+    const snippet = stableStringify(observation);
+    if (isSemanticallyEmptySnippet(snippet)) {
+      return null;
+    }
+    return {
+      snippetFormat: "json",
+      snippet: truncateText(snippet, TOOL_MEMORY_SNIPPET_MAX_CHARS)
+    };
+  }
+  return null;
+}
+__name(serializeToolObservation, "serializeToolObservation");
+function parseToolMemoryEntries(raw) {
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return [];
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  return parsed.map((entry) => {
+    if (entry == null || typeof entry !== "object") {
+      return null;
+    }
+    const candidate = entry;
+    const turnId = String(candidate.turnId ?? "").trim();
+    const createdAt = String(candidate.createdAt ?? "").trim();
+    const toolName = String(candidate.toolName ?? "").trim();
+    const inputDigest = String(candidate.inputDigest ?? "").trim();
+    const snippetFormat = candidate.snippetFormat === "json" ? "json" : "text";
+    const snippet = String(candidate.snippet ?? "").trim();
+    const freshnessHint = String(candidate.freshnessHint ?? "").trim();
+    if (!turnId || !createdAt || !toolName || !snippet) {
+      return null;
+    }
+    return {
+      turnId,
+      createdAt,
+      toolName,
+      inputDigest,
+      snippetFormat,
+      snippet,
+      freshnessHint: freshnessHint || createdAt
+    };
+  }).filter((entry) => entry != null);
+}
+__name(parseToolMemoryEntries, "parseToolMemoryEntries");
+function mergeToolMemoryEntries(currentEntries, newEntries, maxEntries) {
+  const merged = [...currentEntries];
+  for (const entry of newEntries) {
+    const duplicateIndex = merged.findIndex(
+      (item) => item.toolName === entry.toolName && item.inputDigest === entry.inputDigest
+    );
+    if (duplicateIndex >= 0) {
+      merged.splice(duplicateIndex, 1);
+    }
+    merged.unshift(entry);
+  }
+  return merged.slice(0, maxEntries);
+}
+__name(mergeToolMemoryEntries, "mergeToolMemoryEntries");
+function buildToolMemoryEntriesFromSteps(steps, options) {
+  const createdAt = (options.createdAt ?? /* @__PURE__ */ new Date()).toISOString();
+  const finishToolName = options.finishToolName?.trim().toLowerCase();
+  const entries = [];
+  for (const step of steps) {
+    if (step.outcome !== "success") {
+      continue;
+    }
+    const toolName = step.action.tool?.trim();
+    if (!toolName) {
+      continue;
+    }
+    if (finishToolName != null && toolName.toLowerCase() === finishToolName) {
+      continue;
+    }
+    const serialized = serializeToolObservation(step.observation);
+    if (serialized == null) {
+      continue;
+    }
+    entries.push({
+      turnId: options.turnId,
+      createdAt,
+      toolName,
+      inputDigest: truncateText(
+        stableStringify(step.action.toolInput),
+        TOOL_MEMORY_INPUT_DIGEST_MAX_CHARS
+      ),
+      snippetFormat: serialized.snippetFormat,
+      snippet: serialized.snippet,
+      freshnessHint: createdAt
+    });
+  }
+  return entries;
+}
+__name(buildToolMemoryEntriesFromSteps, "buildToolMemoryEntriesFromSteps");
 var KoishiChatMessageHistory = class extends BaseChatMessageHistory {
   constructor(ctx, conversationId, _maxMessagesCount) {
     super();
@@ -146,25 +305,26 @@ var KoishiChatMessageHistory = class extends BaseChatMessageHistory {
     }
     await this.addMessages(createAgentToolMessages(steps));
   }
-  async normalizeReplyAgentHistory(finalVisibleText, updatedAt = /* @__PURE__ */ new Date()) {
+  async normalizeResearchReplyHistory(finalVisibleText, updatedAt = /* @__PURE__ */ new Date()) {
     await this.loadConversation();
     const latestId = this._latestId;
     if (latestId == null) {
       throw new Error(
-        `reply-agent history normalization failed: conversation has no latestId (${this.conversationId})`
+        `research reply history normalization failed: conversation has no latestId (${this.conversationId})`
       );
     }
-    const messageMap = /* @__PURE__ */ new Map(
+    const messageMap = new Map(
       this._serializedChatHistory.map((message) => [message.id, message])
     );
     let current = messageMap.get(latestId);
     if (!current) {
       throw new Error(
-        `reply-agent history normalization failed: latest message missing (${this.conversationId})`
+        `research reply history normalization failed: latest message missing (${this.conversationId})`
       );
     }
     const deletedMessageIds = [];
     let boundaryParentId = null;
+    const latestRole = current.role;
     while (current) {
       if (isConversationBoundaryRole(current.role)) {
         boundaryParentId = current.id;
@@ -172,7 +332,7 @@ var KoishiChatMessageHistory = class extends BaseChatMessageHistory {
       }
       if (!isReplyAgentTailRole(current.role)) {
         throw new Error(
-          `reply-agent history normalization failed: unsupported tail role ${String(current.role ?? "")} (${this.conversationId})`
+          `research reply history normalization failed: unsupported tail role ${String(current.role ?? "")} (${this.conversationId})`
         );
       }
       deletedMessageIds.push(current.id);
@@ -183,14 +343,39 @@ var KoishiChatMessageHistory = class extends BaseChatMessageHistory {
       const parent = messageMap.get(current.parent);
       if (!parent) {
         throw new Error(
-          `reply-agent history normalization failed: broken parent chain at ${current.id} (${this.conversationId})`
+          `research reply history normalization failed: broken parent chain at ${current.id} (${this.conversationId})`
         );
       }
       current = parent;
     }
     if (deletedMessageIds.length === 0) {
+      if (isConversationBoundaryRole(latestRole)) {
+        const normalizedText2 = finalVisibleText.trim();
+        let normalizedMessageId2 = null;
+        if (normalizedText2.length > 0) {
+          const normalizedMessage = await serializeMessage(
+            new AIMessage(normalizedText2),
+            this.conversationId,
+            boundaryParentId
+          );
+          normalizedMessageId2 = normalizedMessage.id;
+          await this._ctx.database.upsert("chathub_message", [
+            normalizedMessage
+          ]);
+        }
+        this._latestId = normalizedMessageId2 ?? boundaryParentId;
+        this._updatedAt = updatedAt;
+        await this._saveConversation(updatedAt);
+        this._chatHistory = await this._loadMessages();
+        return {
+          deletedMessageIds,
+          latestId: this._latestId,
+          normalizedMessageId: normalizedMessageId2,
+          normalizedText: normalizedText2
+        };
+      }
       throw new Error(
-        `reply-agent history normalization failed: no reply-agent tail found (${this.conversationId})`
+        `research reply history normalization failed: no research tail found (${this.conversationId})`
       );
     }
     const normalizedText = finalVisibleText.trim();
@@ -205,7 +390,9 @@ var KoishiChatMessageHistory = class extends BaseChatMessageHistory {
         boundaryParentId
       );
       normalizedMessageId = normalizedMessage.id;
-      await this._ctx.database.upsert("chathub_message", [normalizedMessage]);
+      await this._ctx.database.upsert("chathub_message", [
+        normalizedMessage
+      ]);
     }
     this._latestId = normalizedMessageId ?? boundaryParentId;
     this._updatedAt = updatedAt;
@@ -253,6 +440,27 @@ var KoishiChatMessageHistory = class extends BaseChatMessageHistory {
   async deleteAdditionalArg(key) {
     await this.loadConversation();
     delete this._additional_kwargs[key];
+    await this._saveConversation();
+  }
+  async storeToolMemoryEntries(entries, options = {}) {
+    if (entries.length === 0) {
+      return;
+    }
+    await this.loadConversation();
+    const storageKey = options.storageKey ?? TOOL_MEMORY_STORAGE_KEY;
+    const maxEntries = Math.max(
+      1,
+      Math.floor(options.maxEntries ?? DEFAULT_TOOL_MEMORY_MAX_ENTRIES)
+    );
+    const currentEntries = parseToolMemoryEntries(
+      this._additional_kwargs[storageKey]
+    );
+    const nextEntries = mergeToolMemoryEntries(
+      currentEntries,
+      entries,
+      maxEntries
+    );
+    this._additional_kwargs[storageKey] = JSON.stringify(nextEntries);
     await this._saveConversation();
   }
   async removeAllToolAndFunctionMessages() {
@@ -450,5 +658,10 @@ var KoishiChatMessageHistory = class extends BaseChatMessageHistory {
   }
 };
 export {
-  KoishiChatMessageHistory
+  DEFAULT_TOOL_MEMORY_MAX_ENTRIES,
+  INTERNAL_ADDITIONAL_ARG_PREFIX,
+  KoishiChatMessageHistory,
+  TOOL_MEMORY_STORAGE_KEY,
+  buildToolMemoryEntriesFromSteps,
+  parseToolMemoryEntries
 };

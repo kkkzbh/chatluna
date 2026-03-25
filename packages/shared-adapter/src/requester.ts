@@ -70,6 +70,7 @@ export async function buildChatCompletionParams(
                       enableGoogleSearch
                   )
                 : undefined,
+        tool_choice: params.tool_choice,
         stop: params.stop || undefined,
         max_tokens: normalizedModel.includes('vision')
             ? undefined
@@ -110,6 +111,65 @@ export async function buildChatCompletionParams(
         delete base.top_p
     }
     return deepAssign({}, base, params.overrideRequestParams ?? {})
+}
+
+function summarizeLastUserMessage(messages: unknown) {
+    if (!Array.isArray(messages)) {
+        return null
+    }
+
+    for (let index = messages.length - 1; index >= 0; index--) {
+        const message = messages[index]
+        if (
+            message == null ||
+            typeof message !== 'object' ||
+            (message as { role?: unknown }).role !== 'user'
+        ) {
+            continue
+        }
+
+        const content = (message as { content?: unknown }).content
+        if (!Array.isArray(content)) {
+            return {
+                contentKind: typeof content === 'string' ? 'string' : 'unknown',
+                imageCount: 0,
+                hasImageUrl: false
+            }
+        }
+
+        const imageCount = content.filter(
+            (part) =>
+                part != null &&
+                typeof part === 'object' &&
+                (part as { type?: unknown }).type === 'image_url'
+        ).length
+
+        return {
+            contentKind: 'array',
+            imageCount,
+            hasImageUrl: imageCount > 0
+        }
+    }
+
+    return null
+}
+
+function logRequestPayloadSummary(
+    requestContext: RequestContext,
+    chatCompletionParams: Record<string, unknown>
+) {
+    const summary = summarizeLastUserMessage(chatCompletionParams.messages)
+    if (summary == null) {
+        return
+    }
+
+    requestContext.modelRequester.logger.debug(
+        'chat completion payload summary: %s',
+        JSON.stringify({
+            model: chatCompletionParams.model,
+            lastUserMessage: summary
+        })
+    )
 }
 
 // eslint-disable-next-line generator-star-spacing
@@ -389,6 +449,7 @@ export async function* completionStream<
         enableGoogleSearch ?? false,
         supportImageInput ?? true
     )
+    logRequestPayloadSummary(requestContext, chatCompletionParams)
 
     try {
         const response = await modelRequester.post(
@@ -435,8 +496,10 @@ export async function completion<
         enableGoogleSearch ?? false,
         supportImageInput ?? true
     )
+    logRequestPayloadSummary(requestContext, chatCompletionParams)
 
     delete chatCompletionParams.stream
+    delete chatCompletionParams.stream_options
 
     try {
         const response = await modelRequester.post(

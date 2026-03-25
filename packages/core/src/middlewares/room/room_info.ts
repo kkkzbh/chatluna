@@ -50,7 +50,11 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 ])
             )
             buffer.push(session.text('.room_visibility', [room.visibility]))
-            buffer.push(session.text('.room_chat_mode', [room.chatMode]))
+            buffer.push(
+                session.text('.room_chat_mode', [
+                    room.chatMode
+                ])
+            )
             buffer.push(session.text('.room_master_id', [room.roomMasterId]))
 
             context.message = buffer.join('\n')

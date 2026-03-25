@@ -1,6 +1,6 @@
 import { ChainValues } from '@langchain/core/utils/types';
 import { ChatLunaLLMCallArg, ChatLunaLLMChainWrapper, SystemPrompts } from 'koishi-plugin-chatluna/llm-core/chain/base';
-import { ChatLunaBaseEmbeddings, ChatLunaChatModel } from 'koishi-plugin-chatluna/llm-core/platform/model';
+import { ChatLunaBaseEmbeddings, ChatLunaChatModel, type ChatLunaModelCallOptions } from 'koishi-plugin-chatluna/llm-core/platform/model';
 import { ChatLunaTool } from 'koishi-plugin-chatluna/llm-core/platform/types';
 import { AgentExecutor, ToolMask } from 'koishi-plugin-chatluna/llm-core/agent';
 import { BufferMemory } from 'koishi-plugin-chatluna/llm-core/memory/langchain';
@@ -9,7 +9,7 @@ import { ChatLunaChatPrompt } from 'koishi-plugin-chatluna/llm-core/chain/prompt
 import type { ChatLunaPromptRenderService } from 'koishi-plugin-chatluna/services/chat';
 import { ComputedRef } from '@vue/reactivity';
 import type { ChatLunaContextManagerService } from 'koishi-plugin-chatluna/llm-core/prompt';
-import type { AgentFinishContract } from '../agent/reply_plan';
+import type { AgentFinishContract } from '../agent';
 export interface ChatLunaPluginChainInput {
     prompt: ChatLunaChatPrompt;
     historyMemory: BufferMemory;
@@ -20,6 +20,7 @@ export interface ChatLunaPluginChainInput {
     contextManager: ChatLunaContextManagerService;
     toolMask?: ToolMask;
     finishContract?: AgentFinishContract;
+    toolChoice?: ChatLunaModelCallOptions['tool_choice'];
 }
 export declare class ChatLunaPluginChain extends ChatLunaLLMChainWrapper implements ChatLunaPluginChainInput {
     executor: ComputedRef<AgentExecutor>;
@@ -35,12 +36,14 @@ export declare class ChatLunaPluginChain extends ChatLunaLLMChainWrapper impleme
     agentMode?: 'tool-calling' | 'react';
     toolMask?: ToolMask;
     finishContract?: AgentFinishContract;
+    toolChoice?: ChatLunaModelCallOptions['tool_choice'];
     private _toolsRef;
-    constructor({ historyMemory, prompt, llm, tools, preset, embeddings, agentMode, contextManager, toolMask, finishContract }: ChatLunaPluginChainInput & {
+    constructor({ historyMemory, prompt, llm, tools, preset, embeddings, agentMode, contextManager, toolMask, finishContract, toolChoice }: ChatLunaPluginChainInput & {
         tools: ComputedRef<ChatLunaTool[]>;
         llm: ChatLunaChatModel;
     });
-    static fromLLMAndTools(llm: ChatLunaChatModel, tools: ComputedRef<ChatLunaTool[]>, { historyMemory, preset, embeddings, agentMode, variableService, contextManager, toolMask, finishContract }: Omit<ChatLunaPluginChainInput, 'prompt'>): ChatLunaPluginChain;
+    getHistoryPersistencePolicy(): import("koishi-plugin-chatluna/llm-core/chain/base").ChatHistoryPersistencePolicy;
+    static fromLLMAndTools(llm: ChatLunaChatModel, tools: ComputedRef<ChatLunaTool[]>, { historyMemory, preset, embeddings, agentMode, variableService, contextManager, toolMask, finishContract, toolChoice }: Omit<ChatLunaPluginChainInput, 'prompt'>): ChatLunaPluginChain;
     private _createExecutor;
     call({ message, signal, session, events, conversationId, variables, maxToken, messageQueue, onAgentEvent, toolMask: callToolMask, subagentContext }: ChatLunaLLMCallArg): Promise<ChainValues>;
     get model(): ChatLunaChatModel;

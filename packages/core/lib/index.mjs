@@ -1,9 +1,20 @@
 var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __reExport = (target, mod, secondTarget) => (__copyProps(target, mod, "default"), secondTarget && __copyProps(secondTarget, mod, "default"));
 
 // src/locales/zh-CN.schema.yml
 var require_zh_CN_schema = __commonJS({
@@ -1092,7 +1103,11 @@ var ChatLunaChatChain = class _ChatLunaChatChain extends ChatLunaLLMChainWrapper
 
 // src/llm-core/chain/plugin_chat_chain.ts
 import {
-  ChatLunaLLMChainWrapper as ChatLunaLLMChainWrapper2
+  AIMessage as AIMessage2
+} from "@langchain/core/messages";
+import {
+  ChatLunaLLMChainWrapper as ChatLunaLLMChainWrapper2,
+  DEFAULT_CHAT_HISTORY_PERSISTENCE_POLICY
 } from "koishi-plugin-chatluna/llm-core/chain/base";
 import {
   createAgentExecutor,
@@ -1106,11 +1121,77 @@ import {
   ChatLunaErrorCode as ChatLunaErrorCode3
 } from "koishi-plugin-chatluna/utils/error";
 import { ChatLunaChatPrompt as ChatLunaChatPrompt2 } from "koishi-plugin-chatluna/llm-core/chain/prompt";
+import { TOOL_MEMORY_STORAGE_KEY } from "koishi-plugin-chatluna/llm-core/memory/message";
 import { computed } from "@vue/reactivity";
 import {
   getMessageContent as getMessageContent2,
   sanitizeToolLogValue
 } from "koishi-plugin-chatluna/utils/string";
+function cloneAIMessage(message, toolCalls) {
+  return new AIMessage2({
+    content: message.content,
+    id: message.id,
+    name: message.name,
+    additional_kwargs: { ...message.additional_kwargs },
+    response_metadata: { ...message.response_metadata },
+    tool_calls: toolCalls,
+    invalid_tool_calls: [],
+    usage_metadata: message.usage_metadata
+  });
+}
+__name(cloneAIMessage, "cloneAIMessage");
+function filterHistoricalMessages(messages, allowedToolNames) {
+  const allowedNames = new Set(allowedToolNames);
+  const allowedToolCallIds = /* @__PURE__ */ new Set();
+  const filtered = [];
+  for (const message of messages) {
+    const role = message.getType();
+    if (role === "ai") {
+      const aiMessage = message;
+      const nextToolCalls = aiMessage.tool_calls?.filter(
+        (toolCall) => toolCall?.name != null && allowedNames.has(toolCall.name)
+      ) ?? [];
+      nextToolCalls.forEach((toolCall) => {
+        if (toolCall.id) {
+          allowedToolCallIds.add(toolCall.id);
+        }
+      });
+      if (nextToolCalls.length < 1) {
+        if (typeof aiMessage.content === "string" ? aiMessage.content.length > 0 : aiMessage.content.length > 0) {
+          filtered.push(cloneAIMessage(aiMessage, []));
+        }
+        continue;
+      }
+      filtered.push(cloneAIMessage(aiMessage, nextToolCalls));
+      continue;
+    }
+    if (role === "tool") {
+      const toolMessage = message;
+      if (toolMessage.tool_call_id != null && allowedToolCallIds.has(toolMessage.tool_call_id)) {
+        filtered.push(toolMessage);
+      }
+      continue;
+    }
+    if (role === "function") {
+      const functionMessage = message;
+      if (functionMessage.name != null && allowedNames.has(functionMessage.name)) {
+        filtered.push(functionMessage);
+      }
+      continue;
+    }
+    filtered.push(message);
+  }
+  return filtered;
+}
+__name(filterHistoricalMessages, "filterHistoricalMessages");
+function resolveAllowedHistoryToolNames(toolNames, toolMask, finishToolName) {
+  const allowed = toolMask.mode === "all" ? toolNames : toolMask.mode === "allow" ? toolNames.filter((name2) => toolMask.allow.includes(name2)) : toolNames.filter((name2) => !toolMask.deny.includes(name2));
+  if (finishToolName != null && !allowed.includes(finishToolName)) {
+    allowed.push(finishToolName);
+  }
+  return allowed;
+}
+__name(resolveAllowedHistoryToolNames, "resolveAllowedHistoryToolNames");
 var ChatLunaPluginChain = class _ChatLunaPluginChain extends ChatLunaLLMChainWrapper2 {
   static {
     __name(this, "ChatLunaPluginChain");
@@ -1128,6 +1209,7 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends ChatLunaLLMChainWra
   agentMode;
   toolMask;
   finishContract;
+  toolChoice;
   _toolsRef;
   constructor({
     historyMemory,
@@ -1139,7 +1221,8 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends ChatLunaLLMChainWra
     agentMode,
     contextManager,
     toolMask,
-    finishContract
+    finishContract,
+    toolChoice
   }) {
     super();
     this.historyMemory = historyMemory;
@@ -1152,12 +1235,27 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends ChatLunaLLMChainWra
     this.contextManager = contextManager;
     this.toolMask = toolMask;
     this.finishContract = finishContract;
+    this.toolChoice = toolChoice;
     this._toolsRef = createToolsRef({
       tools: this.tools,
       embeddings: this.embeddings,
       toolMask: this.toolMask
     });
     this.executor = this._createExecutor();
+  }
+  getHistoryPersistencePolicy() {
+    if (this.finishContract == null) {
+      return DEFAULT_CHAT_HISTORY_PERSISTENCE_POLICY;
+    }
+    return {
+      persistIntermediateAgentMessages: false,
+      toolMemory: {
+        enabled: true,
+        storageKey: TOOL_MEMORY_STORAGE_KEY,
+        maxEntries: 3,
+        finishToolName: this.finishContract.toolName
+      }
+    };
   }
   static fromLLMAndTools(llm, tools, {
     historyMemory,
@@ -1167,7 +1265,8 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends ChatLunaLLMChainWra
     variableService,
     contextManager,
     toolMask,
-    finishContract
+    finishContract,
+    toolChoice
   }) {
     const prompt = new ChatLunaChatPrompt2({
       preset,
@@ -1187,7 +1286,8 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends ChatLunaLLMChainWra
       variableService,
       contextManager,
       toolMask,
-      finishContract
+      finishContract,
+      toolChoice
     });
   }
   _createExecutor() {
@@ -1234,7 +1334,14 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends ChatLunaLLMChainWra
       finishToolName ? [finishToolName] : []
     );
     const chatHistory = this.historyMemory.chatHistory;
-    const messages = await chatHistory.getMessages();
+    const messages = filterHistoricalMessages(
+      await chatHistory.getMessages(),
+      resolveAllowedHistoryToolNames(
+        this.tools.value.map((tool) => tool.name).filter((name2) => Boolean(name2)),
+        toolMask,
+        finishToolName
+      )
+    );
     if (this.agentMode === "react") {
       await chatHistory.removeAllToolAndFunctionMessages();
     }
@@ -1247,9 +1354,24 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends ChatLunaLLMChainWra
       conversationId
     };
     requests["variables_hide"] = requests["variables"];
+    if (this.toolChoice != null) {
+      requests["tool_choice"] = this.toolChoice;
+    }
     const overrideRequestParams = message.additional_kwargs?.overrideRequestParams ?? message.additional_kwargs?.qqbot_override_request_params;
     if (overrideRequestParams != null) {
       requests["overrideRequestParams"] = overrideRequestParams;
+    }
+    const afterUserMessage = message.additional_kwargs?.qqbot_after_user_message;
+    if (afterUserMessage != null) {
+      requests["after_user_message"] = afterUserMessage;
+    }
+    const finalResponseSchema = message.additional_kwargs?.qqbot_final_response_schema;
+    if (finalResponseSchema != null) {
+      requests["qqbot_final_response_schema"] = finalResponseSchema;
+    }
+    const finalResponseInstruction = message.additional_kwargs?.qqbot_final_response_instruction;
+    if (typeof finalResponseInstruction === "string" && finalResponseInstruction.trim().length > 0) {
+      requests["qqbot_final_response_instruction"] = finalResponseInstruction.trim();
     }
     requests["configurable"] = {
       session,
@@ -1314,23 +1436,20 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends ChatLunaLLMChainWra
         }
       );
     }, "request");
-    for (let i = 0; i < 3; i++) {
-      if (signal?.aborted) {
-        throw signal.reason ?? new ChatLunaError3(ChatLunaErrorCode3.ABORTED);
+    if (signal?.aborted) {
+      throw signal.reason ?? new ChatLunaError3(ChatLunaErrorCode3.ABORTED);
+    }
+    try {
+      response = await request2();
+    } catch (e) {
+      if (e instanceof ChatLunaError3 && e.errorCode === ChatLunaErrorCode3.ABORTED) {
+        throw e;
       }
-      try {
-        response = await request2();
-        break;
-      } catch (e) {
-        if (e instanceof ChatLunaError3 && e.errorCode === ChatLunaErrorCode3.ABORTED) {
-          throw e;
-        }
-        if (e?.message?.includes("Aborted")) {
-          throw new ChatLunaError3(ChatLunaErrorCode3.ABORTED);
-        }
-        logger.error(e);
-        error = e;
+      if (e?.message?.includes("Aborted")) {
+        throw new ChatLunaError3(ChatLunaErrorCode3.ABORTED);
       }
+      logger.error(e);
+      error = e;
     }
     await events?.["llm-used-token-count"]?.(usedToken);
     if (error != null && response == null) {
@@ -1362,100 +1481,6 @@ import {
   modelSchema,
   vectorStoreSchema
 } from "koishi-plugin-chatluna/utils/schema";
-
-// src/llm-core/agent/reply_plan.ts
-import { StructuredTool } from "@langchain/core/tools";
-import { z } from "zod";
-var REPLY_AGENT_CHAT_MODE = "reply-agent";
-var REPLY_AGENT_FINISH_TOOL = "submit_reply_plan";
-var replyTextSegmentSchema = z.object({
-  kind: z.enum(["text", "multiline", "voice", "sticker"]),
-  content: z.string().min(1)
-});
-var replyImageSegmentSchema = z.object({
-  kind: z.literal("image"),
-  asset_ref: z.string().min(1),
-  alt: z.string().optional()
-});
-var replyPlanSegmentSchema = z.discriminatedUnion("kind", [
-  replyTextSegmentSchema,
-  replyImageSegmentSchema
-]);
-var replyPlanSchema = z.object({
-  segments: z.array(replyPlanSegmentSchema).min(1)
-});
-var REPLY_AGENT_FINISH_CONTRACT = {
-  toolName: REPLY_AGENT_FINISH_TOOL,
-  maxRetries: 1,
-  retryMessage: [
-    "Protocol violation: reply-agent must finish by calling submit_reply_plan.",
-    "You may continue thinking, searching, and using tools, but do not answer with plain text or raw JSON.",
-    "Call submit_reply_plan({ segments: [...] }) now.",
-    "segments support: text, multiline, voice, sticker, image.",
-    "text / multiline / voice / sticker require content.",
-    "image requires asset_ref and may include alt. Do not invent image assets."
-  ].join("\n"),
-  errorMessage: "reply-agent protocol violation: the agent finished without calling submit_reply_plan."
-};
-var REPLY_AGENT_DENY_TOOLS = [
-  "bash",
-  "cron",
-  "file_edit",
-  "file_publish",
-  "file_read",
-  "file_write",
-  "glob",
-  "grep",
-  "group_mute",
-  "koishi_command_execute",
-  "memory_add",
-  "memory_delete",
-  "memory_update",
-  "question",
-  "skill",
-  "task",
-  "todos",
-  "user_confirm",
-  "web_post"
-];
-var REPLY_AGENT_DEFAULT_TOOL_MASK = {
-  mode: "deny",
-  allow: [],
-  deny: REPLY_AGENT_DENY_TOOLS,
-  toolCallMask: {
-    mode: "deny",
-    allow: [],
-    deny: REPLY_AGENT_DENY_TOOLS
-  }
-};
-var SubmitReplyPlanTool = class extends StructuredTool {
-  static {
-    __name(this, "SubmitReplyPlanTool");
-  }
-  name = REPLY_AGENT_FINISH_TOOL;
-  description = "Submit the final structured reply plan for the user. This is the only valid way to finish reply-agent mode.";
-  returnDirect = true;
-  schema = replyPlanSchema;
-  async _call(_) {
-    return "";
-  }
-};
-function createSubmitReplyPlanTool() {
-  return {
-    id: REPLY_AGENT_FINISH_TOOL,
-    name: REPLY_AGENT_FINISH_TOOL,
-    description: "Submit the final structured reply plan. Use this exactly once as the final step.",
-    selector() {
-      return true;
-    },
-    createTool() {
-      return new SubmitReplyPlanTool();
-    }
-  };
-}
-__name(createSubmitReplyPlanTool, "createSubmitReplyPlanTool");
-
-// src/llm-core/chat/default.ts
 async function defaultFactory(ctx, service) {
   modelSchema(ctx, true);
   vectorStoreSchema(ctx);
@@ -1481,7 +1506,7 @@ async function defaultFactory(ctx, service) {
       return;
     }
     wrapper.getCachedConversations().filter(
-      ([_, conversation]) => conversation?.chatInterface?.chatMode === "plugin" || conversation?.chatInterface?.chatMode === "browsing" || conversation?.chatInterface?.chatMode === REPLY_AGENT_CHAT_MODE
+      ([_, conversation]) => conversation?.chatInterface?.chatMode === "plugin" || conversation?.chatInterface?.chatMode === "browsing"
     ).forEach(async ([id, info]) => {
       const result = await wrapper.clearCache(info.room);
       if (result) {
@@ -1519,27 +1544,6 @@ async function defaultFactory(ctx, service) {
       }
     )
   );
-  service.registerChatChain(
-    REPLY_AGENT_CHAT_MODE,
-    {
-      "zh-CN": "回复 Agent 模式",
-      "en-US": "Reply agent mode"
-    },
-    (params) => ChatLunaPluginChain.fromLLMAndTools(
-      params.model,
-      getReplyAgentTools(service),
-      {
-        variableService: ctx.chatluna.promptRenderer,
-        contextManager: ctx.chatluna.contextManager,
-        preset: params.preset,
-        historyMemory: params.historyMemory,
-        embeddings: params.embeddings,
-        agentMode: params.supportChatChain ? "tool-calling" : "react",
-        toolMask: REPLY_AGENT_DEFAULT_TOOL_MASK,
-        finishContract: REPLY_AGENT_FINISH_CONTRACT
-      }
-    )
-  );
 }
 __name(defaultFactory, "defaultFactory");
 function getTools(service) {
@@ -1547,18 +1551,10 @@ function getTools(service) {
   return computed2(() => tools.value.map((name2) => service.getTool(name2)));
 }
 __name(getTools, "getTools");
-function getReplyAgentTools(service) {
-  const tools = service.getTools();
-  return computed2(() => [
-    ...tools.value.map((name2) => service.getTool(name2)),
-    createSubmitReplyPlanTool()
-  ]);
-}
-__name(getReplyAgentTools, "getReplyAgentTools");
 
 // src/llm-core/memory/lore_book/index.ts
 import { logger as logger3 } from "koishi-plugin-chatluna";
-import { AIMessage as AIMessage2 } from "@langchain/core/messages";
+import { AIMessage as AIMessage3 } from "@langchain/core/messages";
 function apply10(ctx, config) {
   const cache = /* @__PURE__ */ new Map();
   ctx.before(
@@ -1660,7 +1656,7 @@ var LoreBookMatcher = class {
             if (config.recursiveScan) {
               stack.push([
                 this.splitContent(config, loreBook.content).map(
-                  (c) => new AIMessage2(c)
+                  (c) => new AIMessage3(c)
                 ),
                 depth + 1
               ]);
@@ -3457,6 +3453,93 @@ __name(apply24, "apply");
 import { createLogger as createLogger3 } from "koishi-plugin-chatluna/utils/logger";
 import { randomUUID } from "crypto";
 import { HumanMessage } from "@langchain/core/messages";
+
+// src/utils/qqbot_speaker.ts
+import { isMessageContentText as isMessageContentText2 } from "./utils/langchain.cjs";
+function formatSpeakerName(name2) {
+  return JSON.stringify(name2);
+}
+__name(formatSpeakerName, "formatSpeakerName");
+function formatQqbotSpeakerLine(speakerId, speakerName, text) {
+  const prefix = `[speaker_id=${speakerId} speaker_name=${formatSpeakerName(speakerName)}]`;
+  return text.length > 0 ? `${prefix} ${text}` : prefix;
+}
+__name(formatQqbotSpeakerLine, "formatQqbotSpeakerLine");
+function resolveSpeakerFormat(additionalKwargs) {
+  const meta = additionalKwargs?.qqbot_speaker_format;
+  if (meta?.version !== "speaker_id_v1") {
+    return null;
+  }
+  if (meta.isDirect || meta.preformatted) {
+    return null;
+  }
+  const speakerId = meta.speakerId?.trim();
+  const speakerName = (meta.speakerName?.trim() || speakerId)?.trim();
+  if (!speakerId || !speakerName) {
+    return null;
+  }
+  return {
+    ...meta,
+    speakerId,
+    speakerName
+  };
+}
+__name(resolveSpeakerFormat, "resolveSpeakerFormat");
+function serializeQqbotHumanMessageContent(content, additionalKwargs) {
+  const speakerFormat = resolveSpeakerFormat(additionalKwargs);
+  if (speakerFormat == null) {
+    return content;
+  }
+  const { speakerId, speakerName } = speakerFormat;
+  const resolvedSpeakerId = speakerId;
+  const resolvedSpeakerName = speakerName;
+  if (typeof content === "string") {
+    return formatQqbotSpeakerLine(
+      resolvedSpeakerId,
+      resolvedSpeakerName,
+      content
+    );
+  }
+  if (!Array.isArray(content)) {
+    return formatQqbotSpeakerLine(
+      resolvedSpeakerId,
+      resolvedSpeakerName,
+      ""
+    );
+  }
+  const textIndex = content.findIndex(
+    (part) => isMessageContentText2(part)
+  );
+  if (textIndex === -1) {
+    return [
+      {
+        type: "text",
+        text: formatQqbotSpeakerLine(
+          resolvedSpeakerId,
+          resolvedSpeakerName,
+          ""
+        )
+      },
+      ...content
+    ];
+  }
+  return content.map((part, index) => {
+    if (index !== textIndex || !isMessageContentText2(part)) {
+      return part;
+    }
+    return {
+      ...part,
+      text: formatQqbotSpeakerLine(
+        resolvedSpeakerId,
+        resolvedSpeakerName,
+        part.text
+      )
+    };
+  });
+}
+__name(serializeQqbotHumanMessageContent, "serializeQqbotHumanMessageContent");
+
+// src/middlewares/chat/message_delay.ts
 var logger6;
 var queues = /* @__PURE__ */ new Map();
 function apply25(ctx, config, chain) {
@@ -3470,7 +3553,7 @@ function apply25(ctx, config, chain) {
     const conversationId = room.conversationId;
     const userName = inputMessage.name || "unknown";
     const messageId = context.options.messageId;
-    if ((room.chatMode === "plugin" || room.chatMode === "reply-agent") && await ctx.chatluna.appendPendingMessage(
+    if (room.chatMode === "plugin" && await ctx.chatluna.appendPendingMessage(
       conversationId,
       createPendingMessage(session, room, inputMessage),
       room.chatMode
@@ -3666,7 +3749,10 @@ function mergeMessages(messages) {
 __name(mergeMessages, "mergeMessages");
 function createPendingMessage(session, room, inputMessage) {
   return new HumanMessage({
-    content: inputMessage.content,
+    content: serializeQqbotHumanMessageContent(
+      inputMessage.content,
+      inputMessage.additional_kwargs
+    ),
     name: inputMessage.name ?? session.author?.name ?? session.author?.id ?? session.username,
     id: session.userId,
     additional_kwargs: {
@@ -4135,6 +4221,16 @@ async function oldImageRead(ctx, url, message, element, isInstalledImageService)
 }
 __name(oldImageRead, "oldImageRead");
 async function readImage(ctx, url) {
+  if (url.startsWith("base64://")) {
+    const base64 = url.slice("base64://".length);
+    const buffer = Buffer.from(base64, "base64");
+    const ext = getImageType(buffer);
+    return {
+      base64Source: `data:${ext ?? "image/jpeg"};base64,${base64}`,
+      buffer,
+      ext
+    };
+  }
   if (url.startsWith("data:image") && url.includes("base64")) {
     const buffer = Buffer.from(url.split(",")[1], "base64");
     const ext = getImageType(buffer);
@@ -4759,6 +4855,14 @@ function apply29(ctx, config, chain) {
       );
     }
     const originContent = inputMessage.content;
+    const originMeta = resolveInputContentMeta(
+      originContent,
+      inputMessage.additional_kwargs?.qqbot_input_content_meta
+    );
+    inputMessage.additional_kwargs = {
+      ...inputMessage.additional_kwargs ?? {},
+      qqbot_input_content_meta: originMeta
+    };
     if (presetTemplate.formatUserPromptString != null) {
       inputMessage.content = await processUserPrompt(
         config,
@@ -4768,6 +4872,7 @@ function apply29(ctx, config, chain) {
         room
       );
     }
+    ensureImageContentIntegrity(inputMessage.content, originMeta);
     const bufferText = new StreamingBufferText(
       3,
       presetTemplate.config?.postHandler?.prefix,
@@ -4900,7 +5005,7 @@ __name(createQueueWaitingHandler, "createQueueWaitingHandler");
 function createToolCallHandler(context, config) {
   return async (tool, arg, content, log) => {
     logger8.debug(`Call tool: ${tool} with ${JSON.stringify(arg)}`);
-    if (context.options.room?.chatMode === "reply-agent") {
+    if (context.options.room?.chatMode === "plugin" && context.options.inputMessage?.additional_kwargs?.qqbot_reply_mode === "agent") {
       return;
     }
     if (content != null && (typeof content === "string" && content.trim().length > 0 || Array.isArray(content) && content.length > 0)) {
@@ -4948,9 +5053,8 @@ async function processUserPrompt(config, presetTemplate, session, originContent,
       room
     ).then((result) => result.text);
   }
-  const sortedContent = sortContentByType(originContent);
   return await Promise.all(
-    sortedContent.map(
+    originContent.map(
       async (message) => message.type === "text" ? {
         type: "text",
         text: await formatUserPromptString(
@@ -4965,12 +5069,38 @@ async function processUserPrompt(config, presetTemplate, session, originContent,
   );
 }
 __name(processUserPrompt, "processUserPrompt");
-function sortContentByType(content) {
-  return content.sort(
-    (a, b) => a.type === "text" ? -1 : b.type === "text" ? 1 : a.type < b.type ? -1 : 1
+function countImageParts(content) {
+  return Array.isArray(content) ? content.filter((part) => part?.type === "image_url").length : 0;
+}
+__name(countImageParts, "countImageParts");
+function resolveInputContentMeta(content, rawMeta) {
+  const meta = rawMeta != null && typeof rawMeta === "object" ? rawMeta : {};
+  const imageCount = Math.max(
+    Number.isFinite(meta.imageCount) ? Number(meta.imageCount) : 0,
+    countImageParts(content)
+  );
+  return {
+    hasImageInput: Boolean(meta.hasImageInput) || imageCount > 0,
+    imageCount
+  };
+}
+__name(resolveInputContentMeta, "resolveInputContentMeta");
+function ensureImageContentIntegrity(content, meta) {
+  if (!meta.hasImageInput && meta.imageCount < 1) {
+    return;
+  }
+  const currentImageCount = countImageParts(content);
+  if (currentImageCount > 0) {
+    return;
+  }
+  throw new ChatLunaError6(
+    ChatLunaErrorCode6.UNKNOWN_ERROR,
+    new Error(
+      `Input image content was lost before model request (expected ${meta.imageCount} image part(s)).`
+    )
   );
 }
-__name(sortContentByType, "sortContentByType");
+__name(ensureImageContentIntegrity, "ensureImageContentIntegrity");
 function setupRegularMessageStream(context, config, textStream) {
   return new Promise(async (resolve) => {
     const reader = textStream.getReader();
@@ -6524,7 +6654,11 @@ async function formatRoomInfo(ctx, session, room) {
     ])
   );
   buffer.push(session.text(".room_visibility", [room.visibility]));
-  buffer.push(session.text(".room_chat_mode", [room.chatMode]));
+  buffer.push(
+    session.text(".room_chat_mode", [
+      room.chatMode
+    ])
+  );
   buffer.push(session.text(".room_master_id", [room.roomMasterId]));
   buffer.push(
     session.text(".room_availability", [
@@ -6753,7 +6887,11 @@ function apply58(ctx, config, chain) {
       ])
     );
     buffer.push(session.text(".room_visibility", [room.visibility]));
-    buffer.push(session.text(".room_chat_mode", [room.chatMode]));
+    buffer.push(
+      session.text(".room_chat_mode", [
+        room.chatMode
+      ])
+    );
     buffer.push(session.text(".room_master_id", [room.roomMasterId]));
     context.message = buffer.join("\n");
     return 1 /* STOP */;
@@ -7441,6 +7579,11 @@ async function middleware(ctx, config) {
   }
 }
 __name(middleware, "middleware");
+
+// src/services/types.ts
+var types_exports = {};
+__reExport(types_exports, shared_prompt_renderer_star);
+import * as shared_prompt_renderer_star from "@chatluna/shared-prompt-renderer";
 
 // src/index.ts
 import { deleteConversationRoom as deleteConversationRoom2 } from "koishi-plugin-chatluna/chains";

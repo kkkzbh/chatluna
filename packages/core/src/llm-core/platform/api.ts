@@ -67,6 +67,8 @@ export interface ModelRequestParams extends BaseRequestParams {
 
     tools?: StructuredTool[]
 
+    tool_choice?: string
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     variables?: Record<string, any>
 

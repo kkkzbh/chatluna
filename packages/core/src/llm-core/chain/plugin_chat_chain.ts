@@ -9,11 +9,13 @@ import { Session } from 'koishi'
 import {
     ChatLunaLLMCallArg,
     ChatLunaLLMChainWrapper,
+    DEFAULT_CHAT_HISTORY_PERSISTENCE_POLICY,
     SystemPrompts
 } from 'koishi-plugin-chatluna/llm-core/chain/base'
 import {
     ChatLunaBaseEmbeddings,
-    ChatLunaChatModel
+    ChatLunaChatModel,
+    type ChatLunaModelCallOptions
 } from 'koishi-plugin-chatluna/llm-core/platform/model'
 import { ChatLunaTool } from 'koishi-plugin-chatluna/llm-core/platform/types'
 import {
@@ -35,13 +37,14 @@ import { PresetTemplate } from 'koishi-plugin-chatluna/llm-core/prompt'
 import { ChatLunaChatPrompt } from 'koishi-plugin-chatluna/llm-core/chain/prompt'
 import type { ChatLunaPromptRenderService } from 'koishi-plugin-chatluna/services/chat'
 import { KoishiChatMessageHistory } from 'koishi-plugin-chatluna/llm-core/memory/message'
+import { TOOL_MEMORY_STORAGE_KEY } from 'koishi-plugin-chatluna/llm-core/memory/message'
 import { computed, ComputedRef } from '@vue/reactivity'
 import {
     getMessageContent,
     sanitizeToolLogValue
 } from 'koishi-plugin-chatluna/utils/string'
 import type { ChatLunaContextManagerService } from 'koishi-plugin-chatluna/llm-core/prompt'
-import type { AgentFinishContract } from '../agent/reply_plan'
+import type { AgentFinishContract } from '../agent'
 
 export interface ChatLunaPluginChainInput {
     prompt: ChatLunaChatPrompt
@@ -53,6 +56,7 @@ export interface ChatLunaPluginChainInput {
     contextManager: ChatLunaContextManagerService
     toolMask?: ToolMask
     finishContract?: AgentFinishContract
+    toolChoice?: ChatLunaModelCallOptions['tool_choice']
 }
 
 function cloneAIMessage(
@@ -189,6 +193,8 @@ export class ChatLunaPluginChain
 
     finishContract?: AgentFinishContract
 
+    toolChoice?: ChatLunaModelCallOptions['tool_choice']
+
     private _toolsRef: ReturnType<typeof createToolsRef>
 
     constructor({
@@ -201,7 +207,8 @@ export class ChatLunaPluginChain
         agentMode,
         contextManager,
         toolMask,
-        finishContract
+        finishContract,
+        toolChoice
     }: ChatLunaPluginChainInput & {
         tools: ComputedRef<ChatLunaTool[]>
         llm: ChatLunaChatModel
@@ -218,6 +225,7 @@ export class ChatLunaPluginChain
         this.contextManager = contextManager
         this.toolMask = toolMask
         this.finishContract = finishContract
+        this.toolChoice = toolChoice
 
         this._toolsRef = createToolsRef({
             tools: this.tools,
@@ -226,6 +234,22 @@ export class ChatLunaPluginChain
         })
 
         this.executor = this._createExecutor()
+    }
+
+    getHistoryPersistencePolicy() {
+        if (this.finishContract == null) {
+            return DEFAULT_CHAT_HISTORY_PERSISTENCE_POLICY
+        }
+
+        return {
+            persistIntermediateAgentMessages: false,
+            toolMemory: {
+                enabled: true,
+                storageKey: TOOL_MEMORY_STORAGE_KEY,
+                maxEntries: 3,
+                finishToolName: this.finishContract.toolName
+            }
+        }
     }
 
     static fromLLMAndTools(
@@ -239,7 +263,8 @@ export class ChatLunaPluginChain
             variableService,
             contextManager,
             toolMask,
-            finishContract
+            finishContract,
+            toolChoice
         }: Omit<ChatLunaPluginChainInput, 'prompt'>
     ): ChatLunaPluginChain {
         const prompt = new ChatLunaChatPrompt({
@@ -263,7 +288,8 @@ export class ChatLunaPluginChain
             variableService,
             contextManager,
             toolMask,
-            finishContract
+            finishContract,
+            toolChoice
         })
     }
 
@@ -302,6 +328,7 @@ export class ChatLunaPluginChain
             chat_history?: BaseMessage[]
             id?: string
             session?: Session
+            tool_choice?: ChatLunaModelCallOptions['tool_choice']
         } = {
             input: message
         }
@@ -345,11 +372,33 @@ export class ChatLunaPluginChain
             conversationId
         }
         requests['variables_hide'] = requests['variables']
+        if (this.toolChoice != null) {
+            requests['tool_choice'] = this.toolChoice
+        }
         const overrideRequestParams =
             message.additional_kwargs?.overrideRequestParams ??
             message.additional_kwargs?.qqbot_override_request_params
         if (overrideRequestParams != null) {
             requests['overrideRequestParams'] = overrideRequestParams
+        }
+        const afterUserMessage =
+            message.additional_kwargs?.qqbot_after_user_message
+        if (afterUserMessage != null) {
+            requests['after_user_message'] = afterUserMessage
+        }
+        const finalResponseSchema =
+            message.additional_kwargs?.qqbot_final_response_schema
+        if (finalResponseSchema != null) {
+            requests['qqbot_final_response_schema'] = finalResponseSchema
+        }
+        const finalResponseInstruction =
+            message.additional_kwargs?.qqbot_final_response_instruction
+        if (
+            typeof finalResponseInstruction === 'string' &&
+            finalResponseInstruction.trim().length > 0
+        ) {
+            requests['qqbot_final_response_instruction'] =
+                finalResponseInstruction.trim()
         }
         requests['configurable'] = {
             session,
@@ -421,32 +470,28 @@ export class ChatLunaPluginChain
             )
         }
 
-        for (let i = 0; i < 3; i++) {
-            if (signal?.aborted) {
-                throw (
-                    signal.reason ??
-                    new ChatLunaError(ChatLunaErrorCode.ABORTED)
-                )
+        if (signal?.aborted) {
+            throw (
+                signal.reason ?? new ChatLunaError(ChatLunaErrorCode.ABORTED)
+            )
+        }
+
+        try {
+            response = await request()
+        } catch (e) {
+            if (
+                e instanceof ChatLunaError &&
+                e.errorCode === ChatLunaErrorCode.ABORTED
+            ) {
+                throw e
             }
 
-            try {
-                response = await request()
-                break
-            } catch (e) {
-                if (
-                    e instanceof ChatLunaError &&
-                    e.errorCode === ChatLunaErrorCode.ABORTED
-                ) {
-                    throw e
-                }
-
-                if ((e as Error)?.message?.includes('Aborted')) {
-                    throw new ChatLunaError(ChatLunaErrorCode.ABORTED)
-                }
-
-                logger.error(e)
-                error = e
+            if ((e as Error)?.message?.includes('Aborted')) {
+                throw new ChatLunaError(ChatLunaErrorCode.ABORTED)
             }
+
+            logger.error(e)
+            error = e
         }
 
         await events?.['llm-used-token-count']?.(usedToken)

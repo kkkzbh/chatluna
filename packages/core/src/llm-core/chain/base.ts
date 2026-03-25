@@ -28,12 +28,34 @@ import type { AgentEvent, MessageQueue } from '../agent/types'
 
 export type SystemPrompts = BaseMessage[]
 
+export interface ToolMemoryPersistencePolicy {
+    enabled: boolean
+    storageKey: string
+    maxEntries: number
+    finishToolName?: string
+}
+
+export interface ChatHistoryPersistencePolicy {
+    persistIntermediateAgentMessages: boolean
+    toolMemory?: ToolMemoryPersistencePolicy | null
+}
+
+export const DEFAULT_CHAT_HISTORY_PERSISTENCE_POLICY: ChatHistoryPersistencePolicy =
+    {
+        persistIntermediateAgentMessages: true,
+        toolMemory: null
+    }
+
 export abstract class ChatLunaLLMChainWrapper {
     abstract call(arg: ChatLunaLLMCallArg): Promise<ChainValues>
 
     abstract historyMemory: BufferMemory
 
     abstract get model(): ChatLunaChatModel
+
+    getHistoryPersistencePolicy(): ChatHistoryPersistencePolicy {
+        return DEFAULT_CHAT_HISTORY_PERSISTENCE_POLICY
+    }
 }
 
 export interface ChatLunaLLMCallArg {

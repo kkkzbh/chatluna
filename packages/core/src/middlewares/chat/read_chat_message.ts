@@ -675,6 +675,18 @@ async function oldImageRead(
 }
 
 async function readImage(ctx: Context, url: string) {
+    if (url.startsWith('base64://')) {
+        const base64 = url.slice('base64://'.length)
+        const buffer = Buffer.from(base64, 'base64')
+        const ext = getImageType(buffer)
+
+        return {
+            base64Source: `data:${ext ?? 'image/jpeg'};base64,${base64}`,
+            buffer,
+            ext
+        }
+    }
+
     if (url.startsWith('data:image') && url.includes('base64')) {
         const buffer = Buffer.from(url.split(',')[1], 'base64')
         const ext = getImageType(buffer)

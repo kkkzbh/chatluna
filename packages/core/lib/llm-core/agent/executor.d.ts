@@ -4,8 +4,7 @@ import { Runnable, type RunnableConfig } from '@langchain/core/runnables';
 import { StructuredTool, ToolInputParsingException } from '@langchain/core/tools';
 import type { ChainValues } from '@langchain/core/utils/types';
 import { BaseChain, ChainInputs } from 'koishi-plugin-chatluna/llm-core/chain/base';
-import { AgentEvent, AgentObservation, AgentStep, MessageQueue } from './types';
-import type { AgentFinishContract } from './reply_plan';
+import { AgentEvent, AgentFinishContract, AgentObservation, AgentStep, MessageQueue } from './types';
 export declare function runAgent(options: RunAgentOptions): AsyncGenerator<AgentEvent>;
 export declare class AgentExecutor extends BaseChain<ChainValues, AgentExecutorOutput> {
     lc_serializable: boolean;

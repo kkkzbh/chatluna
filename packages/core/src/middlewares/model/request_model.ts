@@ -39,6 +39,11 @@ let logger: Logger
 
 const requestIdCache = new Map<string, string>()
 
+type InputContentMeta = {
+    hasImageInput?: boolean
+    imageCount?: number
+}
+
 export function apply(ctx: Context, config: Config, chain: ChatChain) {
     logger = createLogger(ctx)
     chain
@@ -57,6 +62,15 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             }
 
             const originContent = inputMessage.content
+            const originMeta = resolveInputContentMeta(
+                originContent,
+                inputMessage.additional_kwargs?.qqbot_input_content_meta
+            )
+
+            inputMessage.additional_kwargs = {
+                ...(inputMessage.additional_kwargs ?? {}),
+                qqbot_input_content_meta: originMeta
+            }
 
             if (presetTemplate.formatUserPromptString != null) {
                 inputMessage.content = await processUserPrompt(
@@ -67,6 +81,8 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                     room
                 )
             }
+
+            ensureImageContentIntegrity(inputMessage.content, originMeta)
 
             const bufferText = new StreamingBufferText(
                 3,
@@ -256,7 +272,11 @@ function createToolCallHandler(
     ) => {
         logger.debug(`Call tool: ${tool} with ${JSON.stringify(arg)}`)
 
-        if (context.options.room?.chatMode === 'reply-agent') {
+        if (
+            context.options.room?.chatMode === 'plugin' &&
+            context.options.inputMessage?.additional_kwargs?.qqbot_reply_mode ===
+                'agent'
+        ) {
             return
         }
 
@@ -326,9 +346,8 @@ async function processUserPrompt(
         ).then((result) => result.text)
     }
 
-    const sortedContent = sortContentByType(originContent)
     return await Promise.all(
-        sortedContent.map(async (message) =>
+        originContent.map(async (message) =>
             message.type === 'text'
                 ? {
                       type: 'text',
@@ -345,15 +364,50 @@ async function processUserPrompt(
     )
 }
 
-function sortContentByType(content: MessageContentComplex[]) {
-    return content.sort((a, b) =>
-        a.type === 'text'
-            ? -1
-            : b.type === 'text'
-              ? 1
-              : a.type < b.type
-                ? -1
-                : 1
+function countImageParts(content: MessageContent) {
+    return Array.isArray(content)
+        ? content.filter((part) => part?.type === 'image_url').length
+        : 0
+}
+
+function resolveInputContentMeta(
+    content: MessageContent,
+    rawMeta: unknown
+): Required<InputContentMeta> {
+    const meta =
+        rawMeta != null && typeof rawMeta === 'object'
+            ? (rawMeta as InputContentMeta)
+            : {}
+
+    const imageCount = Math.max(
+        Number.isFinite(meta.imageCount) ? Number(meta.imageCount) : 0,
+        countImageParts(content)
+    )
+
+    return {
+        hasImageInput: Boolean(meta.hasImageInput) || imageCount > 0,
+        imageCount
+    }
+}
+
+function ensureImageContentIntegrity(
+    content: MessageContent,
+    meta: Required<InputContentMeta>
+) {
+    if (!meta.hasImageInput && meta.imageCount < 1) {
+        return
+    }
+
+    const currentImageCount = countImageParts(content)
+    if (currentImageCount > 0) {
+        return
+    }
+
+    throw new ChatLunaError(
+        ChatLunaErrorCode.UNKNOWN_ERROR,
+        new Error(
+            `Input image content was lost before model request (expected ${meta.imageCount} image part(s)).`
+        )
     )
 }
 

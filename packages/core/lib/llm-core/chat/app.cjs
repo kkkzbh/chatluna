@@ -97,7 +97,7 @@ async function initModel(ctx, service, llmPlatform, llmModelName) {
 }
 __name(initModel, "initModel");
 function supportChatMode(modelInfo, chatMode) {
-  if (!modelInfo.capabilities.includes(import_types.ModelCapabilities.ToolCall) && (chatMode === "plugin" || chatMode === "reply-agent")) {
+  if (!modelInfo.capabilities.includes(import_types.ModelCapabilities.ToolCall) && chatMode === "plugin") {
     return false;
   }
   return true;
@@ -377,6 +377,14 @@ var InfiniteContextManager = class {
 };
 
 // src/llm-core/chat/app.ts
+function filterPromptVisibleAdditionalArgs(additionalArgs) {
+  return Object.fromEntries(
+    Object.entries(additionalArgs).filter(
+      ([key]) => !key.startsWith(import_message.INTERNAL_ADDITIONAL_ARG_PREFIX)
+    )
+  );
+}
+__name(filterPromptVisibleAdditionalArgs, "filterPromptVisibleAdditionalArgs");
 var ChatInterface = class {
   constructor(ctx, input) {
     this.ctx = ctx;
@@ -443,7 +451,9 @@ var ChatInterface = class {
       import_koishi_plugin_chatluna3.logger.error(error);
     }
     try {
-      const additionalArgs = await this._chatHistory.getAdditionalArgs();
+      const additionalArgs = filterPromptVisibleAdditionalArgs(
+        await this._chatHistory.getAdditionalArgs()
+      );
       arg.variables = arg.variables ?? {};
       if (arg.postHandler?.variables) {
         for (const key in arg.postHandler.variables) {
@@ -459,6 +469,8 @@ var ChatInterface = class {
   }
   async processChat(arg, wrapper) {
     let hasSavedUser = false;
+    const historyPolicy = wrapper.getHistoryPersistencePolicy();
+    const collectedToolSteps = [];
     const saveUser = /* @__PURE__ */ __name(async () => {
       if (hasSavedUser) {
         return;
@@ -480,12 +492,17 @@ var ChatInterface = class {
       messageQueue: arg.messageQueue,
       onAgentEvent: /* @__PURE__ */ __name(async (event) => {
         if (event.type === "tool-result") {
+          collectedToolSteps.push(...event.steps);
           await saveUser();
-          await this._chatHistory.addAgentToolBatch(event.steps);
+          if (historyPolicy.persistIntermediateAgentMessages) {
+            await this._chatHistory.addAgentToolBatch(event.steps);
+          }
         }
         if (event.type === "human-update") {
           await saveUser();
-          await this._chatHistory.addMessages(event.messages);
+          if (historyPolicy.persistIntermediateAgentMessages) {
+            await this._chatHistory.addMessages(event.messages);
+          }
         }
         await arg.onAgentEvent?.(event);
       }, "onAgentEvent")
@@ -511,6 +528,20 @@ var ChatInterface = class {
         saveMessage = displayResponse;
       }
       await this._chatHistory.addMessage(saveMessage);
+    }
+    if (historyPolicy.toolMemory?.enabled) {
+      const toolMemoryEntries = (0, import_message.buildToolMemoryEntriesFromSteps)(
+        collectedToolSteps,
+        {
+          turnId: arg.requestId,
+          createdAt: /* @__PURE__ */ new Date(),
+          finishToolName: historyPolicy.toolMemory.finishToolName
+        }
+      );
+      await this._chatHistory.storeToolMemoryEntries(toolMemoryEntries, {
+        storageKey: historyPolicy.toolMemory.storageKey,
+        maxEntries: historyPolicy.toolMemory.maxEntries
+      });
     }
     try {
       await this.ctx.parallel(
@@ -661,11 +692,11 @@ var ChatInterface = class {
     await this._chatHistory.clear();
     await this._chain?.value?.model.clearContext(this._input.conversationId);
   }
-  async normalizeReplyAgentHistory(finalVisibleText, updatedAt = /* @__PURE__ */ new Date()) {
+  async normalizeResearchReplyHistory(finalVisibleText, updatedAt = /* @__PURE__ */ new Date()) {
     if (this._chatHistory == null) {
       await this._createChatHistory();
     }
-    return this._chatHistory.normalizeReplyAgentHistory(
+    return this._chatHistory.normalizeResearchReplyHistory(
       finalVisibleText,
       updatedAt
     );

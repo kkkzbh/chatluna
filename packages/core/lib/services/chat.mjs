@@ -881,6 +881,31 @@ import {
   isMessageContentImageUrl,
   isMessageContentText
 } from "koishi-plugin-chatluna/utils/string";
+function toContentParts(content) {
+  if (Array.isArray(content)) {
+    return [...content];
+  }
+  if (typeof content === "string") {
+    return content.trim().length > 0 ? [{ type: "text", text: content }] : [];
+  }
+  return [];
+}
+__name(toContentParts, "toContentParts");
+function extractText(content) {
+  if (typeof content === "string") return content;
+  return Array.isArray(content) ? content.filter((item) => isMessageContentText(item)).map((item) => item.text).join("") : "";
+}
+__name(extractText, "extractText");
+function extractImages(content) {
+  return Array.isArray(content) ? content.filter((item) => isMessageContentImageUrl(item)) : [];
+}
+__name(extractImages, "extractImages");
+function upsertLeadingTextPart(content, text) {
+  const parts = toContentParts(content);
+  const remaining = parts.filter((item) => !isMessageContentText(item));
+  return [{ type: "text", text }, ...remaining];
+}
+__name(upsertLeadingTextPart, "upsertLeadingTextPart");
 var MessageTransformer = class {
   constructor(_config) {
     this._config = _config;
@@ -925,11 +950,6 @@ var MessageTransformer = class {
           includeQuoteReply: options.includeQuoteReply
         }
       );
-      const extractText = /* @__PURE__ */ __name((content) => {
-        if (typeof content === "string") return content;
-        return Array.isArray(content) ? content.filter((item) => isMessageContentText(item)).map((item) => item.text).join("") : "";
-      }, "extractText");
-      const extractImages = /* @__PURE__ */ __name((content) => Array.isArray(content) ? content.filter((item) => isMessageContentImageUrl(item)) : [], "extractImages");
       const quoteText = extractText(quoteMessage.content);
       const quoteImages = extractImages(quoteMessage.content);
       const hasImages = extractImages(message.content).length > 0 || quoteImages.length > 0;
@@ -946,23 +966,19 @@ var MessageTransformer = class {
       const quoteSaid = session.text("chatluna.quote_said");
       const quoteHeader = quoteTimestamp ? `${quoteTimestamp} ${quoteUsername}` : quoteUsername;
       if (hasImages) {
-        if (typeof message.content === "string") {
-          message.content = message.content.trim().length > 0 ? [{ type: "text", text: message.content }] : [];
-        }
+        const currentParts = toContentParts(message.content);
         if (quoteText && quoteText !== "[image]") {
-          const currentText = extractText(message.content);
+          const currentText = extractText(currentParts);
           const quotedContent = `Referenced message: [${quoteHeader} ${quoteSaid}："${quoteText}"]
 
 User's message: ${currentText}`;
-          message.content = message.content.filter(
-            (item) => item.type !== "text"
-          );
-          message.content.unshift({
-            type: "text",
-            text: quotedContent
-          });
+          message.content = [
+            ...quoteImages,
+            ...upsertLeadingTextPart(currentParts, quotedContent)
+          ];
+        } else {
+          message.content = [...quoteImages, ...currentParts];
         }
-        message.content = [...quoteImages, ...message.content];
       } else if (quoteText && quoteText !== "[image]") {
         const currentText = extractText(message.content);
         message.content = `Referenced message: [${quoteHeader} ${quoteSaid}："${quoteText}"]
@@ -1111,6 +1127,93 @@ User's message: ${currentText}`;
 
 // src/services/chat.ts
 import { chatLunaFetch, ws } from "koishi-plugin-chatluna/utils/request";
+
+// src/utils/qqbot_speaker.ts
+import { isMessageContentText as isMessageContentText2 } from "../utils/langchain.cjs";
+function formatSpeakerName(name) {
+  return JSON.stringify(name);
+}
+__name(formatSpeakerName, "formatSpeakerName");
+function formatQqbotSpeakerLine(speakerId, speakerName, text) {
+  const prefix = `[speaker_id=${speakerId} speaker_name=${formatSpeakerName(speakerName)}]`;
+  return text.length > 0 ? `${prefix} ${text}` : prefix;
+}
+__name(formatQqbotSpeakerLine, "formatQqbotSpeakerLine");
+function resolveSpeakerFormat(additionalKwargs) {
+  const meta = additionalKwargs?.qqbot_speaker_format;
+  if (meta?.version !== "speaker_id_v1") {
+    return null;
+  }
+  if (meta.isDirect || meta.preformatted) {
+    return null;
+  }
+  const speakerId = meta.speakerId?.trim();
+  const speakerName = (meta.speakerName?.trim() || speakerId)?.trim();
+  if (!speakerId || !speakerName) {
+    return null;
+  }
+  return {
+    ...meta,
+    speakerId,
+    speakerName
+  };
+}
+__name(resolveSpeakerFormat, "resolveSpeakerFormat");
+function serializeQqbotHumanMessageContent(content, additionalKwargs) {
+  const speakerFormat = resolveSpeakerFormat(additionalKwargs);
+  if (speakerFormat == null) {
+    return content;
+  }
+  const { speakerId, speakerName } = speakerFormat;
+  const resolvedSpeakerId = speakerId;
+  const resolvedSpeakerName = speakerName;
+  if (typeof content === "string") {
+    return formatQqbotSpeakerLine(
+      resolvedSpeakerId,
+      resolvedSpeakerName,
+      content
+    );
+  }
+  if (!Array.isArray(content)) {
+    return formatQqbotSpeakerLine(
+      resolvedSpeakerId,
+      resolvedSpeakerName,
+      ""
+    );
+  }
+  const textIndex = content.findIndex(
+    (part) => isMessageContentText2(part)
+  );
+  if (textIndex === -1) {
+    return [
+      {
+        type: "text",
+        text: formatQqbotSpeakerLine(
+          resolvedSpeakerId,
+          resolvedSpeakerName,
+          ""
+        )
+      },
+      ...content
+    ];
+  }
+  return content.map((part, index) => {
+    if (index !== textIndex || !isMessageContentText2(part)) {
+      return part;
+    }
+    return {
+      ...part,
+      text: formatQqbotSpeakerLine(
+        resolvedSpeakerId,
+        resolvedSpeakerName,
+        part.text
+      )
+    };
+  });
+}
+__name(serializeQqbotHumanMessageContent, "serializeQqbotHumanMessageContent");
+
+// src/services/chat.ts
 import { DefaultRenderer } from "koishi-plugin-chatluna";
 import { withResolver } from "koishi-plugin-chatluna/utils/promise";
 import { emptyEmbeddings } from "koishi-plugin-chatluna/llm-core/model/in_memory";
@@ -1734,6 +1837,28 @@ function toMessages(input) {
 __name(toMessages, "toMessages");
 
 // src/services/chat.ts
+function getImagePartCount(message) {
+  return Array.isArray(message.content) ? message.content.filter((part) => part?.type === "image_url").length : 0;
+}
+__name(getImagePartCount, "getImagePartCount");
+function ensureMessageImageIntegrity(message) {
+  const rawMeta = message.additional_kwargs?.qqbot_input_content_meta;
+  const meta = rawMeta != null && typeof rawMeta === "object" ? rawMeta : null;
+  if (!meta?.hasImageInput && (meta?.imageCount ?? 0) < 1) {
+    return;
+  }
+  const imageCount = getImagePartCount(message);
+  if (imageCount > 0) {
+    return;
+  }
+  throw new ChatLunaError3(
+    ChatLunaErrorCode3.UNKNOWN_ERROR,
+    new Error(
+      `Input image content was lost before HumanMessage creation (expected ${meta?.imageCount ?? 1} image part(s)).`
+    )
+  );
+}
+__name(ensureMessageImageIntegrity, "ensureMessageImageIntegrity");
 var ChatLunaService = class extends Service {
   constructor(ctx, config) {
     super(ctx, "chatluna");
@@ -1904,9 +2029,9 @@ var ChatLunaService = class extends Service {
     const chatBridger = this._chatInterfaceWrapper ?? this._createChatInterfaceWrapper();
     return chatBridger.compressContext(room, force);
   }
-  async normalizeReplyAgentHistory(room, finalVisibleText, updatedAt = /* @__PURE__ */ new Date()) {
+  async normalizeResearchReplyHistory(room, finalVisibleText, updatedAt = /* @__PURE__ */ new Date()) {
     const chatBridger = this._chatInterfaceWrapper ?? this._createChatInterfaceWrapper();
-    return chatBridger.normalizeReplyAgentHistory(
+    return chatBridger.normalizeResearchReplyHistory(
       room,
       finalVisibleText,
       updatedAt
@@ -2478,8 +2603,12 @@ var ChatInterfaceWrapper = class {
       };
       this._requestIdMap.set(requestId, abortController);
       this._activeRequests.set(conversationId, activeRequest);
+      ensureMessageImageIntegrity(message);
       const humanMessage = new HumanMessage3({
-        content: message.content,
+        content: serializeQqbotHumanMessageContent(
+          message.content,
+          message.additional_kwargs
+        ),
         name: message.name,
         id: session.userId,
         additional_kwargs: {
@@ -2565,14 +2694,14 @@ ${reasoningContent}`
     return true;
   }
   async appendPendingMessage(conversationId, message, chatMode) {
-    if (chatMode != null && chatMode !== "plugin" && chatMode !== "reply-agent") {
+    if (chatMode != null && chatMode !== "plugin") {
       return false;
     }
     const activeRequest = this._activeRequests.get(conversationId);
     if (activeRequest == null) {
       return false;
     }
-    if (activeRequest.chatMode !== "plugin" && activeRequest.chatMode !== "reply-agent") {
+    if (activeRequest.chatMode !== "plugin") {
       return false;
     }
     if (activeRequest.lastDecision != null) {
@@ -2651,14 +2780,14 @@ ${reasoningContent}`
       ]);
     }
   }
-  async normalizeReplyAgentHistory(room, finalVisibleText, updatedAt = /* @__PURE__ */ new Date()) {
+  async normalizeResearchReplyHistory(room, finalVisibleText, updatedAt = /* @__PURE__ */ new Date()) {
     const { conversationId } = room;
     const requestId = randomUUID();
     try {
       await this._conversationQueue.add(conversationId, requestId);
       await this._conversationQueue.wait(conversationId, requestId, 0);
       const chatInterface = await this.query(room, true);
-      return await chatInterface.normalizeReplyAgentHistory(
+      return await chatInterface.normalizeResearchReplyHistory(
         finalVisibleText,
         updatedAt
       );
@@ -2721,8 +2850,9 @@ ${reasoningContent}`
   }
   async _createChatInterface(room) {
     const config = this._service.currentConfig;
+    const chatMode = room.chatMode;
     const chatInterface = new ChatInterface(this._service.ctx.root, {
-      chatMode: room.chatMode,
+      chatMode,
       botName: config.botNames[0],
       preset: this._service.preset.getPreset(room.preset),
       model: room.model,

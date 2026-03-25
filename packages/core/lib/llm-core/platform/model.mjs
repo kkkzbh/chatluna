@@ -210,7 +210,8 @@ var ChatLunaChatModel = class extends BaseChatModel {
       "variables_hide",
       "overrideRequestParams",
       "stream",
-      "tools"
+      "tools",
+      "tool_choice"
     ];
   }
   /**
@@ -244,6 +245,7 @@ var ChatLunaChatModel = class extends BaseChatModel {
       stop: options?.stop ?? this._options.stop,
       stream: options?.stream ?? this._options.stream,
       tools: options?.tools ?? this._options.tools,
+      tool_choice: options?.tool_choice ?? this._options.tool_choice,
       id,
       signal: options?.signal ?? this._options.signal,
       timeout: options?.timeout ?? this._options.timeout

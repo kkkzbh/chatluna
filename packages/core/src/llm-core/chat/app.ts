@@ -9,7 +9,9 @@ import { BufferMemory } from 'koishi-plugin-chatluna/llm-core/memory/langchain'
 import { logger } from 'koishi-plugin-chatluna'
 import {
     KoishiChatMessageHistory,
-    type ReplyAgentHistoryNormalizationResult
+    type ResearchReplyHistoryNormalizationResult,
+    INTERNAL_ADDITIONAL_ARG_PREFIX,
+    buildToolMemoryEntriesFromSteps
 } from 'koishi-plugin-chatluna/llm-core/memory/message'
 import { ChatLunaChatModel } from 'koishi-plugin-chatluna/llm-core/platform/model'
 import { ModelInfo } from 'koishi-plugin-chatluna/llm-core/platform/types'
@@ -30,6 +32,17 @@ import {
 } from './helper'
 import type { CompressContextResult } from './infinite_context'
 import { InfiniteContextManager } from './infinite_context'
+import type { AgentStep } from '../agent/types'
+
+function filterPromptVisibleAdditionalArgs(
+    additionalArgs: Record<string, string>
+): Record<string, string> {
+    return Object.fromEntries(
+        Object.entries(additionalArgs).filter(
+            ([key]) => !key.startsWith(INTERNAL_ADDITIONAL_ARG_PREFIX)
+        )
+    )
+}
 
 export class ChatInterface {
     private _input: ChatInterfaceInput
@@ -116,7 +129,9 @@ export class ChatInterface {
         }
 
         try {
-            const additionalArgs = await this._chatHistory.getAdditionalArgs()
+            const additionalArgs = filterPromptVisibleAdditionalArgs(
+                await this._chatHistory.getAdditionalArgs()
+            )
 
             arg.variables = arg.variables ?? {}
 
@@ -141,6 +156,8 @@ export class ChatInterface {
         wrapper: ChatLunaLLMChainWrapper
     ): Promise<ChainValues> {
         let hasSavedUser = false
+        const historyPolicy = wrapper.getHistoryPersistencePolicy()
+        const collectedToolSteps: AgentStep[] = []
 
         const saveUser = async () => {
             if (hasSavedUser) {
@@ -166,13 +183,18 @@ export class ChatInterface {
             messageQueue: arg.messageQueue,
             onAgentEvent: async (event) => {
                 if (event.type === 'tool-result') {
+                    collectedToolSteps.push(...event.steps)
                     await saveUser()
-                    await this._chatHistory.addAgentToolBatch(event.steps)
+                    if (historyPolicy.persistIntermediateAgentMessages) {
+                        await this._chatHistory.addAgentToolBatch(event.steps)
+                    }
                 }
 
                 if (event.type === 'human-update') {
                     await saveUser()
-                    await this._chatHistory.addMessages(event.messages)
+                    if (historyPolicy.persistIntermediateAgentMessages) {
+                        await this._chatHistory.addMessages(event.messages)
+                    }
                 }
 
                 await arg.onAgentEvent?.(event)
@@ -210,6 +232,22 @@ export class ChatInterface {
             }
 
             await this._chatHistory.addMessage(saveMessage)
+        }
+
+        if (historyPolicy.toolMemory?.enabled) {
+            const toolMemoryEntries = buildToolMemoryEntriesFromSteps(
+                collectedToolSteps,
+                {
+                    turnId: arg.requestId,
+                    createdAt: new Date(),
+                    finishToolName: historyPolicy.toolMemory.finishToolName
+                }
+            )
+
+            await this._chatHistory.storeToolMemoryEntries(toolMemoryEntries, {
+                storageKey: historyPolicy.toolMemory.storageKey,
+                maxEntries: historyPolicy.toolMemory.maxEntries
+            })
         }
 
         // Process response
@@ -395,15 +433,15 @@ export class ChatInterface {
         await this._chain?.value?.model.clearContext(this._input.conversationId)
     }
 
-    async normalizeReplyAgentHistory(
+    async normalizeResearchReplyHistory(
         finalVisibleText: string,
         updatedAt: Date = new Date()
-    ): Promise<ReplyAgentHistoryNormalizationResult> {
+    ): Promise<ResearchReplyHistoryNormalizationResult> {
         if (this._chatHistory == null) {
             await this._createChatHistory()
         }
 
-        return this._chatHistory.normalizeReplyAgentHistory(
+        return this._chatHistory.normalizeResearchReplyHistory(
             finalVisibleText,
             updatedAt
         )

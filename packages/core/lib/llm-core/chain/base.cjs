@@ -23,6 +23,7 @@ __export(base_exports, {
   BaseChain: () => BaseChain,
   ChatLunaLLMChain: () => ChatLunaLLMChain,
   ChatLunaLLMChainWrapper: () => ChatLunaLLMChainWrapper,
+  DEFAULT_CHAT_HISTORY_PERSISTENCE_POLICY: () => DEFAULT_CHAT_HISTORY_PERSISTENCE_POLICY,
   callChatLunaChain: () => callChatLunaChain
 });
 module.exports = __toCommonJS(base_exports);
@@ -31,9 +32,16 @@ var import_runnables = require("@langchain/core/runnables");
 var import_error = require("koishi-plugin-chatluna/utils/error");
 var import_base = require("@langchain/core/language_models/base");
 var import_outputs = require("@langchain/core/outputs");
+var DEFAULT_CHAT_HISTORY_PERSISTENCE_POLICY = {
+  persistIntermediateAgentMessages: true,
+  toolMemory: null
+};
 var ChatLunaLLMChainWrapper = class {
   static {
     __name(this, "ChatLunaLLMChainWrapper");
+  }
+  getHistoryPersistencePolicy() {
+    return DEFAULT_CHAT_HISTORY_PERSISTENCE_POLICY;
   }
 };
 var BaseChain = class extends import_base.BaseLangChain {
@@ -267,5 +275,6 @@ __name(callChatLunaChain, "callChatLunaChain");
   BaseChain,
   ChatLunaLLMChain,
   ChatLunaLLMChainWrapper,
+  DEFAULT_CHAT_HISTORY_PERSISTENCE_POLICY,
   callChatLunaChain
 });

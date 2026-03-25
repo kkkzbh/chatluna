@@ -71,7 +71,42 @@ import { RunnableConfig } from '@langchain/core/runnables'
 import { randomUUID } from 'crypto'
 import type { Notifier } from '@koishijs/plugin-notifier'
 import { ChatLunaContextManagerService } from 'koishi-plugin-chatluna/llm-core/prompt'
-import type { ReplyAgentHistoryNormalizationResult } from 'koishi-plugin-chatluna/llm-core/memory/message'
+import type { ResearchReplyHistoryNormalizationResult } from 'koishi-plugin-chatluna/llm-core/memory/message'
+
+type InputContentMeta = {
+    hasImageInput?: boolean
+    imageCount?: number
+}
+
+function getImagePartCount(message: Message) {
+    return Array.isArray(message.content)
+        ? message.content.filter((part) => part?.type === 'image_url').length
+        : 0
+}
+
+function ensureMessageImageIntegrity(message: Message) {
+    const rawMeta = message.additional_kwargs?.qqbot_input_content_meta
+    const meta =
+        rawMeta != null && typeof rawMeta === 'object'
+            ? (rawMeta as InputContentMeta)
+            : null
+
+    if (!meta?.hasImageInput && (meta?.imageCount ?? 0) < 1) {
+        return
+    }
+
+    const imageCount = getImagePartCount(message)
+    if (imageCount > 0) {
+        return
+    }
+
+    throw new ChatLunaError(
+        ChatLunaErrorCode.UNKNOWN_ERROR,
+        new Error(
+            `Input image content was lost before HumanMessage creation (expected ${meta?.imageCount ?? 1} image part(s)).`
+        )
+    )
+}
 
 export class ChatLunaService extends Service<Config> {
     private _plugins: Record<string, ChatLunaPlugin> = {}
@@ -319,15 +354,15 @@ export class ChatLunaService extends Service<Config> {
         return chatBridger.compressContext(room, force)
     }
 
-    async normalizeReplyAgentHistory(
+    async normalizeResearchReplyHistory(
         room: ConversationRoom,
         finalVisibleText: string,
         updatedAt: Date = new Date()
-    ): Promise<ReplyAgentHistoryNormalizationResult> {
+    ): Promise<ResearchReplyHistoryNormalizationResult> {
         const chatBridger =
             this._chatInterfaceWrapper ?? this._createChatInterfaceWrapper()
 
-        return chatBridger.normalizeReplyAgentHistory(
+        return chatBridger.normalizeResearchReplyHistory(
             room,
             finalVisibleText,
             updatedAt
@@ -1059,6 +1094,8 @@ class ChatInterfaceWrapper {
             this._requestIdMap.set(requestId, abortController)
             this._activeRequests.set(conversationId, activeRequest)
 
+            ensureMessageImageIntegrity(message)
+
             const humanMessage = new HumanMessage({
                 content: serializeQqbotHumanMessageContent(
                     message.content,
@@ -1179,11 +1216,7 @@ class ChatInterfaceWrapper {
         message: HumanMessage,
         chatMode?: string
     ): Promise<boolean> {
-        if (
-            chatMode != null &&
-            chatMode !== 'plugin' &&
-            chatMode !== 'reply-agent'
-        ) {
+        if (chatMode != null && chatMode !== 'plugin') {
             return false
         }
 
@@ -1192,10 +1225,7 @@ class ChatInterfaceWrapper {
         if (activeRequest == null) {
             return false
         }
-        if (
-            activeRequest.chatMode !== 'plugin' &&
-            activeRequest.chatMode !== 'reply-agent'
-        ) {
+        if (activeRequest.chatMode !== 'plugin') {
             return false
         }
 
@@ -1295,7 +1325,7 @@ class ChatInterfaceWrapper {
         }
     }
 
-    async normalizeReplyAgentHistory(
+    async normalizeResearchReplyHistory(
         room: ConversationRoom,
         finalVisibleText: string,
         updatedAt: Date = new Date()
@@ -1308,7 +1338,7 @@ class ChatInterfaceWrapper {
             await this._conversationQueue.wait(conversationId, requestId, 0)
 
             const chatInterface = await this.query(room, true)
-            return await chatInterface.normalizeReplyAgentHistory(
+            return await chatInterface.normalizeResearchReplyHistory(
                 finalVisibleText,
                 updatedAt
             )
@@ -1392,9 +1422,10 @@ class ChatInterfaceWrapper {
         room: ConversationRoom
     ): Promise<ChatHubChatBridgerInfo> {
         const config = this._service.currentConfig
+        const chatMode = room.chatMode
 
         const chatInterface = new ChatInterface(this._service.ctx.root, {
-            chatMode: room.chatMode,
+            chatMode,
             botName: config.botNames[0],
             preset: this._service.preset.getPreset(room.preset),
             model: room.model,

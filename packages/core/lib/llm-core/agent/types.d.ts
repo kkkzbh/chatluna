@@ -168,9 +168,19 @@ export interface SubagentContext {
         startedAt: number;
     };
 }
+export interface AgentFinishContract {
+    toolName: string;
+    errorMessage?: string;
+}
+export interface AgentFinalResponseContract {
+    schema: Record<string, unknown>;
+    name?: string;
+    instruction?: string;
+}
 export type AgentStep = {
     action: AgentAction;
     observation: AgentObservation;
+    outcome: 'success' | 'error';
 };
 export type ScratchpadEntry = AgentStep | {
     type: 'human_update';

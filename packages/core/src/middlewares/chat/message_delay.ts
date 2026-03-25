@@ -52,8 +52,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             const messageId = context.options.messageId
 
             if (
-                (room.chatMode === 'plugin' ||
-                    room.chatMode === 'reply-agent') &&
+                room.chatMode === 'plugin' &&
                 (await ctx.chatluna.appendPendingMessage(
                     conversationId,
                     createPendingMessage(session, room, inputMessage),

@@ -14,9 +14,16 @@ import {
   BaseLangChain
 } from "@langchain/core/language_models/base";
 import { RUN_KEY } from "@langchain/core/outputs";
+var DEFAULT_CHAT_HISTORY_PERSISTENCE_POLICY = {
+  persistIntermediateAgentMessages: true,
+  toolMemory: null
+};
 var ChatLunaLLMChainWrapper = class {
   static {
     __name(this, "ChatLunaLLMChainWrapper");
+  }
+  getHistoryPersistencePolicy() {
+    return DEFAULT_CHAT_HISTORY_PERSISTENCE_POLICY;
   }
 };
 var BaseChain = class extends BaseLangChain {
@@ -249,5 +256,6 @@ export {
   BaseChain,
   ChatLunaLLMChain,
   ChatLunaLLMChainWrapper,
+  DEFAULT_CHAT_HISTORY_PERSISTENCE_POLICY,
   callChatLunaChain
 };

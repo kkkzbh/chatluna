@@ -11,12 +11,6 @@ import {
     modelSchema,
     vectorStoreSchema
 } from 'koishi-plugin-chatluna/utils/schema'
-import {
-    createSubmitReplyPlanTool,
-    REPLY_AGENT_CHAT_MODE,
-    REPLY_AGENT_DEFAULT_TOOL_MASK,
-    REPLY_AGENT_FINISH_CONTRACT
-} from '../agent/reply_plan'
 
 export async function defaultFactory(ctx: Context, service: PlatformService) {
     modelSchema(ctx, true)
@@ -59,9 +53,7 @@ export async function defaultFactory(ctx: Context, service: PlatformService) {
             .filter(
                 ([_, conversation]) =>
                     conversation?.chatInterface?.chatMode === 'plugin' ||
-                    conversation?.chatInterface?.chatMode === 'browsing' ||
-                    conversation?.chatInterface?.chatMode ===
-                        REPLY_AGENT_CHAT_MODE
+                    conversation?.chatInterface?.chatMode === 'browsing'
             )
             .forEach(async ([id, info]) => {
                 const result = await wrapper.clearCache(info.room)
@@ -108,43 +100,10 @@ export async function defaultFactory(ctx: Context, service: PlatformService) {
             )
     )
 
-    service.registerChatChain(
-        REPLY_AGENT_CHAT_MODE,
-        {
-            'zh-CN': '回复 Agent 模式',
-            'en-US': 'Reply agent mode'
-        },
-        (params) =>
-            ChatLunaPluginChain.fromLLMAndTools(
-                params.model,
-                getReplyAgentTools(service),
-                {
-                    variableService: ctx.chatluna.promptRenderer,
-                    contextManager: ctx.chatluna.contextManager,
-                    preset: params.preset,
-                    historyMemory: params.historyMemory,
-                    embeddings: params.embeddings,
-                    agentMode: params.supportChatChain
-                        ? 'tool-calling'
-                        : 'react',
-                    toolMask: REPLY_AGENT_DEFAULT_TOOL_MASK,
-                    finishContract: REPLY_AGENT_FINISH_CONTRACT
-                }
-            )
-    )
 }
 
 function getTools(service: PlatformService) {
     const tools = service.getTools()
 
     return computed(() => tools.value.map((name) => service.getTool(name)))
-}
-
-function getReplyAgentTools(service: PlatformService) {
-    const tools = service.getTools()
-
-    return computed(() => [
-        ...tools.value.map((name) => service.getTool(name)),
-        createSubmitReplyPlanTool()
-    ])
 }

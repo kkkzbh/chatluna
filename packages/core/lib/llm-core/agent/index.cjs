@@ -22,11 +22,6 @@ var agent_exports = {};
 __export(agent_exports, {
   AgentExecutor: () => AgentExecutor,
   MessageQueue: () => MessageQueue,
-  REPLY_AGENT_CHAT_MODE: () => REPLY_AGENT_CHAT_MODE,
-  REPLY_AGENT_DEFAULT_TOOL_MASK: () => REPLY_AGENT_DEFAULT_TOOL_MASK,
-  REPLY_AGENT_FINISH_CONTRACT: () => REPLY_AGENT_FINISH_CONTRACT,
-  REPLY_AGENT_FINISH_TOOL: () => REPLY_AGENT_FINISH_TOOL,
-  SubmitReplyPlanTool: () => SubmitReplyPlanTool,
   _formatIntermediateSteps: () => _formatIntermediateSteps,
   applyToolMask: () => applyToolMask,
   coerceToAgentObservation: () => coerceToAgentObservation,
@@ -34,14 +29,10 @@ __export(agent_exports, {
   createAgentExecutor: () => createAgentExecutor,
   createOpenAIAgent: () => createOpenAIAgent,
   createReactAgent: () => createReactAgent,
-  createSubmitReplyPlanTool: () => createSubmitReplyPlanTool,
   createToolsRef: () => createToolsRef,
   ensureToolMaskAllows: () => ensureToolMaskAllows,
   formatLogToString: () => formatLogToString,
   intersectToolMasks: () => intersectToolMasks,
-  isReplyAgentChatMode: () => isReplyAgentChatMode,
-  replyPlanSchema: () => replyPlanSchema,
-  replyPlanSegmentSchema: () => replyPlanSegmentSchema,
   runAgent: () => runAgent,
   toToolInputErrorObservation: () => toToolInputErrorObservation
 });
@@ -407,14 +398,16 @@ async function executeTools(actions, toolMap, config, signal, handleParsingError
           action,
           observation: coerceToAgentObservation(
             typeof action.toolInput === "string" ? action.toolInput : JSON.stringify(action.toolInput) ?? ""
-          )
+          ),
+          outcome: "error"
         };
       }
       const tool = toolMap[action.tool?.toLowerCase()];
       if (tool == null) {
         return {
           action,
-          observation: `${action.tool} is not a valid tool, try another one.`
+          observation: `${action.tool} is not a valid tool, try another one.`,
+          outcome: "error"
         };
       }
       const mask = config?.configurable?.["toolMask"] ?? config?.configurable?.["subagentContext"]?.["toolMask"];
@@ -422,14 +415,16 @@ async function executeTools(actions, toolMap, config, signal, handleParsingError
         const allowed = Object.values(toolMap).map((item) => item.name).filter((name) => applyToolMask(name, mask));
         return {
           action,
-          observation: `Tool '${action.tool}' is not allowed for the current sub-agent. Available tools: ${allowed.join(", ")}`
+          observation: `Tool '${action.tool}' is not allowed for the current sub-agent. Available tools: ${allowed.join(", ")}`,
+          outcome: "error"
         };
       }
       const callMask = config?.configurable?.["toolMask"]?.toolCallMask ?? config?.configurable?.["subagentContext"]?.["toolMask"]?.toolCallMask;
       if (callMask && !applyToolMask(action.tool, callMask)) {
         return {
           action,
-          observation: `You do not have permission to call tool '${action.tool}'. Try another tool.`
+          observation: `You do not have permission to call tool '${action.tool}'. Try another tool.`,
+          outcome: "error"
         };
       }
       try {
@@ -439,7 +434,8 @@ async function executeTools(actions, toolMap, config, signal, handleParsingError
           observation: coerceToAgentObservation(
             observation,
             tool.name
-          )
+          ),
+          outcome: "success"
         };
       } catch (e) {
         if (e instanceof import_tools.ToolInputParsingException) {
@@ -447,7 +443,8 @@ async function executeTools(actions, toolMap, config, signal, handleParsingError
             action,
             observation: coerceToAgentObservation(
               toToolInputErrorObservation(handleParsingErrors, e)
-            )
+            ),
+            outcome: "error"
           };
         }
         if (handleToolRuntimeErrors != null) {
@@ -456,7 +453,8 @@ async function executeTools(actions, toolMap, config, signal, handleParsingError
             observation: coerceToAgentObservation(
               handleToolRuntimeErrors(e),
               tool.name
-            )
+            ),
+            outcome: "error"
           };
         }
         return {
@@ -464,7 +462,8 @@ async function executeTools(actions, toolMap, config, signal, handleParsingError
           observation: coerceToAgentObservation(
             `Something went wrong. Please Try Again. ${String(e)}`,
             tool.name
-          )
+          ),
+          outcome: "error"
         };
       }
     })
@@ -472,13 +471,14 @@ async function executeTools(actions, toolMap, config, signal, handleParsingError
 }
 __name(executeTools, "executeTools");
 async function plan(agent, input, steps, scratchpad, config) {
+  const planConfig = buildAgentPlanningConfig(input, config);
   const stream = await agent.stream(
     {
       ...input,
       steps,
       scratchpadEntries: scratchpad
     },
-    config
+    planConfig
   );
   let result;
   for await (const chunk of stream) {
@@ -496,6 +496,403 @@ async function plan(agent, input, steps, scratchpad, config) {
   return Array.isArray(result) ? result : [result];
 }
 __name(plan, "plan");
+var AGENT_MODEL_CALL_OPTION_KEYS = [
+  "model",
+  "temperature",
+  "maxTokens",
+  "maxTokenLimit",
+  "topP",
+  "frequencyPenalty",
+  "presencePenalty",
+  "n",
+  "logitBias",
+  "id",
+  "variables",
+  "variables_hide",
+  "overrideRequestParams",
+  "stream",
+  "tool_choice",
+  "stop",
+  "timeout"
+];
+function buildAgentPlanningConfig(input, config) {
+  const modelCallOptions = {};
+  for (const key of AGENT_MODEL_CALL_OPTION_KEYS) {
+    const value = input[key];
+    if (value !== void 0) {
+      modelCallOptions[key] = value;
+    }
+  }
+  if (Object.keys(modelCallOptions).length < 1) {
+    return config;
+  }
+  return {
+    ...config ?? {},
+    ...modelCallOptions
+  };
+}
+__name(buildAgentPlanningConfig, "buildAgentPlanningConfig");
+var MAX_FINISH_CONTRACT_RETRY = 2;
+function buildFinishContractViolationMessage(finishContract, output, retryCount) {
+  const previousOutput = toOutput(
+    output.returnValues["output"] ?? output.returnValues["message"]?.content ?? ""
+  ).trim();
+  const retryNotice = retryCount >= MAX_FINISH_CONTRACT_RETRY ? "This is the final retry." : "Retry immediately.";
+  const lines = [
+    `Protocol violation: you finished without calling ${finishContract.toolName}.`,
+    "Do not speak to the user directly.",
+    `You must end by calling ${finishContract.toolName}.`,
+    "Use JSON arguments only.",
+    'Required format: {"summary":"后台研究结论摘要"}.',
+    retryNotice
+  ];
+  if (previousOutput.length > 0) {
+    lines.push(`Your previous direct reply was: ${JSON.stringify(previousOutput)}`);
+  }
+  return new import_messages3.HumanMessage({
+    content: lines.join("\n")
+  });
+}
+__name(buildFinishContractViolationMessage, "buildFinishContractViolationMessage");
+function normalizeFinalResponseContract(rawSchema, rawInstruction) {
+  if (rawSchema == null || typeof rawSchema !== "object" || Array.isArray(rawSchema)) {
+    return null;
+  }
+  const instruction = typeof rawInstruction === "string" && rawInstruction.trim().length > 0 ? rawInstruction.trim() : void 0;
+  return {
+    schema: rawSchema,
+    name: "qqbot_structured_reply_v1",
+    instruction
+  };
+}
+__name(normalizeFinalResponseContract, "normalizeFinalResponseContract");
+function buildFinalResponseOverrideRequestParams(contract, rawOverride) {
+  const base = rawOverride != null && typeof rawOverride === "object" && !Array.isArray(rawOverride) ? { ...rawOverride } : {};
+  return {
+    ...base,
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: contract.name ?? "qqbot_structured_reply_v1",
+        strict: true,
+        schema: contract.schema
+      }
+    }
+  };
+}
+__name(buildFinalResponseOverrideRequestParams, "buildFinalResponseOverrideRequestParams");
+function tryParseJsonText(text) {
+  const trimmed = text.trim();
+  if (trimmed.length < 2 || !(trimmed.startsWith("{") && trimmed.endsWith("}") || trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+    return text;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return text;
+  }
+}
+__name(tryParseJsonText, "tryParseJsonText");
+function normalizeAgentFinishLogValue(value) {
+  if (typeof value === "string") {
+    return tryParseJsonText(value);
+  }
+  return value;
+}
+__name(normalizeAgentFinishLogValue, "normalizeAgentFinishLogValue");
+var AGENT_INPUT_PREVIEW_MAX_LENGTH = 200;
+var AGENT_HISTORY_PREVIEW_LIMIT = 2;
+var AGENT_VARIABLE_KEY_LIMIT = 12;
+var AGENT_SCHEMA_KEY_LIMIT = 12;
+function isLogRecord(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+__name(isLogRecord, "isLogRecord");
+function compactWhitespace(value) {
+  return value.replace(/\s+/g, " ").trim();
+}
+__name(compactWhitespace, "compactWhitespace");
+function summarizeTextValue(value, maxLength) {
+  const normalized = compactWhitespace(value);
+  if (normalized.length <= maxLength) {
+    return {
+      preview: normalized,
+      length: normalized.length,
+      truncated: false
+    };
+  }
+  return {
+    preview: `${normalized.slice(0, Math.max(0, maxLength - 3))}...`,
+    length: normalized.length,
+    truncated: true
+  };
+}
+__name(summarizeTextValue, "summarizeTextValue");
+function summarizeStringList(values, maxLength) {
+  const uniqueValues = [...new Set(values.filter((value) => value.length > 0))];
+  return {
+    values: uniqueValues.slice(0, maxLength),
+    omittedCount: Math.max(0, uniqueValues.length - maxLength)
+  };
+}
+__name(summarizeStringList, "summarizeStringList");
+function summarizeMessageContent(content) {
+  if (typeof content === "string") {
+    const summary = summarizeTextValue(content, AGENT_INPUT_PREVIEW_MAX_LENGTH);
+    return {
+      ...summary,
+      contentKind: "string",
+      textPartCount: summary.length > 0 ? 1 : 0,
+      imageCount: 0,
+      contentTypes: [],
+      omittedContentTypeCount: 0
+    };
+  }
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  const textParts = [];
+  const contentTypes = [];
+  let imageCount = 0;
+  for (const item of content) {
+    if (typeof item === "string") {
+      textParts.push(item);
+      continue;
+    }
+    if (!(0, import_langchain.isMessageContentComplex)(item)) {
+      continue;
+    }
+    contentTypes.push(item.type);
+    if ((0, import_langchain.isMessageContentText)(item) && typeof item.text === "string") {
+      textParts.push(item.text);
+    } else if (item.type === "image_url") {
+      imageCount += 1;
+    }
+  }
+  const textSummary = textParts.length > 0 ? summarizeTextValue(
+    textParts.join("\n"),
+    AGENT_INPUT_PREVIEW_MAX_LENGTH
+  ) : null;
+  const typeSummary = summarizeStringList(contentTypes, AGENT_SCHEMA_KEY_LIMIT);
+  return {
+    preview: textSummary?.preview ?? (typeSummary.values.length > 0 ? `[${typeSummary.values.join(", ")}]` : ""),
+    length: textSummary?.length ?? 0,
+    truncated: textSummary?.truncated ?? false,
+    contentKind: "array",
+    textPartCount: textParts.length,
+    imageCount,
+    contentTypes: typeSummary.values,
+    omittedContentTypeCount: typeSummary.omittedCount
+  };
+}
+__name(summarizeMessageContent, "summarizeMessageContent");
+function summarizeAgentLogMessagePreview(message) {
+  const contentSummary = summarizeMessageContent(message.content);
+  const toolCallCount = "tool_calls" in message && Array.isArray(message.tool_calls) ? message.tool_calls.length : 0;
+  const summary = {
+    type: message.getType(),
+    preview: contentSummary?.preview ?? "",
+    length: contentSummary?.length ?? 0
+  };
+  if (contentSummary?.truncated) {
+    summary["truncated"] = true;
+  }
+  if (contentSummary?.contentTypes != null && contentSummary.contentTypes.length > 0) {
+    summary["contentTypes"] = contentSummary.contentTypes;
+  }
+  if ((contentSummary?.omittedContentTypeCount ?? 0) > 0) {
+    summary["omittedContentTypeCount"] = contentSummary.omittedContentTypeCount;
+  }
+  if (typeof contentSummary?.contentKind === "string") {
+    summary["contentKind"] = contentSummary.contentKind;
+  }
+  if ((contentSummary?.textPartCount ?? 0) > 0) {
+    summary["textPartCount"] = contentSummary.textPartCount;
+  }
+  if ((contentSummary?.imageCount ?? 0) > 0) {
+    summary["imageCount"] = contentSummary.imageCount;
+  }
+  if (toolCallCount > 0) {
+    summary["toolCallCount"] = toolCallCount;
+  }
+  const replyMode = message.additional_kwargs?.qqbot_reply_mode;
+  if (typeof replyMode === "string" && replyMode.length > 0) {
+    summary["replyMode"] = replyMode;
+  }
+  return summary;
+}
+__name(summarizeAgentLogMessagePreview, "summarizeAgentLogMessagePreview");
+function summarizeChatHistory(history) {
+  if (!Array.isArray(history)) {
+    return {
+      count: 0
+    };
+  }
+  const messages = history.filter(import_messages3.isBaseMessage);
+  return {
+    count: messages.length,
+    latest: messages.slice(-AGENT_HISTORY_PREVIEW_LIMIT).map((message) => summarizeAgentLogMessagePreview(message))
+  };
+}
+__name(summarizeChatHistory, "summarizeChatHistory");
+function summarizeVariables(value) {
+  if (!isLogRecord(value)) {
+    return {
+      keys: []
+    };
+  }
+  const keySummary = summarizeStringList(
+    Object.keys(value).filter((key) => key !== "variables_hide"),
+    AGENT_VARIABLE_KEY_LIMIT
+  );
+  return {
+    keys: keySummary.values,
+    omittedKeyCount: keySummary.omittedCount
+  };
+}
+__name(summarizeVariables, "summarizeVariables");
+function summarizeResponseContract(input) {
+  const rawSchema = input["qqbot_final_response_schema"];
+  const overrideRequestParams = input["overrideRequestParams"];
+  const responseFormat = isLogRecord(overrideRequestParams) ? overrideRequestParams["response_format"] : null;
+  const jsonSchema = isLogRecord(responseFormat) ? responseFormat["json_schema"] : null;
+  const summary = {
+    hasSchema: isLogRecord(rawSchema)
+  };
+  if (isLogRecord(responseFormat) && typeof responseFormat["type"] === "string") {
+    summary["responseFormatType"] = responseFormat["type"];
+  }
+  if (isLogRecord(jsonSchema) && typeof jsonSchema["name"] === "string") {
+    summary["schemaName"] = jsonSchema["name"];
+  }
+  if (!isLogRecord(rawSchema)) {
+    return summary;
+  }
+  if (typeof rawSchema["type"] === "string") {
+    summary["schemaTopLevelType"] = rawSchema["type"];
+  }
+  const requiredSummary = summarizeStringList(
+    Array.isArray(rawSchema["required"]) ? rawSchema["required"].filter(
+      (value) => typeof value === "string"
+    ) : [],
+    AGENT_SCHEMA_KEY_LIMIT
+  );
+  summary["required"] = requiredSummary.values;
+  if (requiredSummary.omittedCount > 0) {
+    summary["omittedRequiredCount"] = requiredSummary.omittedCount;
+  }
+  const properties = rawSchema["properties"];
+  const propertySummary = summarizeStringList(
+    isLogRecord(properties) ? Object.keys(properties) : [],
+    AGENT_SCHEMA_KEY_LIMIT
+  );
+  summary["propertyKeys"] = propertySummary.values;
+  if (propertySummary.omittedCount > 0) {
+    summary["omittedPropertyCount"] = propertySummary.omittedCount;
+  }
+  return summary;
+}
+__name(summarizeResponseContract, "summarizeResponseContract");
+function summarizeAgentTurnInput(args) {
+  const message = args.input["input"];
+  return {
+    conversationId: typeof args.conversationId === "string" && args.conversationId.length > 0 ? args.conversationId : null,
+    input: (0, import_messages3.isBaseMessage)(message) ? summarizeAgentLogMessagePreview(message) : {
+      type: typeof message,
+      preview: typeof message === "string" ? summarizeTextValue(
+        message,
+        AGENT_INPUT_PREVIEW_MAX_LENGTH
+      ).preview : "",
+      length: typeof message === "string" ? message.length : 0
+    },
+    chatHistory: summarizeChatHistory(args.input["chat_history"]),
+    variables: summarizeVariables(args.input["variables"]),
+    responseContract: summarizeResponseContract(args.input),
+    runtime: {
+      stepsCount: args.steps.length,
+      scratchpadCount: args.scratchpad.length
+    }
+  };
+}
+__name(summarizeAgentTurnInput, "summarizeAgentTurnInput");
+function formatAgentLogBlock(label, record) {
+  return `${label}
+${JSON.stringify(
+    normalizeAgentLogValue(record),
+    null,
+    2
+  )}`;
+}
+__name(formatAgentLogBlock, "formatAgentLogBlock");
+function logStructuredAgentFinish(output, conversationId) {
+  const message = output.returnValues["message"];
+  const payload = output.returnValues["output"] ?? message?.content ?? output.log ?? "";
+  const record = {
+    conversationId: typeof conversationId === "string" && conversationId.length > 0 ? conversationId : null,
+    output: normalizeAgentFinishLogValue(payload)
+  };
+  import_koishi_plugin_chatluna.logger.info(formatAgentLogBlock("[agent-finish]", record));
+}
+__name(logStructuredAgentFinish, "logStructuredAgentFinish");
+function serializeAgentLogMessage(message) {
+  const payload = {
+    type: message.getType(),
+    content: message.content
+  };
+  if (message.id != null) {
+    payload["id"] = message.id;
+  }
+  if (message.name != null) {
+    payload["name"] = message.name;
+  }
+  if (message.additional_kwargs != null && Object.keys(message.additional_kwargs).length > 0) {
+    payload["additional_kwargs"] = message.additional_kwargs;
+  }
+  if ("tool_calls" in message && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+    payload["tool_calls"] = message.tool_calls;
+  }
+  return payload;
+}
+__name(serializeAgentLogMessage, "serializeAgentLogMessage");
+function normalizeAgentLogValue(value, seen = /* @__PURE__ */ new WeakSet()) {
+  if ((0, import_messages3.isBaseMessage)(value)) {
+    return normalizeAgentLogValue(serializeAgentLogMessage(value), seen);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeAgentLogValue(item, seen));
+  }
+  if (value == null || typeof value !== "object") {
+    return value;
+  }
+  if (seen.has(value)) {
+    return "[Circular]";
+  }
+  seen.add(value);
+  const normalized = Object.fromEntries(
+    Object.entries(value).filter(
+      ([key]) => key !== "variables_hide" && key !== "configurable"
+    ).map(([key, item]) => [key, normalizeAgentLogValue(item, seen)])
+  );
+  seen.delete(value);
+  return normalized;
+}
+__name(normalizeAgentLogValue, "normalizeAgentLogValue");
+function logAgentTurnInput(args) {
+  const record = summarizeAgentTurnInput(args);
+  import_koishi_plugin_chatluna.logger.info(formatAgentLogBlock("[agent-input]", record));
+}
+__name(logAgentTurnInput, "logAgentTurnInput");
+function shouldLogAgentTurnInput(input, finalResponseContract) {
+  if (finalResponseContract != null) {
+    return true;
+  }
+  const message = input["input"];
+  if (!(0, import_messages3.isBaseMessage)(message)) {
+    return false;
+  }
+  return message.additional_kwargs?.qqbot_reply_mode === "agent";
+}
+__name(shouldLogAgentTurnInput, "shouldLogAgentTurnInput");
 async function* runAgent(options) {
   const steps = [];
   const scratchpad = [];
@@ -507,7 +904,12 @@ async function* runAgent(options) {
   const maxIterations = options.maxIterations ?? 105;
   const handleParsingErrors = options.handleParsingErrors ?? true;
   const finishContract = options.finishContract;
-  let finishRetries = 0;
+  const finalResponseContract = normalizeFinalResponseContract(
+    options.input["qqbot_final_response_schema"],
+    options.input["qqbot_final_response_instruction"]
+  );
+  let finishContractRetryCount = 0;
+  let hasLoggedInitialInput = false;
   let iterations = 0;
   while (iterations < maxIterations) {
     checkAborted(signal);
@@ -526,10 +928,26 @@ async function* runAgent(options) {
       type: "round-decision"
     };
     let output;
+    const planningInput = finalResponseContract != null ? {
+      ...options.input,
+      overrideRequestParams: buildFinalResponseOverrideRequestParams(
+        finalResponseContract,
+        options.input["overrideRequestParams"]
+      )
+    } : options.input;
+    if (!hasLoggedInitialInput && shouldLogAgentTurnInput(options.input, finalResponseContract)) {
+      logAgentTurnInput({
+        input: planningInput,
+        steps,
+        scratchpad,
+        conversationId: config?.configurable?.["conversationId"]
+      });
+      hasLoggedInitialInput = true;
+    }
     try {
       output = await plan(
         options.agent,
-        options.input,
+        planningInput,
         steps,
         scratchpad,
         config
@@ -543,28 +961,34 @@ async function* runAgent(options) {
     checkAborted(signal);
     if (isAgentFinish(output)) {
       if (finishContract != null) {
-        const maxRetries = finishContract.maxRetries ?? 1;
-        if (finishRetries < maxRetries) {
-          finishRetries += 1;
-          const retryMessage = new import_messages3.HumanMessage(
-            finishContract.retryMessage
+        finishContractRetryCount += 1;
+        if (finishContractRetryCount > MAX_FINISH_CONTRACT_RETRY) {
+          throw new Error(
+            finishContract.errorMessage ?? `Agent finished without calling ${finishContract.toolName}.`
           );
-          scratchpad.push({
-            type: "human_update",
-            messages: [retryMessage]
-          });
-          yield {
-            type: "human-update",
-            messages: [retryMessage]
-          };
-          iterations += 1;
-          continue;
         }
-        throw new Error(
-          finishContract.errorMessage ?? `Agent finished without calling ${finishContract.toolName}.`
+        const violationMessage = buildFinishContractViolationMessage(
+          finishContract,
+          output,
+          finishContractRetryCount
         );
+        scratchpad.push({
+          type: "human_update",
+          messages: [violationMessage]
+        });
+        yield {
+          type: "human-update",
+          messages: [violationMessage]
+        };
+        continue;
       }
       const message = output.returnValues["message"];
+      if (finalResponseContract != null) {
+        logStructuredAgentFinish(
+          output,
+          config?.configurable?.["conversationId"]
+        );
+      }
       yield {
         type: "round-decision",
         canContinue: false
@@ -1223,111 +1647,10 @@ function createToolsRef(options) {
   };
 }
 __name(createToolsRef, "createToolsRef");
-
-// src/llm-core/agent/reply_plan.ts
-var import_tools2 = require("@langchain/core/tools");
-var import_zod = require("zod");
-var REPLY_AGENT_CHAT_MODE = "reply-agent";
-var REPLY_AGENT_FINISH_TOOL = "submit_reply_plan";
-var replyTextSegmentSchema = import_zod.z.object({
-  kind: import_zod.z.enum(["text", "multiline", "voice", "sticker"]),
-  content: import_zod.z.string().min(1)
-});
-var replyImageSegmentSchema = import_zod.z.object({
-  kind: import_zod.z.literal("image"),
-  asset_ref: import_zod.z.string().min(1),
-  alt: import_zod.z.string().optional()
-});
-var replyPlanSegmentSchema = import_zod.z.discriminatedUnion("kind", [
-  replyTextSegmentSchema,
-  replyImageSegmentSchema
-]);
-var replyPlanSchema = import_zod.z.object({
-  segments: import_zod.z.array(replyPlanSegmentSchema).min(1)
-});
-var REPLY_AGENT_FINISH_CONTRACT = {
-  toolName: REPLY_AGENT_FINISH_TOOL,
-  maxRetries: 1,
-  retryMessage: [
-    "Protocol violation: reply-agent must finish by calling submit_reply_plan.",
-    "You may continue thinking, searching, and using tools, but do not answer with plain text or raw JSON.",
-    "Call submit_reply_plan({ segments: [...] }) now.",
-    "segments support: text, multiline, voice, sticker, image.",
-    "text / multiline / voice / sticker require content.",
-    "image requires asset_ref and may include alt. Do not invent image assets."
-  ].join("\n"),
-  errorMessage: "reply-agent protocol violation: the agent finished without calling submit_reply_plan."
-};
-var REPLY_AGENT_DENY_TOOLS = [
-  "bash",
-  "cron",
-  "file_edit",
-  "file_publish",
-  "file_read",
-  "file_write",
-  "glob",
-  "grep",
-  "group_mute",
-  "koishi_command_execute",
-  "memory_add",
-  "memory_delete",
-  "memory_update",
-  "question",
-  "skill",
-  "task",
-  "todos",
-  "user_confirm",
-  "web_post"
-];
-var REPLY_AGENT_DEFAULT_TOOL_MASK = {
-  mode: "deny",
-  allow: [],
-  deny: REPLY_AGENT_DENY_TOOLS,
-  toolCallMask: {
-    mode: "deny",
-    allow: [],
-    deny: REPLY_AGENT_DENY_TOOLS
-  }
-};
-var SubmitReplyPlanTool = class extends import_tools2.StructuredTool {
-  static {
-    __name(this, "SubmitReplyPlanTool");
-  }
-  name = REPLY_AGENT_FINISH_TOOL;
-  description = "Submit the final structured reply plan for the user. This is the only valid way to finish reply-agent mode.";
-  returnDirect = true;
-  schema = replyPlanSchema;
-  async _call(_) {
-    return "";
-  }
-};
-function createSubmitReplyPlanTool() {
-  return {
-    id: REPLY_AGENT_FINISH_TOOL,
-    name: REPLY_AGENT_FINISH_TOOL,
-    description: "Submit the final structured reply plan. Use this exactly once as the final step.",
-    selector() {
-      return true;
-    },
-    createTool() {
-      return new SubmitReplyPlanTool();
-    }
-  };
-}
-__name(createSubmitReplyPlanTool, "createSubmitReplyPlanTool");
-function isReplyAgentChatMode(chatMode) {
-  return chatMode === REPLY_AGENT_CHAT_MODE;
-}
-__name(isReplyAgentChatMode, "isReplyAgentChatMode");
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   AgentExecutor,
   MessageQueue,
-  REPLY_AGENT_CHAT_MODE,
-  REPLY_AGENT_DEFAULT_TOOL_MASK,
-  REPLY_AGENT_FINISH_CONTRACT,
-  REPLY_AGENT_FINISH_TOOL,
-  SubmitReplyPlanTool,
   _formatIntermediateSteps,
   applyToolMask,
   coerceToAgentObservation,
@@ -1335,14 +1658,10 @@ __name(isReplyAgentChatMode, "isReplyAgentChatMode");
   createAgentExecutor,
   createOpenAIAgent,
   createReactAgent,
-  createSubmitReplyPlanTool,
   createToolsRef,
   ensureToolMaskAllows,
   formatLogToString,
   intersectToolMasks,
-  isReplyAgentChatMode,
-  replyPlanSchema,
-  replyPlanSegmentSchema,
   runAgent,
   toToolInputErrorObservation
 });

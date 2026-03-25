@@ -95,7 +95,11 @@ async function formatRoomInfo(
         ])
     )
     buffer.push(session.text('.room_visibility', [room.visibility]))
-    buffer.push(session.text('.room_chat_mode', [room.chatMode]))
+    buffer.push(
+        session.text('.room_chat_mode', [
+            room.chatMode
+        ])
+    )
     buffer.push(session.text('.room_master_id', [room.roomMasterId]))
     buffer.push(
         session.text('.room_availability', [
