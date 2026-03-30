@@ -29,10 +29,8 @@ import { SystemPrompts } from 'koishi-plugin-chatluna/llm-core/chain/base'
 import { Logger } from 'koishi'
 import { truncateMessageContentUrls } from 'koishi-plugin-chatluna/utils/langchain'
 import { trackLogToLocal } from 'koishi-plugin-chatluna/utils/logger'
-import type {
-    ChatLunaPromptRenderService,
-    RenderConfigurable
-} from 'koishi-plugin-chatluna/services/chat'
+import type { ChatLunaPromptRenderService } from '../../services/prompt_renderer'
+import type { RenderConfigurable } from '../../services/types'
 import { ComputedRef } from '@vue/reactivity'
 
 export interface ChatLunaChatPromptInput {
