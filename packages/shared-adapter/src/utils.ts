@@ -331,29 +331,47 @@ function normalizeResponsesMessageContent(
                 return part as Record<string, unknown>
             }
 
-            if (part.type === 'text' && typeof part.text === 'string') {
+            const typedPart = part as {
+                type?: unknown
+                text?: unknown
+                image_url?: unknown
+            }
+
+            if (typedPart.type === 'text' && typeof typedPart.text === 'string') {
                 return {
                     type: 'input_text',
-                    text: part.text
+                    text: typedPart.text
                 }
             }
 
-            if (part.type === 'image_url' && part.image_url != null) {
-                if (typeof part.image_url === 'string') {
+            if (typedPart.type === 'image_url' && typedPart.image_url != null) {
+                if (typeof typedPart.image_url === 'string') {
                     return {
                         type: 'input_image',
-                        image_url: part.image_url
+                        image_url: typedPart.image_url
                     }
                 }
 
-                return {
-                    type: 'input_image',
-                    image_url: part.image_url.url,
-                    ...(part.image_url.detail != null
-                        ? {
-                              detail: part.image_url.detail
-                          }
-                        : {})
+                if (
+                    typeof typedPart.image_url === 'object' &&
+                    typedPart.image_url !== null &&
+                    typeof (typedPart.image_url as { url?: unknown }).url ===
+                        'string'
+                ) {
+                    const imageUrl = typedPart.image_url as {
+                        url: string
+                        detail?: unknown
+                    }
+
+                    return {
+                        type: 'input_image',
+                        image_url: imageUrl.url,
+                        ...(typeof imageUrl.detail === 'string'
+                            ? {
+                                  detail: imageUrl.detail
+                              }
+                            : {})
+                    }
                 }
             }
 
