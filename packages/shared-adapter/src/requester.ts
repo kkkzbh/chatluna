@@ -13,12 +13,16 @@ import { SSEEvent, sseIterable } from 'koishi-plugin-chatluna/utils/sse'
 import {
     ChatCompletionResponse,
     ChatCompletionResponseMessageRoleEnum,
-    CreateEmbeddingResponse
+    CreateEmbeddingResponse,
+    ResponsesApiResponse
 } from './types'
 import {
+    createUsageMetadata,
     convertDeltaToMessageChunk,
     convertMessageToMessageChunk,
     formatToolsToOpenAITools,
+    formatToolsToResponsesTools,
+    langchainMessageToResponsesInput,
     langchainMessageToOpenAIMessage,
     openAIUsageToUsageMetadata
 } from './utils'
@@ -113,6 +117,65 @@ export async function buildChatCompletionParams(
     return deepAssign({}, base, params.overrideRequestParams ?? {})
 }
 
+export async function buildResponsesParams(
+    params: ModelRequestParams,
+    plugin: ChatLunaPlugin,
+    enableGoogleSearch: boolean,
+    supportImageInput?: boolean
+) {
+    const overrideRequestParams =
+        params.overrideRequestParams != null &&
+        typeof params.overrideRequestParams === 'object' &&
+        !Array.isArray(params.overrideRequestParams)
+            ? { ...params.overrideRequestParams }
+            : undefined
+    const toolProfile =
+        typeof overrideRequestParams?.qqbot_tool_profile === 'string'
+            ? overrideRequestParams.qqbot_tool_profile
+            : 'default'
+    if (overrideRequestParams != null) {
+        delete overrideRequestParams.qqbot_tool_profile
+    }
+    const parsedModel = parseOpenAIModelNameWithReasoningEffort(params.model)
+    const normalizedModel = parsedModel.model
+
+    const base = {
+        model: normalizedModel,
+        input: await langchainMessageToResponsesInput(
+            params.input,
+            plugin,
+            normalizedModel,
+            supportImageInput
+        ),
+        tools:
+            enableGoogleSearch || params.tools != null
+                ? formatToolsToResponsesTools(
+                      params.tools ?? [],
+                      enableGoogleSearch,
+                      toolProfile
+                  )
+                : undefined,
+        tool_choice: params.tool_choice,
+        stop: params.stop || undefined,
+        max_output_tokens: normalizedModel.includes('vision')
+            ? undefined
+            : params.maxTokens,
+        temperature: params.temperature === 0 ? undefined : params.temperature,
+        top_p: params.topP,
+        reasoning:
+            parsedModel.reasoningEffort == null
+                ? undefined
+                : {
+                      effort: parsedModel.reasoningEffort
+                  },
+        text: undefined
+    }
+
+    const request = deepAssign({}, base, overrideRequestParams ?? {})
+    delete request['qqbot_request_mode']
+    return request
+}
+
 function summarizeLastUserMessage(messages: unknown) {
     if (!Array.isArray(messages)) {
         return null
@@ -154,21 +217,74 @@ function summarizeLastUserMessage(messages: unknown) {
     return null
 }
 
+function summarizeLastUserInput(input: unknown) {
+    if (!Array.isArray(input)) {
+        return null
+    }
+
+    for (let index = input.length - 1; index >= 0; index--) {
+        const item = input[index]
+        if (
+            item == null ||
+            typeof item !== 'object' ||
+            (item as { role?: unknown }).role !== 'user'
+        ) {
+            continue
+        }
+
+        const content = (item as { content?: unknown }).content
+        if (!Array.isArray(content)) {
+            return {
+                contentKind: typeof content === 'string' ? 'string' : 'unknown',
+                imageCount: 0,
+                hasImageUrl: false
+            }
+        }
+
+        const imageCount = content.filter(
+            (part) =>
+                part != null &&
+                typeof part === 'object' &&
+                (part as { type?: unknown }).type === 'image_url'
+        ).length
+
+        return {
+            contentKind: 'array',
+            imageCount,
+            hasImageUrl: imageCount > 0
+        }
+    }
+
+    return null
+}
+
 function logRequestPayloadSummary(
     requestContext: RequestContext,
-    chatCompletionParams: Record<string, unknown>
+    payload: Record<string, unknown>
 ) {
-    const summary = summarizeLastUserMessage(chatCompletionParams.messages)
+    const summary =
+        summarizeLastUserMessage(payload.messages) ??
+        summarizeLastUserInput(payload.input)
     if (summary == null) {
         return
     }
 
     requestContext.modelRequester.logger.debug(
-        'chat completion payload summary: %s',
+        'llm request payload summary: %s',
         JSON.stringify({
-            model: chatCompletionParams.model,
+            model: payload.model,
             lastUserMessage: summary
         })
+    )
+}
+
+function isResponsesRequestMode(params: ModelRequestParams) {
+    const override = params.overrideRequestParams
+    return (
+        override != null &&
+        typeof override === 'object' &&
+        !Array.isArray(override) &&
+        override['qqbot_request_mode'] === 'responses'
     )
 }
 
@@ -430,6 +546,169 @@ export async function processResponse<
     }
 }
 
+function parseJsonValue(text: string): unknown {
+    try {
+        return JSON.parse(text)
+    } catch {
+        return text
+    }
+}
+
+function normalizeResponsesToolCall(
+    name: string,
+    args: unknown
+): { name: string; args: unknown } {
+    if (
+        name === 'web_post' &&
+        args != null &&
+        typeof args === 'object' &&
+        !Array.isArray(args)
+    ) {
+        const payload = args as Record<string, unknown>
+        const normalized: Record<string, unknown> = {
+            ...payload
+        }
+
+        if (
+            normalized.data == null &&
+            typeof normalized.json_payload === 'string'
+        ) {
+            normalized.data = parseJsonValue(normalized.json_payload)
+        }
+
+        delete normalized.json_payload
+        return {
+            name,
+            args: normalized
+        }
+    }
+
+    return {
+        name,
+        args
+    }
+}
+
+export async function processResponsesApiResponse<
+    T extends ClientConfig,
+    R extends ChatLunaPlugin.Config
+>(requestContext: RequestContext<T, R>, response: Response) {
+    if (response.status !== 200) {
+        throw new ChatLunaError(
+            ChatLunaErrorCode.API_REQUEST_FAILED,
+            new Error(
+                'Error when calling responses, Status: ' +
+                    response.status +
+                    ' ' +
+                    response.statusText +
+                    ', Response: ' +
+                    (await response.text())
+            )
+        )
+    }
+
+    const responseText = await response.text()
+
+    try {
+        const data = JSON.parse(responseText) as ResponsesApiResponse
+        const output = Array.isArray(data.output) ? data.output : []
+        const toolCalls = output
+            .filter(
+                (item): item is Extract<
+                    ResponsesApiResponse['output'][number],
+                    { type: 'function_call' }
+                > =>
+                    item != null &&
+                    typeof item === 'object' &&
+                    item.type === 'function_call' &&
+                    typeof item.name === 'string' &&
+                    typeof item.call_id === 'string' &&
+                    typeof item.arguments === 'string'
+            )
+            .map((item) => {
+                const normalizedToolCall = normalizeResponsesToolCall(
+                    item.name,
+                    parseJsonValue(item.arguments)
+                )
+                return {
+                    id: item.call_id,
+                    name: normalizedToolCall.name,
+                    args: normalizedToolCall.args
+                }
+            })
+
+        const text = output
+            .filter(
+                (item): item is Extract<
+                    ResponsesApiResponse['output'][number],
+                    { type: 'message' }
+                > =>
+                    item != null &&
+                    typeof item === 'object' &&
+                    item.type === 'message' &&
+                    Array.isArray(item.content)
+            )
+            .flatMap((item) => item.content)
+            .filter(
+                (item): item is { type: 'output_text'; text: string } =>
+                    item != null &&
+                    typeof item === 'object' &&
+                    item.type === 'output_text' &&
+                    typeof item.text === 'string'
+            )
+            .map((item) => item.text)
+            .join('\n')
+
+        const usageMetadata =
+            data.usage == null
+                ? undefined
+                : createUsageMetadata({
+                      inputTokens: data.usage.input_tokens,
+                      outputTokens: data.usage.output_tokens,
+                      totalTokens: data.usage.total_tokens,
+                      cacheReadTokens:
+                          data.usage.input_tokens_details?.cached_tokens,
+                      reasoningTokens:
+                          data.usage.output_tokens_details?.reasoning_tokens
+                  })
+
+        const message = new AIMessageChunk({
+            content: text,
+            ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+            ...(usageMetadata == null
+                ? {}
+                : {
+                      usage_metadata: usageMetadata
+                  })
+        })
+
+        return new ChatGenerationChunk({
+            message,
+            text,
+            generationInfo:
+                usageMetadata == null
+                    ? undefined
+                    : {
+                          usage_metadata: usageMetadata
+                      }
+        })
+    } catch (e) {
+        if (e instanceof ChatLunaError) {
+            throw e
+        }
+
+        throw new ChatLunaError(
+            ChatLunaErrorCode.API_REQUEST_FAILED,
+            new Error(
+                'Error when calling responses, Error: ' +
+                    e +
+                    ', Response: ' +
+                    responseText
+            )
+        )
+    }
+}
+
 // eslint-disable-next-line generator-star-spacing
 export async function* completionStream<
     T extends ClientConfig,
@@ -442,6 +721,19 @@ export async function* completionStream<
     supportImageInput?: boolean
 ): AsyncGenerator<ChatGenerationChunk> {
     const { modelRequester } = requestContext
+    const requestMode = isResponsesRequestMode(params)
+
+    if (requestMode) {
+        const generation = await completionResponses(
+            requestContext,
+            params,
+            'responses',
+            enableGoogleSearch,
+            supportImageInput
+        )
+        yield generation
+        return
+    }
 
     const chatCompletionParams = await buildChatCompletionParams(
         params,
@@ -488,6 +780,16 @@ export async function completion<
     enableGoogleSearch?: boolean,
     supportImageInput?: boolean
 ): Promise<ChatGenerationChunk> {
+    if (isResponsesRequestMode(params)) {
+        return completionResponses(
+            requestContext,
+            params,
+            'responses',
+            enableGoogleSearch,
+            supportImageInput
+        )
+    }
+
     const { modelRequester } = requestContext
 
     const chatCompletionParams = await buildChatCompletionParams(
@@ -516,6 +818,52 @@ export async function completion<
             await trackLogToLocal(
                 'Request',
                 JSON.stringify(chatCompletionParams),
+                requestContext.ctx.logger('')
+            )
+        }
+        if (e instanceof ChatLunaError) {
+            throw e
+        } else {
+            throw new ChatLunaError(ChatLunaErrorCode.API_REQUEST_FAILED, e)
+        }
+    }
+}
+
+export async function completionResponses<
+    T extends ClientConfig,
+    R extends ChatLunaPlugin.Config
+>(
+    requestContext: RequestContext<T, R>,
+    params: ModelRequestParams,
+    completionUrl: string = 'responses',
+    enableGoogleSearch?: boolean,
+    supportImageInput?: boolean
+): Promise<ChatGenerationChunk> {
+    const { modelRequester } = requestContext
+
+    const requestParams = await buildResponsesParams(
+        params,
+        requestContext.plugin,
+        enableGoogleSearch ?? false,
+        supportImageInput ?? true
+    )
+    logRequestPayloadSummary(requestContext, requestParams)
+
+    try {
+        const response = await modelRequester.post(
+            completionUrl,
+            requestParams,
+            {
+                signal: params.signal
+            }
+        )
+
+        return await processResponsesApiResponse(requestContext, response)
+    } catch (e) {
+        if (requestContext.ctx.chatluna.currentConfig.isLog) {
+            await trackLogToLocal(
+                'Request',
+                JSON.stringify(requestParams),
                 requestContext.ctx.logger('')
             )
         }

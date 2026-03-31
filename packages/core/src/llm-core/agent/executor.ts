@@ -299,6 +299,20 @@ function buildFinalResponseOverrideRequestParams(
             ? { ...(rawOverride as Record<string, unknown>) }
             : {}
 
+    if (base['qqbot_request_mode'] === 'responses') {
+        return {
+            ...base,
+            text: {
+                format: {
+                    type: 'json_schema',
+                    name: contract.name ?? 'qqbot_structured_reply_v1',
+                    strict: true,
+                    schema: contract.schema
+                }
+            }
+        }
+    }
+
     return {
         ...base,
         response_format: {

@@ -19,7 +19,9 @@ import {
     ChatCompletionResponseMessage,
     ChatCompletionResponseMessageRoleEnum,
     ChatCompletionTool,
-    ChatCompletionUsage
+    ResponsesFunctionTool,
+    ChatCompletionUsage,
+    ResponsesTool
 } from './types'
 import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
 import {
@@ -249,6 +251,71 @@ export async function langchainMessageToOpenAIMessage(
     }
 
     return processInterleavedThinkMessages(result, messages)
+}
+
+export async function langchainMessageToResponsesInput(
+    messages: BaseMessage[],
+    plugin: ChatLunaPlugin,
+    model?: string,
+    supportImageInputType?: boolean,
+    removeSystemMessage?: boolean
+): Promise<Record<string, unknown>[]> {
+    const converted = await langchainMessageToOpenAIMessage(
+        messages,
+        plugin,
+        model,
+        supportImageInputType,
+        removeSystemMessage
+    )
+    const result: Record<string, unknown>[] = []
+
+    for (const message of converted) {
+        if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
+            if (
+                typeof message.content === 'string' &&
+                message.content.trim().length > 0
+            ) {
+                result.push({
+                    role: 'assistant',
+                    content: message.content
+                })
+            } else if (Array.isArray(message.content) && message.content.length > 0) {
+                result.push({
+                    role: 'assistant',
+                    content: message.content
+                })
+            }
+
+            for (const toolCall of message.tool_calls) {
+                result.push({
+                    type: 'function_call',
+                    call_id: toolCall.id,
+                    name: toolCall.function.name,
+                    arguments: toolCall.function.arguments
+                })
+            }
+            continue
+        }
+
+        if (message.role === 'tool' || message.role === 'function') {
+            result.push({
+                type: 'function_call_output',
+                call_id: message.tool_call_id,
+                output:
+                    typeof message.content === 'string'
+                        ? message.content
+                        : JSON.stringify(message.content ?? '')
+            })
+            continue
+        }
+
+        result.push({
+            role: message.role,
+            content: message.content
+        })
+    }
+
+    return result
 }
 
 export function processInterleavedThinkMessages(
@@ -495,6 +562,126 @@ export function formatToolsToOpenAITools(
     }
 
     return result
+}
+
+export function formatToolsToResponsesTools(
+    tools: StructuredTool[],
+    includeGoogleSearch: boolean,
+    toolProfile: string = 'default'
+): ResponsesTool[] | undefined {
+    const result = tools.flatMap((tool) =>
+        formatToolToResponsesTool(tool, toolProfile)
+    )
+
+    if (includeGoogleSearch) {
+        result.push({
+            type: 'web_search',
+            search_context_size: 'medium'
+        })
+    }
+
+    if (result.length < 1) {
+        return undefined
+    }
+
+    return result
+}
+
+function formatToolToResponsesTool(
+    tool: StructuredTool,
+    toolProfile: string
+): ResponsesTool[] {
+    if (toolProfile === 'qqbot_openai_main_chat') {
+        if (
+            tool.name === 'question' ||
+            tool.name === 'user_confirm' ||
+            tool.name === 'web_browser'
+        ) {
+            return []
+        }
+
+        if (tool.name === 'web_search') {
+            return [
+                {
+                    type: 'web_search',
+                    search_context_size: 'medium'
+                }
+            ]
+        }
+
+        if (tool.name === 'web_post') {
+            return [
+                {
+                    type: 'function',
+                    name: 'web_post',
+                    description:
+                        'Send a POST request with a JSON payload encoded as a string.',
+                    parameters: {
+                        type: 'object',
+                        additionalProperties: false,
+                        required: ['url', 'json_payload'],
+                        properties: {
+                            url: {
+                                type: 'string',
+                                description:
+                                    'The URL to send the POST request to. Must be a valid HTTP/HTTPS URL.'
+                            },
+                            json_payload: {
+                                type: 'string',
+                                description:
+                                    'A JSON-encoded object string used as the POST request body.'
+                            }
+                        }
+                    },
+                    strict: true
+                } satisfies ResponsesFunctionTool
+            ]
+        }
+    }
+
+    const formatted = formatToolToOpenAITool(tool)
+    return [
+        {
+            type: 'function',
+            name: formatted.function.name,
+            description: formatted.function.description,
+            parameters: enforceResponsesStrictSchema(
+                formatted.function.parameters as JsonSchema7Type
+            ),
+            strict: true
+        }
+    ]
+}
+
+function enforceResponsesStrictSchema(
+    schema: JsonSchema7Type | undefined
+): JsonSchema7Type | undefined {
+    if (!schema || typeof schema !== 'object') {
+        return schema
+    }
+
+    const stack: JsonSchema7Type[] = [schema]
+
+    while (stack.length > 0) {
+        const current = stack.pop()
+        if (!current || typeof current !== 'object') continue
+
+        if (
+            current['type'] === 'object' ||
+            Object.hasOwn(current, 'properties')
+        ) {
+            current['additionalProperties'] = false
+        }
+
+        for (const key of Object.keys(current)) {
+            const value = current[key]
+            if (value && typeof value === 'object') {
+                stack.push(value as JsonSchema7Type)
+            }
+        }
+    }
+
+    return schema
 }
 
 export function formatToolToOpenAITool(

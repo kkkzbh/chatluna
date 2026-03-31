@@ -78,6 +78,32 @@ export interface ChatCompletionTool {
     function: ChatCompletionFunction
 }
 
+export interface ResponsesFunctionTool {
+    type: 'function'
+    name: string
+    description?: string
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    parameters?: { [key: string]: any }
+    strict?: boolean
+}
+
+export interface ResponsesWebSearchTool {
+    type: 'web_search'
+    search_context_size?: 'low' | 'medium' | 'high'
+    user_location?: {
+        type: 'approximate'
+        city?: string
+        region?: string
+        country?: string
+        timezone?: string
+    }
+}
+
+export type ResponsesTool =
+    | ResponsesFunctionTool
+    | ResponsesWebSearchTool
+    | (Record<string, unknown> & { type: string })
+
 export interface ChatCompletionRequestMessageToolCall {
     id: string
     type: 'function'
@@ -176,3 +202,63 @@ export type ChatCompletionResponseMessageRoleEnum =
     | 'user'
     | 'function'
     | 'tool'
+
+export interface ResponsesUsage {
+    input_tokens: number
+    output_tokens: number
+    total_tokens: number
+    input_tokens_details?: {
+        cached_tokens?: number
+        text_tokens?: number
+        image_tokens?: number
+    }
+    output_tokens_details?: {
+        reasoning_tokens?: number
+        text_tokens?: number
+        image_tokens?: number
+    }
+}
+
+export interface ResponsesOutputTextPart {
+    type: 'output_text'
+    text: string
+}
+
+export interface ResponsesOutputMessage {
+    id: string
+    type: 'message'
+    role: 'assistant'
+    content: ResponsesOutputTextPart[]
+}
+
+export interface ResponsesFunctionCall {
+    id: string
+    type: 'function_call'
+    name: string
+    arguments: string
+    call_id: string
+}
+
+export interface ResponsesReasoningItem {
+    id: string
+    type: 'reasoning'
+    encrypted_content?: string
+}
+
+export type ResponsesOutputItem =
+    | ResponsesOutputMessage
+    | ResponsesFunctionCall
+    | ResponsesReasoningItem
+    | (Record<string, unknown> & { type: string })
+
+export interface ResponsesApiResponse {
+    id: string
+    object: string
+    model: string
+    output: ResponsesOutputItem[]
+    usage?: ResponsesUsage
+    reasoning?: {
+        effort?: string
+        summary?: unknown
+    }
+}

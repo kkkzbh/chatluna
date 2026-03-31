@@ -561,6 +561,19 @@ function normalizeFinalResponseContract(rawSchema, rawInstruction) {
 __name(normalizeFinalResponseContract, "normalizeFinalResponseContract");
 function buildFinalResponseOverrideRequestParams(contract, rawOverride) {
   const base = rawOverride != null && typeof rawOverride === "object" && !Array.isArray(rawOverride) ? { ...rawOverride } : {};
+  if (base["qqbot_request_mode"] === "responses") {
+    return {
+      ...base,
+      text: {
+        format: {
+          type: "json_schema",
+          name: contract.name ?? "qqbot_structured_reply_v1",
+          strict: true,
+          schema: contract.schema
+        }
+      }
+    };
+  }
   return {
     ...base,
     response_format: {

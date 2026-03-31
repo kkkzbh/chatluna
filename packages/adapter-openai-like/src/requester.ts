@@ -14,6 +14,7 @@ import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
 import { Context } from 'koishi'
 import {
     completion,
+    completionResponses,
     completionStream,
     createEmbeddings,
     createRequestContext,
@@ -36,6 +37,32 @@ export class OpenAIRequester
     }
 
     async completion(params: ModelRequestParams): Promise<ChatGeneration> {
+        const shouldUseResponses =
+            params.overrideRequestParams != null &&
+            typeof params.overrideRequestParams === 'object' &&
+            !Array.isArray(params.overrideRequestParams) &&
+            params.overrideRequestParams['qqbot_request_mode'] === 'responses'
+
+        if (shouldUseResponses) {
+            const requestContext = createRequestContext(
+                this.ctx,
+                this._config.value,
+                this._pluginConfig,
+                this._plugin,
+                this
+            )
+
+            return completionResponses(
+                requestContext,
+                params,
+                'responses',
+                this._pluginConfig.googleSearch &&
+                    this._pluginConfig.googleSearchSupportModel.includes(
+                        params.model
+                    )
+            )
+        }
+
         if (!this._pluginConfig.nonStreaming) {
             return super.completion(params)
         }
