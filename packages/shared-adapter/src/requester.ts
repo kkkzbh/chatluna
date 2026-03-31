@@ -241,12 +241,14 @@ function summarizeLastUserInput(input: unknown) {
             }
         }
 
-        const imageCount = content.filter(
-            (part) =>
-                part != null &&
-                typeof part === 'object' &&
-                (part as { type?: unknown }).type === 'image_url'
-        ).length
+        const imageCount = content.filter((part) => {
+            if (part == null || typeof part !== 'object') {
+                return false
+            }
+
+            const type = (part as { type?: unknown }).type
+            return type === 'image_url' || type === 'input_image'
+        }).length
 
         return {
             contentKind: 'array',

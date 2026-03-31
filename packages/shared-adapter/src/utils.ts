@@ -282,7 +282,7 @@ export async function langchainMessageToResponsesInput(
             } else if (Array.isArray(message.content) && message.content.length > 0) {
                 result.push({
                     role: 'assistant',
-                    content: message.content
+                    content: normalizeResponsesMessageContent(message.content)
                 })
             }
 
@@ -311,11 +311,55 @@ export async function langchainMessageToResponsesInput(
 
         result.push({
             role: message.role,
-            content: message.content
+            content: normalizeResponsesMessageContent(message.content)
         })
     }
 
     return result
+}
+
+function normalizeResponsesMessageContent(
+    content: ChatCompletionResponseMessage['content']
+): ChatCompletionResponseMessage['content'] | Record<string, unknown>[] {
+    if (!Array.isArray(content)) {
+        return content
+    }
+
+    return content
+        .map((part) => {
+            if (part == null || typeof part !== 'object') {
+                return part as Record<string, unknown>
+            }
+
+            if (part.type === 'text' && typeof part.text === 'string') {
+                return {
+                    type: 'input_text',
+                    text: part.text
+                }
+            }
+
+            if (part.type === 'image_url' && part.image_url != null) {
+                if (typeof part.image_url === 'string') {
+                    return {
+                        type: 'input_image',
+                        image_url: part.image_url
+                    }
+                }
+
+                return {
+                    type: 'input_image',
+                    image_url: part.image_url.url,
+                    ...(part.image_url.detail != null
+                        ? {
+                              detail: part.image_url.detail
+                          }
+                        : {})
+                }
+            }
+
+            return part as Record<string, unknown>
+        })
+        .filter((part) => part != null)
 }
 
 export function processInterleavedThinkMessages(
