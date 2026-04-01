@@ -322,6 +322,12 @@ var ChatChain = class {
   async _handleMiddlewareError(session, middlewareName, error) {
     if (error instanceof import_error.ChatLunaError) {
       const state = session.state;
+      if (state?.chatluna?.suppressErrorNotice === true) {
+        return;
+      }
+      if (state?.qqReplyTransport?.suppressErrorNotice === true) {
+        return;
+      }
       if (error.errorCode === import_error.ChatLunaErrorCode.ABORTED && (state?.chatluna?.suppressAbortNotice === true || state?.qqReplyTransport?.suppressAbortNotice === true)) {
         return;
       }
