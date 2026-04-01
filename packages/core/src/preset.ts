@@ -15,7 +15,10 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { Config } from './config'
 import { computed, ComputedRef, shallowRef } from '@vue/reactivity'
-import { createHash } from 'crypto'
+import {
+    resolvePresetDirectoriesFromEnv,
+    resolveRuntimePresetDirectoryFromEnv
+} from './preset_dirs'
 
 let logger: Logger
 
@@ -95,20 +98,37 @@ export class PresetService {
         await this._lock.runLocked(async () => {
             await this._checkPresetDir()
 
-            const presetDir = this.resolvePresetDir()
-            const files = await fs.readdir(presetDir)
-
+            const seenNames = new Set<string>()
             const presets: PresetTemplate[] = []
 
-            for (const file of files) {
-                const extension = path.extname(file)
-                if (extension !== '.txt' && extension !== '.yml') {
-                    continue
+            for (const presetDir of this.resolvePresetDirs()) {
+                let files: string[]
+                try {
+                    files = await fs.readdir(presetDir)
+                } catch (error) {
+                    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+                        continue
+                    }
+                    throw error
                 }
-                const presetPath = path.join(presetDir, file)
-                const preset = await this._loadPresetFromPath(presetPath)
-                if (preset) {
-                    presets.push(preset)
+
+                for (const file of files) {
+                    const extension = path.extname(file)
+                    if (extension !== '.txt' && extension !== '.yml') {
+                        continue
+                    }
+
+                    const presetName = path.basename(file, extension)
+                    if (seenNames.has(presetName)) {
+                        continue
+                    }
+
+                    const presetPath = path.join(presetDir, file)
+                    const preset = await this._loadPresetFromPath(presetPath)
+                    if (preset) {
+                        presets.push(preset)
+                        seenNames.add(presetName)
+                    }
                 }
             }
 
@@ -118,68 +138,50 @@ export class PresetService {
     }
 
     watchPreset() {
-        let fsWait: NodeJS.Timeout | boolean = false
-        const md5Cache = new Map<string, string>()
-
         if (this._aborter != null) {
             this._aborter.abort()
         }
 
         this._aborter = new AbortController()
 
-        watch(
-            this.resolvePresetDir(),
-            {
-                signal: this._aborter.signal
-            },
-            async (event, filename) => {
-                if (!filename) {
-                    await this.loadAllPreset()
-                    logger.debug(`trigger full reload preset`)
-                    return
-                }
-
-                if (fsWait) return
-                fsWait = setTimeout(() => {
-                    fsWait = false
-                }, 100)
-
-                const filePath = path.join(this.resolvePresetDir(), filename)
-
-                try {
-                    const fileStat = await fs.stat(filePath)
-                    if (fileStat.isDirectory()) return
-
-                    if (event === 'rename' && !fileStat) {
-                        this._removePreset(filePath)
-                        md5Cache.delete(filePath)
-                        logger.debug(`Removed preset: ${filename}`)
-                        this._updateSchema()
-                        return
-                    }
-
-                    const md5Current = createHash('md5')
-                        .update(await fs.readFile(filePath))
-                        .digest('hex')
-                    if (md5Current === md5Cache.get(filePath)) return
-
-                    md5Cache.set(filePath, md5Current)
-
-                    const preset = await this._loadPresetFromPath(filePath)
-                    if (preset) {
-                        this._updatePreset(preset)
-                        logger.debug(`Updated/Added preset: ${filename}`)
-                        this._updateSchema()
-                    }
-                } catch (e) {
-                    logger.error(
-                        `Error when watching preset file ${filePath}`,
-                        e
-                    )
-                    await this.loadAllPreset()
-                }
+        let reloadTimer: NodeJS.Timeout | null = null
+        const scheduleReload = () => {
+            if (reloadTimer) {
+                clearTimeout(reloadTimer)
             }
-        )
+            reloadTimer = setTimeout(async () => {
+                reloadTimer = null
+                await this.loadAllPreset()
+                logger.debug(`trigger full reload preset`)
+            }, 120)
+        }
+
+        for (const presetDir of this.resolvePresetDirs()) {
+            try {
+                watch(
+                    presetDir,
+                    {
+                        signal: this._aborter.signal
+                    },
+                    async (_event, _filename) => {
+                        try {
+                            scheduleReload()
+                        } catch (e) {
+                            logger.error(`Error when watching preset dir ${presetDir}`, e)
+                            await this.loadAllPreset()
+                        }
+                    }
+                )
+            } catch (e) {
+                logger.warn(`Skip watching missing preset dir ${presetDir}`, e)
+            }
+        }
+
+        this.ctx.on('dispose', () => {
+            if (reloadTimer) {
+                clearTimeout(reloadTimer)
+            }
+        })
     }
 
     async init() {
@@ -279,22 +281,25 @@ export class PresetService {
     }
 
     public resolvePresetDir() {
-        return path.resolve(this.ctx.baseDir, 'data/chathub/presets')
+        return resolveRuntimePresetDirectoryFromEnv(this.ctx.baseDir)
+    }
+
+    public resolvePresetDirs() {
+        return resolvePresetDirectoriesFromEnv(this.ctx.baseDir)
     }
 
     private async _checkPresetDir() {
-        const presetDir = path.join(this.resolvePresetDir())
+        const runtimePresetDir = this.resolvePresetDir()
 
-        // check if preset dir exists
-        try {
-            await fs.access(presetDir)
-        } catch (err) {
-            if (err.code === 'ENOENT') {
-                await fs.mkdir(presetDir, { recursive: true })
-                await this._copyDefaultPresets()
-            } else {
-                throw err
-            }
+        await fs.mkdir(runtimePresetDir, { recursive: true })
+
+        if (process.env.CHATLUNA_PRESET_DIRS?.trim()) {
+            return
+        }
+
+        const files = await fs.readdir(runtimePresetDir).catch(() => [])
+        if (files.length === 0) {
+            await this._copyDefaultPresets()
         }
     }
 
