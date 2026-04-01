@@ -352,6 +352,12 @@ export class ChatChain {
         if (error instanceof ChatLunaError) {
             const state = (session as Session & { state?: Record<string, any> })
                 .state
+            if (state?.chatluna?.suppressErrorNotice === true) {
+                return
+            }
+            if (state?.qqReplyTransport?.suppressErrorNotice === true) {
+                return
+            }
             if (
                 error.errorCode === ChatLunaErrorCode.ABORTED &&
                 (state?.chatluna?.suppressAbortNotice === true ||
