@@ -733,6 +733,16 @@ function enforceResponsesStrictSchema(
             Object.hasOwn(current, 'properties')
         ) {
             current['additionalProperties'] = false
+            const properties =
+                current['properties'] &&
+                typeof current['properties'] === 'object' &&
+                !Array.isArray(current['properties'])
+                    ? (current['properties'] as Record<string, unknown>)
+                    : null
+
+            if (properties) {
+                current['required'] = Object.keys(properties)
+            }
         }
 
         for (const key of Object.keys(current)) {
