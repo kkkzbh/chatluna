@@ -24,7 +24,6 @@ __export(app_exports, {
 });
 module.exports = __toCommonJS(app_exports);
 var import_reactivity2 = require("@vue/reactivity");
-var import_count_tokens2 = require("koishi-plugin-chatluna/llm-core/utils/count_tokens");
 var import_langchain = require("koishi-plugin-chatluna/llm-core/memory/langchain");
 var import_koishi_plugin_chatluna3 = require("koishi-plugin-chatluna");
 var import_message = require("koishi-plugin-chatluna/llm-core/memory/message");
@@ -49,6 +48,107 @@ function createDisplayResponse(responseMessage) {
   return msg;
 }
 __name(createDisplayResponse, "createDisplayResponse");
+function asPlainRecord(value) {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value;
+}
+__name(asPlainRecord, "asPlainRecord");
+function normalizeModelName(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+__name(normalizeModelName, "normalizeModelName");
+function getRecordString(record, key) {
+  return normalizeModelName(record?.[key]);
+}
+__name(getRecordString, "getRecordString");
+function resolveTransportModelFromOverride(platform, overrideRequestParams) {
+  const explicitTransportModel = getRecordString(
+    overrideRequestParams,
+    "qqbot_transport_model"
+  );
+  if (!explicitTransportModel) {
+    return null;
+  }
+  const [transportPlatform, transportModelName] = (0, import_count_tokens.parseRawModelName)(
+    explicitTransportModel
+  );
+  if (transportModelName) {
+    return {
+      platform: transportPlatform,
+      transportModel: transportModelName
+    };
+  }
+  return {
+    platform,
+    transportModel: explicitTransportModel
+  };
+}
+__name(resolveTransportModelFromOverride, "resolveTransportModelFromOverride");
+function resolveChatModelInitDescriptor(args) {
+  const canonicalModel = normalizeModelName(args.model) ?? args.model.trim();
+  const [defaultPlatform, defaultTransportModel] = (0, import_count_tokens.parseRawModelName)(canonicalModel);
+  const overrideRequestParams = asPlainRecord(args.additionalKwargs?.overrideRequestParams) ?? asPlainRecord(args.additionalKwargs?.qqbot_override_request_params);
+  const overrideTransport = resolveTransportModelFromOverride(defaultPlatform, overrideRequestParams);
+  const requestMode = getRecordString(overrideRequestParams, "qqbot_request_mode") === "responses" || args.requestMode === "responses" ? "responses" : "chat_completions";
+  const explicitTransportModel = normalizeModelName(args.transportModel) ?? overrideTransport?.transportModel ?? defaultTransportModel ?? canonicalModel;
+  const explicitTransportPlatform = overrideTransport?.platform ?? defaultPlatform;
+  return {
+    platform: explicitTransportPlatform,
+    canonicalModel,
+    transportModel: explicitTransportModel,
+    requestMode
+  };
+}
+__name(resolveChatModelInitDescriptor, "resolveChatModelInitDescriptor");
+function buildChatModelInitCacheKey(descriptor) {
+  return [
+    descriptor.platform,
+    descriptor.canonicalModel,
+    descriptor.transportModel,
+    descriptor.requestMode
+  ].join("|");
+}
+__name(buildChatModelInitCacheKey, "buildChatModelInitCacheKey");
+function isChatModelLike(value) {
+  if (value == null || typeof value !== "object") {
+    return false;
+  }
+  const record = value;
+  return typeof record.invocationParams === "function" && typeof record.getNumTokens === "function" && typeof record.getModelMaxContextSize === "function";
+}
+__name(isChatModelLike, "isChatModelLike");
+function buildModelInitDiagnostic(args) {
+  const value = args.createModelValue != null && typeof args.createModelValue === "object" ? args.createModelValue : null;
+  return {
+    platform: args.descriptor.platform,
+    canonicalModel: args.descriptor.canonicalModel,
+    transportModel: args.descriptor.transportModel,
+    requestMode: args.descriptor.requestMode,
+    findModelHit: args.findModelHit ?? false,
+    clientAvailable: args.clientAvailable ?? false,
+    availableModelCount: args.availableModelCount,
+    availableModelSample: args.availableModelSample ?? [],
+    createModelValueType: args.createModelValue == null ? String(args.createModelValue) : typeof args.createModelValue,
+    createModelConstructorName: value?.constructor?.name ?? null
+  };
+}
+__name(buildModelInitDiagnostic, "buildModelInitDiagnostic");
+function emitModelInitDiagnostic(message, diagnostic) {
+  import_koishi_plugin_chatluna.logger.error(
+    "Model init diagnostic: %s",
+    JSON.stringify({
+      message,
+      ...diagnostic
+    })
+  );
+}
+__name(emitModelInitDiagnostic, "emitModelInitDiagnostic");
 async function initEmbeddings(service, model) {
   const [platform, modelName] = (0, import_count_tokens.parseRawModelName)(model);
   if (model == null || model.length < 1 || model === "无") {
@@ -81,18 +181,72 @@ async function initEmbeddings(service, model) {
   });
 }
 __name(initEmbeddings, "initEmbeddings");
-async function initModel(ctx, service, llmPlatform, llmModelName) {
-  const llmInfo = service.findModel(llmPlatform, llmModelName);
-  const llmModel = await ctx.chatluna.createChatModel(
-    llmPlatform,
-    llmModelName
+async function initModel(ctx, service, descriptor) {
+  const availableModels = service.listPlatformModels(descriptor.platform, import_types.ModelType.llm).value ?? [];
+  const availableModelNames = availableModels.map((item) => item?.name).filter((item) => typeof item === "string");
+  const llmInfo = service.findModel(
+    descriptor.platform,
+    descriptor.transportModel
   );
-  if (llmModel.value instanceof import_model.ChatLunaChatModel) {
+  const client = await service.getClient(descriptor.platform);
+  const baseDiagnostic = {
+    descriptor,
+    availableModelCount: availableModelNames.length,
+    availableModelSample: availableModelNames.slice(0, 10),
+    findModelHit: llmInfo.value != null,
+    clientAvailable: client.value != null
+  };
+  if (client.value == null) {
+    const diagnostic2 = buildModelInitDiagnostic(baseDiagnostic);
+    emitModelInitDiagnostic("provider client unavailable", diagnostic2);
+    throw new import_error.ChatLunaError(
+      import_error.ChatLunaErrorCode.MODEL_INIT_ERROR,
+      new Error(
+        `Provider ${descriptor.platform} is not available for ${descriptor.canonicalModel}.`
+      )
+    );
+  }
+  if (llmInfo.value == null) {
+    const diagnostic2 = buildModelInitDiagnostic(baseDiagnostic);
+    emitModelInitDiagnostic("target model not found in provider list", diagnostic2);
+    throw new import_error.ChatLunaError(
+      import_error.ChatLunaErrorCode.MODEL_NOT_FOUND,
+      new Error(
+        `Model ${descriptor.transportModel} is not available on provider ${descriptor.platform}.`
+      )
+    );
+  }
+  const llmModel = await ctx.chatluna.createChatModel(
+    descriptor.platform,
+    descriptor.transportModel
+  );
+  const resolvedModel = llmModel.value;
+  if (resolvedModel == null) {
+    const diagnostic2 = buildModelInitDiagnostic({
+      ...baseDiagnostic,
+      createModelValue: resolvedModel
+    });
+    emitModelInitDiagnostic("createChatModel returned empty value", diagnostic2);
+    throw new import_error.ChatLunaError(
+      import_error.ChatLunaErrorCode.MODEL_INIT_ERROR,
+      new Error(
+        `Model ${descriptor.transportModel} returned an empty chat model value on provider ${descriptor.platform}.`
+      )
+    );
+  }
+  if (isChatModelLike(resolvedModel)) {
     return [llmModel, llmInfo];
   }
+  const diagnostic = buildModelInitDiagnostic({
+    ...baseDiagnostic,
+    createModelValue: resolvedModel
+  });
+  emitModelInitDiagnostic("createChatModel returned a non-chat model value", diagnostic);
   throw new import_error.ChatLunaError(
     import_error.ChatLunaErrorCode.MODEL_INIT_ERROR,
-    new Error(`Model ${llmModelName} is not a chat model`)
+    new Error(
+      `Model ${descriptor.transportModel} returned a non-chat model value on provider ${descriptor.platform}.`
+    )
   );
 }
 __name(initModel, "initModel");
@@ -391,6 +545,7 @@ var ChatInterface = class {
     this._input = input;
     ctx.on("dispose", () => {
       this._chain = void 0;
+      this._chainInitKey = void 0;
       this._embeddings = void 0;
       this._historyMemory = void 0;
       this._infiniteContextManager = void 0;
@@ -402,6 +557,7 @@ var ChatInterface = class {
   _input;
   _chatHistory;
   _chain;
+  _chainInitKey;
   _embeddings;
   _historyMemory;
   _infiniteContextManager;
@@ -431,7 +587,7 @@ var ChatInterface = class {
   async chat(arg) {
     let wrapper;
     try {
-      wrapper = await this.getChatLunaLLMChainWrapper();
+      wrapper = await this.getChatLunaLLMChainWrapper(arg);
     } catch (error) {
       await this.handleChatError(arg, wrapper, error);
       throw error;
@@ -565,22 +721,37 @@ var ChatInterface = class {
       (0, import_string3.getMessageContent)(message.content)
     );
   }
-  async getChatLunaLLMChainWrapper() {
-    if (this._chain) {
+  resolveModelInitDescriptor(arg) {
+    return resolveChatModelInitDescriptor({
+      model: this._input.model,
+      requestMode: this._input.requestMode,
+      transportModel: this._input.transportModel,
+      additionalKwargs: arg?.message?.additional_kwargs
+    });
+  }
+  async getChatLunaLLMChainWrapper(arg) {
+    const initDescriptor = this.resolveModelInitDescriptor(arg);
+    const nextInitKey = buildChatModelInitCacheKey(initDescriptor);
+    if (this._chain && this._chainInitKey === nextInitKey) {
       const chainValue = this._chain.value;
       if (chainValue) {
         return chainValue;
       }
     }
-    await this.createChatLunaLLMChainWrapper();
+    if (this._chain && this._chainInitKey !== nextInitKey) {
+      this._chain = void 0;
+      this._chainInitKey = void 0;
+    }
+    await this.createChatLunaLLMChainWrapper(arg);
     return this._chain.value;
   }
-  async createChatLunaLLMChainWrapper() {
-    if (this._chain) {
+  async createChatLunaLLMChainWrapper(arg) {
+    const initDescriptor = this.resolveModelInitDescriptor(arg);
+    const nextInitKey = buildChatModelInitCacheKey(initDescriptor);
+    if (this._chain && this._chainInitKey === nextInitKey) {
       return;
     }
     const service = this.ctx.chatluna.platform;
-    const [llmPlatform, llmModelName] = (0, import_count_tokens2.parseRawModelName)(this._input.model);
     let llm;
     let modelInfo;
     let historyMemory;
@@ -600,12 +771,7 @@ var ChatInterface = class {
     }
     try {
       ;
-      [llm, modelInfo] = await initModel(
-        this.ctx,
-        service,
-        llmPlatform,
-        llmModelName
-      );
+      [llm, modelInfo] = await initModel(this.ctx, service, initDescriptor);
     } catch (error) {
       if (error instanceof import_error3.ChatLunaError) {
         throw error;
@@ -631,6 +797,7 @@ var ChatInterface = class {
       }
       throw new import_error3.ChatLunaError(import_error3.ChatLunaErrorCode.UNKNOWN_ERROR, error);
     }
+    this._chainInitKey = nextInitKey;
     this._chain = (0, import_reactivity2.computed)(() => {
       if (llm.value == null) {
         return void 0;

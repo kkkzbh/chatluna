@@ -14,6 +14,7 @@ export declare class ChatInterface {
     private _input;
     private _chatHistory;
     private _chain;
+    private _chainInitKey;
     private _embeddings;
     private _historyMemory?;
     private _infiniteContextManager?;
@@ -23,8 +24,9 @@ export declare class ChatInterface {
     chat(arg: ChatLunaLLMCallArg): Promise<ChainValues>;
     private processChat;
     private handlePostProcessing;
-    getChatLunaLLMChainWrapper(): Promise<ChatLunaLLMChainWrapper>;
-    createChatLunaLLMChainWrapper(): Promise<void>;
+    private resolveModelInitDescriptor;
+    getChatLunaLLMChainWrapper(arg?: ChatLunaLLMCallArg): Promise<ChatLunaLLMChainWrapper>;
+    createChatLunaLLMChainWrapper(arg?: ChatLunaLLMCallArg): Promise<void>;
     get chatHistory(): BaseChatMessageHistory;
     get chatMode(): string;
     get embeddings(): ComputedRef<Embeddings>;
@@ -42,6 +44,8 @@ export interface ChatInterfaceInput {
     botName?: string;
     preset?: ComputedRef<PresetTemplate>;
     model: string;
+    requestMode?: string;
+    transportModel?: string;
     embeddings?: string;
     vectorStoreName?: string;
     conversationId: string;
