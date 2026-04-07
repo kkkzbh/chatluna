@@ -5,6 +5,7 @@ import { ChainMiddlewareRunStatus, ChatChain } from '../../chains/chain'
 import {
     getAllJoinedConversationRoom,
     getConversationRoomUser,
+    joinConversationRoom,
     leaveConversationRoom,
     switchConversationRoom
 } from '../../chains/rooms'
@@ -14,7 +15,23 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
         .middleware('check_room', async (session, context) => {
             let room = context.options.room
 
-            const rooms = await getAllJoinedConversationRoom(ctx, session)
+            let rooms = await getAllJoinedConversationRoom(ctx, session)
+
+            if (
+                room != null &&
+                !rooms.some(
+                    (searchRoom) =>
+                        searchRoom.roomName === room.roomName ||
+                        searchRoom.roomId === room.roomId
+                )
+            ) {
+                try {
+                    await joinConversationRoom(ctx, session, room)
+                    rooms = await getAllJoinedConversationRoom(ctx, session)
+                } catch (e) {
+                    // 忽略修复失败，继续沿用原来的报错路径
+                }
+            }
 
             // 检查当前用户是否在房间
             if (room == null && rooms.length > 0) {
