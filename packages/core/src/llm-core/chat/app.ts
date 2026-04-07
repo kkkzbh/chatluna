@@ -4,7 +4,6 @@ import { AIMessage, HumanMessage } from '@langchain/core/messages'
 import { ChainValues } from '@langchain/core/utils/types'
 import { computed, ComputedRef } from '@vue/reactivity'
 import { Context, Session } from 'koishi'
-import { parseRawModelName } from 'koishi-plugin-chatluna/llm-core/utils/count_tokens'
 import { BufferMemory } from 'koishi-plugin-chatluna/llm-core/memory/langchain'
 import { logger } from 'koishi-plugin-chatluna'
 import {
@@ -25,9 +24,11 @@ import {
 } from 'koishi-plugin-chatluna/utils/error'
 import { ChatLunaLLMCallArg, ChatLunaLLMChainWrapper } from '../chain/base'
 import {
+    buildChatModelInitCacheKey,
     createDisplayResponse,
     initEmbeddings,
     initModel,
+    resolveChatModelInitDescriptor,
     supportChatMode
 } from './helper'
 import type { CompressContextResult } from './infinite_context'
@@ -48,6 +49,7 @@ export class ChatInterface {
     private _input: ChatInterfaceInput
     private _chatHistory: KoishiChatMessageHistory
     private _chain: ComputedRef<ChatLunaLLMChainWrapper | undefined> | undefined
+    private _chainInitKey: string | undefined
     private _embeddings: ComputedRef<Embeddings>
 
     private _historyMemory?: BufferMemory
@@ -62,6 +64,7 @@ export class ChatInterface {
         this._input = input
         ctx.on('dispose', () => {
             this._chain = undefined
+            this._chainInitKey = undefined
             this._embeddings = undefined
             this._historyMemory = undefined
             this._infiniteContextManager = undefined
@@ -107,7 +110,7 @@ export class ChatInterface {
         let wrapper: ChatLunaLLMChainWrapper
 
         try {
-            wrapper = await this.getChatLunaLLMChainWrapper()
+            wrapper = await this.getChatLunaLLMChainWrapper(arg)
         } catch (error) {
             await this.handleChatError(arg, wrapper, error)
             throw error
@@ -280,25 +283,46 @@ export class ChatInterface {
         )
     }
 
-    async getChatLunaLLMChainWrapper(): Promise<ChatLunaLLMChainWrapper> {
-        if (this._chain) {
+    private resolveModelInitDescriptor(arg?: ChatLunaLLMCallArg) {
+        return resolveChatModelInitDescriptor({
+            model: this._input.model,
+            requestMode: this._input.requestMode,
+            transportModel: this._input.transportModel,
+            additionalKwargs: arg?.message?.additional_kwargs
+        })
+    }
+
+    async getChatLunaLLMChainWrapper(
+        arg?: ChatLunaLLMCallArg
+    ): Promise<ChatLunaLLMChainWrapper> {
+        const initDescriptor = this.resolveModelInitDescriptor(arg)
+        const nextInitKey = buildChatModelInitCacheKey(initDescriptor)
+
+        if (this._chain && this._chainInitKey === nextInitKey) {
             const chainValue = this._chain.value
             if (chainValue) {
                 return chainValue
             }
         }
 
-        await this.createChatLunaLLMChainWrapper()
+        if (this._chain && this._chainInitKey !== nextInitKey) {
+            this._chain = undefined
+            this._chainInitKey = undefined
+        }
+
+        await this.createChatLunaLLMChainWrapper(arg)
         return this._chain.value
     }
 
-    async createChatLunaLLMChainWrapper(): Promise<void> {
-        if (this._chain) {
+    async createChatLunaLLMChainWrapper(arg?: ChatLunaLLMCallArg): Promise<void> {
+        const initDescriptor = this.resolveModelInitDescriptor(arg)
+        const nextInitKey = buildChatModelInitCacheKey(initDescriptor)
+
+        if (this._chain && this._chainInitKey === nextInitKey) {
             return
         }
 
         const service = this.ctx.chatluna.platform
-        const [llmPlatform, llmModelName] = parseRawModelName(this._input.model)
 
         let llm: ComputedRef<ChatLunaChatModel>
 
@@ -321,12 +345,7 @@ export class ChatInterface {
         }
 
         try {
-            ;[llm, modelInfo] = await initModel(
-                this.ctx,
-                service,
-                llmPlatform,
-                llmModelName
-            )
+            ;[llm, modelInfo] = await initModel(this.ctx, service, initDescriptor)
         } catch (error) {
             if (error instanceof ChatLunaError) {
                 throw error
@@ -355,6 +374,7 @@ export class ChatInterface {
             throw new ChatLunaError(ChatLunaErrorCode.UNKNOWN_ERROR, error)
         }
 
+        this._chainInitKey = nextInitKey
         this._chain = computed(() => {
             if (llm.value == null) {
                 return undefined
@@ -519,6 +539,8 @@ export interface ChatInterfaceInput {
     botName?: string
     preset?: ComputedRef<PresetTemplate>
     model: string
+    requestMode?: string
+    transportModel?: string
     embeddings?: string
     vectorStoreName?: string
     conversationId: string
