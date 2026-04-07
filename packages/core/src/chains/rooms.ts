@@ -573,14 +573,6 @@ export async function joinConversationRoom(
             ? await resolveConversationRoom(ctx, roomId)
             : roomId
 
-    await ctx.database.upsert('chathub_user', [
-        {
-            userId,
-            defaultRoomId: room.roomId,
-            groupId: session.isDirect ? '0' : session.guildId
-        }
-    ])
-
     if (isDirect === false) {
         // 如果是群聊，那么就需要检查群聊的权限
 
@@ -610,6 +602,14 @@ export async function joinConversationRoom(
             roomPermission: userId === room.roomMasterId ? 'owner' : 'member'
         })
     }
+
+    await ctx.database.upsert('chathub_user', [
+        {
+            userId,
+            defaultRoomId: room.roomId,
+            groupId: session.isDirect ? '0' : session.guildId
+        }
+    ])
 }
 
 export async function getConversationRoomUser(
