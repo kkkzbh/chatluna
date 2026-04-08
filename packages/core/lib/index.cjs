@@ -68,7 +68,7 @@ __export(index_exports, {
   apply: () => apply69,
   inject: () => inject,
   inject2: () => inject2,
-  logger: () => logger7,
+  logger: () => logger8,
   name: () => name,
   usage: () => usage
 });
@@ -992,7 +992,17 @@ __name(apply9, "apply");
 async function command(ctx, config) {
   const middlewares = (
     // middleware start
-    [apply, apply2, apply3, apply4, apply5, apply6, apply7, apply8, apply9]
+    [
+      apply,
+      apply2,
+      apply3,
+      apply4,
+      apply5,
+      apply6,
+      apply7,
+      apply8,
+      apply9
+    ]
   );
   for (const middleware2 of middlewares) {
     await middleware2(ctx, config, ctx.chatluna.chatChain);
@@ -1001,14 +1011,124 @@ async function command(ctx, config) {
 __name(command, "command");
 
 // src/llm-core/chat/default.ts
-var import_koishi_plugin_chatluna2 = require("koishi-plugin-chatluna");
+var import_koishi_plugin_chatluna3 = require("koishi-plugin-chatluna");
 
 // src/llm-core/chain/chat_chain.ts
 var import_messages = require("@langchain/core/messages");
 var import_base = require("koishi-plugin-chatluna/llm-core/chain/base");
 var import_prompt = require("koishi-plugin-chatluna/llm-core/chain/prompt");
 var import_error2 = require("koishi-plugin-chatluna/utils/error");
+var import_string2 = require("koishi-plugin-chatluna/utils/string");
+var import_koishi_plugin_chatluna = require("koishi-plugin-chatluna");
+
+// src/llm-core/chain/qqbot_request_budget.ts
 var import_string = require("koishi-plugin-chatluna/utils/string");
+function clampNatural(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+}
+__name(clampNatural, "clampNatural");
+function clampRatio(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
+    return fallback;
+  }
+  return parsed;
+}
+__name(clampRatio, "clampRatio");
+function parsePolicy(additionalKwargs) {
+  const raw = additionalKwargs?.qqbot_request_budget_policy;
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  return {
+    historyWindow: clampNatural(
+      raw.historyWindow,
+      80
+    ),
+    historyTriggerCount: clampNatural(
+      raw.historyTriggerCount,
+      120
+    ),
+    historyTokenRatio: clampRatio(
+      raw.historyTokenRatio,
+      0.7
+    )
+  };
+}
+__name(parsePolicy, "parsePolicy");
+async function estimateHistoryTokens(llm, messages) {
+  if (messages.length < 1) {
+    return 0;
+  }
+  const text = messages.map((message) => `${message.getType()}: ${(0, import_string.getMessageContent)(message.content)}`).join("\n");
+  return await llm.getNumTokens(text);
+}
+__name(estimateHistoryTokens, "estimateHistoryTokens");
+async function applyQqbotRequestBudget(llm, history, additionalKwargs) {
+  const policy = parsePolicy(additionalKwargs);
+  if (policy == null) {
+    return {
+      messages: history,
+      stats: null
+    };
+  }
+  const originalHistoryCount = history.length;
+  const maxPromptTokens = Math.max(
+    1,
+    Math.floor(llm.getModelMaxContextSize() * policy.historyTokenRatio)
+  );
+  const originalEstimatedInputTokens = await estimateHistoryTokens(llm, history);
+  const needsTrim = history.length > policy.historyTriggerCount || originalEstimatedInputTokens > maxPromptTokens;
+  if (!needsTrim) {
+    return {
+      messages: history,
+      stats: {
+        historyWindowCount: history.length,
+        originalHistoryCount,
+        estimatedInputTokens: originalEstimatedInputTokens,
+        trimmedHistoryCount: 0,
+        applied: false
+      }
+    };
+  }
+  const systemMessages = history.filter((message) => message.getType() === "system");
+  let tailMessages = history.filter((message) => message.getType() !== "system");
+  if (tailMessages.length > policy.historyWindow) {
+    tailMessages = tailMessages.slice(-policy.historyWindow);
+  }
+  let trimmed = history;
+  let estimatedInputTokens = originalEstimatedInputTokens;
+  while (true) {
+    const kept = /* @__PURE__ */ new Set([...systemMessages, ...tailMessages]);
+    trimmed = history.filter((message) => kept.has(message));
+    estimatedInputTokens = await estimateHistoryTokens(llm, trimmed);
+    if (estimatedInputTokens <= maxPromptTokens || tailMessages.length <= 1) {
+      break;
+    }
+    const shrinkBy = Math.max(
+      1,
+      Math.min(8, tailMessages.length - 1)
+    );
+    tailMessages = tailMessages.slice(shrinkBy);
+  }
+  return {
+    messages: trimmed,
+    stats: {
+      historyWindowCount: trimmed.length,
+      originalHistoryCount,
+      estimatedInputTokens,
+      trimmedHistoryCount: Math.max(0, originalHistoryCount - trimmed.length),
+      applied: trimmed.length !== originalHistoryCount
+    }
+  };
+}
+__name(applyQqbotRequestBudget, "applyQqbotRequestBudget");
+
+// src/llm-core/chain/chat_chain.ts
 var ChatLunaChatChain = class _ChatLunaChatChain extends import_base.ChatLunaLLMChainWrapper {
   static {
     __name(this, "ChatLunaChatChain");
@@ -1073,10 +1193,28 @@ var ChatLunaChatChain = class _ChatLunaChatChain extends import_base.ChatLunaLLM
       input: message
     };
     const chatHistory = await this.historyMemory.loadMemoryVariables(requests);
-    requests["chat_history"] = chatHistory[this.historyMemory.memoryKey];
-    requests["variables"] = Object.assign(variables ?? {}, {
-      prompt: (0, import_string.getMessageContent)(message.content)
-    });
+    const budgetedHistory = await applyQqbotRequestBudget(
+      this.chain.llm,
+      chatHistory[this.historyMemory.memoryKey],
+      message.additional_kwargs
+    );
+    requests["chat_history"] = budgetedHistory.messages;
+    if (budgetedHistory.stats != null) {
+      requests["variables"] = Object.assign(variables ?? {}, {
+        prompt: (0, import_string2.getMessageContent)(message.content),
+        qqbot_request_budget: budgetedHistory.stats
+      });
+    } else {
+      requests["variables"] = Object.assign(variables ?? {}, {
+        prompt: (0, import_string2.getMessageContent)(message.content)
+      });
+    }
+    if (budgetedHistory.stats?.applied) {
+      import_koishi_plugin_chatluna.logger.debug(
+        "[qqbot-request-budget] %s",
+        JSON.stringify(budgetedHistory.stats)
+      );
+    }
     requests["variables"]["built"] = {
       conversationId
     };
@@ -1119,12 +1257,12 @@ var ChatLunaChatChain = class _ChatLunaChatChain extends import_base.ChatLunaLLM
 var import_messages2 = require("@langchain/core/messages");
 var import_base2 = require("koishi-plugin-chatluna/llm-core/chain/base");
 var import_agent = require("koishi-plugin-chatluna/llm-core/agent");
-var import_koishi_plugin_chatluna = require("koishi-plugin-chatluna");
+var import_koishi_plugin_chatluna2 = require("koishi-plugin-chatluna");
 var import_error3 = require("koishi-plugin-chatluna/utils/error");
 var import_prompt2 = require("koishi-plugin-chatluna/llm-core/chain/prompt");
 var import_message = require("koishi-plugin-chatluna/llm-core/memory/message");
 var import_reactivity = require("@vue/reactivity");
-var import_string2 = require("koishi-plugin-chatluna/utils/string");
+var import_string3 = require("koishi-plugin-chatluna/utils/string");
 function cloneAIMessage(message, toolCalls) {
   return new import_messages2.AIMessage({
     content: message.content,
@@ -1343,11 +1481,23 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends import_base2.ChatLu
     if (this.agentMode === "react") {
       await chatHistory.removeAllToolAndFunctionMessages();
     }
-    requests["chat_history"] = [...messages];
+    const budgetedHistory = await applyQqbotRequestBudget(
+      this.llm,
+      [...messages],
+      message.additional_kwargs
+    );
+    requests["chat_history"] = [...budgetedHistory.messages];
     requests["id"] = conversationId;
     requests["variables"] = Object.assign(nextVars, {
-      prompt: (0, import_string2.getMessageContent)(message.content)
+      prompt: (0, import_string3.getMessageContent)(message.content),
+      ...budgetedHistory.stats != null ? { qqbot_request_budget: budgetedHistory.stats } : {}
     });
+    if (budgetedHistory.stats?.applied) {
+      import_koishi_plugin_chatluna2.logger.debug(
+        "[qqbot-request-budget] %s",
+        JSON.stringify(budgetedHistory.stats)
+      );
+    }
     requests["variables"]["built"] = {
       conversationId
     };
@@ -1405,9 +1555,9 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends import_base2.ChatLu
                 );
               },
               handleToolEnd(out) {
-                import_koishi_plugin_chatluna.logger.debug(
+                import_koishi_plugin_chatluna2.logger.debug(
                   "Tool end:",
-                  (0, import_string2.sanitizeToolLogValue)(out)
+                  (0, import_string3.sanitizeToolLogValue)(out)
                 );
               },
               handleLLMNewToken(token) {
@@ -1446,7 +1596,7 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends import_base2.ChatLu
       if (e?.message?.includes("Aborted")) {
         throw new import_error3.ChatLunaError(import_error3.ChatLunaErrorCode.ABORTED);
       }
-      import_koishi_plugin_chatluna.logger.error(e);
+      import_koishi_plugin_chatluna2.logger.error(e);
       error = e;
     }
     await events?.["llm-used-token-count"]?.(usedToken);
@@ -1489,7 +1639,7 @@ async function defaultFactory(ctx, service) {
     ).forEach(async ([id, info]) => {
       const result = await wrapper.clearCache(info.room);
       if (result) {
-        import_koishi_plugin_chatluna2.logger?.debug(`Cleared cache for room ${id}`);
+        import_koishi_plugin_chatluna3.logger?.debug(`Cleared cache for room ${id}`);
       }
     });
   });
@@ -1503,7 +1653,7 @@ async function defaultFactory(ctx, service) {
     ).forEach(async ([id, info]) => {
       const result = await wrapper.clearCache(info.room);
       if (result) {
-        import_koishi_plugin_chatluna2.logger?.debug(`Cleared cache for room ${id}`);
+        import_koishi_plugin_chatluna3.logger?.debug(`Cleared cache for room ${id}`);
       }
     });
   });
@@ -1546,7 +1696,7 @@ function getTools(service) {
 __name(getTools, "getTools");
 
 // src/llm-core/memory/lore_book/index.ts
-var import_koishi_plugin_chatluna3 = require("koishi-plugin-chatluna");
+var import_koishi_plugin_chatluna4 = require("koishi-plugin-chatluna");
 var import_messages3 = require("@langchain/core/messages");
 function apply10(ctx, config) {
   const cache = /* @__PURE__ */ new Map();
@@ -1573,7 +1723,7 @@ function apply10(ctx, config) {
       messages.push(message);
       const matchedLores = matcher.matchLoreBooks(messages);
       if (matchedLores.length > 0) {
-        import_koishi_plugin_chatluna3.logger.debug(
+        import_koishi_plugin_chatluna4.logger.debug(
           `Found ${matchedLores.length} matched lore books: ${JSON.stringify(
             matchedLores.map((lore) => lore.keywords)
           )}`
@@ -2151,13 +2301,6 @@ async function deleteConversationRoomByRoomId(ctx, roomId) {
 __name(deleteConversationRoomByRoomId, "deleteConversationRoomByRoomId");
 async function joinConversationRoom(ctx, session, roomId, isDirect = session.isDirect, userId = session.userId) {
   const room = typeof roomId === "number" ? await resolveConversationRoom(ctx, roomId) : roomId;
-  await ctx.database.upsert("chathub_user", [
-    {
-      userId,
-      defaultRoomId: room.roomId,
-      groupId: session.isDirect ? "0" : session.guildId
-    }
-  ]);
   if (isDirect === false) {
     const groupMemberList = await ctx.database.get(
       "chathub_room_group_member",
@@ -2182,6 +2325,13 @@ async function joinConversationRoom(ctx, session, roomId, isDirect = session.isD
       roomPermission: userId === room.roomMasterId ? "owner" : "member"
     });
   }
+  await ctx.database.upsert("chathub_user", [
+    {
+      userId,
+      defaultRoomId: room.roomId,
+      groupId: session.isDirect ? "0" : session.guildId
+    }
+  ]);
 }
 __name(joinConversationRoom, "joinConversationRoom");
 async function getConversationRoomUser(ctx, session, roomId, userId = session.userId) {
@@ -2293,13 +2443,13 @@ __name(apply13, "apply");
 
 // src/middlewares/auth/black_list.ts
 var import_logger2 = require("koishi-plugin-chatluna/utils/logger");
-var logger4;
+var logger5;
 function apply14(ctx, config, chain) {
-  logger4 = (0, import_logger2.createLogger)(ctx);
+  logger5 = (0, import_logger2.createLogger)(ctx);
   chain.middleware("black_list", async (session, context) => {
     const resolved = await session.resolve(config.blackList);
     if (resolved === 1) {
-      logger4.debug(
+      logger5.debug(
         `[黑名单] ${session.username}(${session.userId}): ${session.content}`
       );
       context.message = session.text("chatluna.block_message");
@@ -3105,7 +3255,7 @@ function apply20(ctx, config, chain) {
 __name(apply20, "apply");
 
 // src/middlewares/chat/censor.ts
-var import_string3 = require("koishi-plugin-chatluna/utils/string");
+var import_string4 = require("koishi-plugin-chatluna/utils/string");
 function apply21(ctx, config, chain) {
   chain.middleware("censor", async (session, context) => {
     const message = context.options.responseMessage;
@@ -3122,7 +3272,7 @@ function apply21(ctx, config, chain) {
     }
     message.content = await Promise.all(
       baseContent.map((content) => {
-        if (!(0, import_string3.isMessageContentText)(content)) {
+        if (!(0, import_string4.isMessageContentText)(content)) {
           return content;
         }
         return {
@@ -3263,7 +3413,7 @@ var DatabaseCache = class {
 // src/middlewares/chat/chat_time_limit_check.ts
 var import_crypto2 = require("crypto");
 var import_types4 = require("koishi-plugin-chatluna/llm-core/platform/types");
-var import_koishi_plugin_chatluna4 = require("koishi-plugin-chatluna");
+var import_koishi_plugin_chatluna5 = require("koishi-plugin-chatluna");
 function apply22(ctx, config, chain) {
   const chatLimitCache = new Cache(ctx, config, "chatluna/chat_limit");
   const authService = ctx.chatluna_auth;
@@ -3334,17 +3484,17 @@ function apply22(ctx, config, chain) {
       ;
       [platformClient] = (0, import_count_tokens3.parseRawModelName)(model);
     } catch (e) {
-      import_koishi_plugin_chatluna4.logger.error(e);
+      import_koishi_plugin_chatluna5.logger.error(e);
       return session.text("chatluna.not_available_model");
     }
     const client = await ctx.chatluna.platform.getClient(platformClient);
     if (!client.value) {
-      import_koishi_plugin_chatluna4.logger.error(`Can't find model adapter for ${model}`);
+      import_koishi_plugin_chatluna5.logger.error(`Can't find model adapter for ${model}`);
       return session.text("chatluna.not_available_model");
     }
     const clientConfig = client.value.configPool.getConfig(true);
     if (!clientConfig) {
-      import_koishi_plugin_chatluna4.logger.error(`Can't find model adapter for ${model}`);
+      import_koishi_plugin_chatluna5.logger.error(`Can't find model adapter for ${model}`);
       return session.text("chatluna.not_available_model");
     }
     const chatLimitRaw = clientConfig.value.chatLimit;
@@ -3526,10 +3676,10 @@ function serializeQqbotHumanMessageContent(content, additionalKwargs) {
 __name(serializeQqbotHumanMessageContent, "serializeQqbotHumanMessageContent");
 
 // src/middlewares/chat/message_delay.ts
-var logger6;
+var logger7;
 var queues = /* @__PURE__ */ new Map();
 function apply25(ctx, config, chain) {
-  logger6 = (0, import_logger3.createLogger)(ctx);
+  logger7 = (0, import_logger3.createLogger)(ctx);
   chain.middleware("message_delay", async (session, context) => {
     if (!config.messageQueue || context.command?.length > 0) {
       return 2 /* CONTINUE */;
@@ -3544,7 +3694,7 @@ function apply25(ctx, config, chain) {
       createPendingMessage(session, room, inputMessage),
       room.chatMode
     )) {
-      logger6.debug(
+      logger7.debug(
         `Appending pending message for ${conversationId}, messageId: ${messageId}`
       );
       return 1 /* STOP */;
@@ -3558,7 +3708,7 @@ function apply25(ctx, config, chain) {
     let turn;
     if (tailTurn && tailTurn.state !== "processing" && tailTurn.userName === userName) {
       turn = tailTurn;
-      logger6.debug(
+      logger7.debug(
         `Joining turn for ${conversationId}, messageId: ${messageId}, user: ${userName}, total: ${turn.messages.length + 1}`
       );
     } else {
@@ -3569,7 +3719,7 @@ function apply25(ctx, config, chain) {
         state
       };
       conversation.turns.push(turn);
-      logger6.debug(
+      logger7.debug(
         `Creating new turn for ${conversationId}, messageId: ${messageId}, user: ${userName}, queue: ${conversation.turns.length}`
       );
     }
@@ -3601,7 +3751,7 @@ function apply25(ctx, config, chain) {
     }
     tryStartHeadTurn(conversationId, conversation);
     if (current) {
-      logger6.debug(
+      logger7.debug(
         `Completing turn for ${conversationId}, remaining: ${conversation.turns.length}`
       );
     }
@@ -3617,7 +3767,7 @@ function apply25(ctx, config, chain) {
       const stoppedWaiters = conversation.turns.filter(
         (turn) => !!turn.starter
       ).length;
-      logger6.debug(
+      logger7.debug(
         `Clearing chat history for ${conversationId}, stopping ${stoppedWaiters} waiters`
       );
       for (const turn of conversation.turns) {
@@ -3659,7 +3809,7 @@ function resetTurnTimeout(ctx, config, conversationId, turn) {
     if (conversation.inFlight) {
       return;
     }
-    logger6.debug(
+    logger7.debug(
       // eslint-disable-next-line max-len
       `Delay timeout (${config.messageQueueDelay}s) for ${conversationId}, starting turn with ${turn.messages.length} messages`
     );
@@ -3751,7 +3901,7 @@ __name(createPendingMessage, "createPendingMessage");
 
 // src/middlewares/chat/read_chat_message.ts
 var import_koishi7 = require("koishi");
-var import_string4 = require("koishi-plugin-chatluna/utils/string");
+var import_string5 = require("koishi-plugin-chatluna/utils/string");
 var import_types5 = require("koishi-plugin-chatluna/llm-core/platform/types");
 var import_koishi8 = require("koishi-plugin-chatluna/utils/koishi");
 var import_count_tokens4 = require("koishi-plugin-chatluna/llm-core/utils/count_tokens");
@@ -3802,7 +3952,7 @@ function apply26(ctx, config, chain) {
       }
       delete kwargs?.[forwardHistoryInternalKey];
     }
-    if (transformedMessage.content.length < 1 && (0, import_string4.getMessageContent)(transformedMessage.content).trim().length < 1) {
+    if (transformedMessage.content.length < 1 && (0, import_string5.getMessageContent)(transformedMessage.content).trim().length < 1) {
       return 1 /* STOP */;
     }
     context.options.inputMessage = transformedMessage;
@@ -3864,7 +4014,7 @@ function apply26(ctx, config, chain) {
         import_types5.ModelCapabilities.ImageInput
       )) {
         if (!isInstalledImageService) {
-          logger7.warn(
+          logger8.warn(
             `Model "${model}" does not support image input. Please use a model that supports vision capabilities, or install chatluna-multimodal-service plugin to enable image description.`
           );
         }
@@ -3872,7 +4022,7 @@ function apply26(ctx, config, chain) {
       }
       const url = element.attrs.url ?? element.attrs.src;
       const displayUrl = url.length > 100 ? url.substring(0, 100) + "..." : url;
-      logger7.debug(`Processing image: ${displayUrl}`);
+      logger8.debug(`Processing image: ${displayUrl}`);
       if (!ctx.chatluna_storage) {
         return await oldImageRead(
           ctx,
@@ -3888,7 +4038,7 @@ function apply26(ctx, config, chain) {
       }
       if (ext === "image/gif") {
         if (!isInstalledImageService) {
-          logger7.warn(
+          logger8.warn(
             `Detected GIF image, which is not supported by most models. Please install chatluna-image-service plugin to parse GIF animations.`
           );
         }
@@ -3898,9 +4048,9 @@ function apply26(ctx, config, chain) {
       element.attrs["ext"] = fileExt;
       let fileName = element.attrs["filename"];
       if (fileName == null || fileName.length > 50) {
-        fileName = `${await (0, import_string4.hashString)(url, 8)}.${fileExt}`;
+        fileName = `${await (0, import_string5.hashString)(url, 8)}.${fileExt}`;
       }
-      logger7.debug(`Saving image as temp file: ${fileName}`);
+      logger8.debug(`Saving image as temp file: ${fileName}`);
       const tempFile = await ctx.chatluna_storage.createTempFile(
         buffer,
         fileName
@@ -3915,14 +4065,14 @@ function apply26(ctx, config, chain) {
     -100
   );
   ctx.inject(["sst"], (ctx2) => {
-    logger7.debug("sst service loaded.");
+    logger8.debug("sst service loaded.");
     ctx2.effect(
       () => ctx2.chatluna.messageTransformer.intercept(
         "audio",
         async (session, element, message, model) => {
           const modelInfo = model != null ? ctx2.chatluna.platform.findModel(model) : void 0;
           if (isAudioHandled(message, element)) {
-            logger7.debug(
+            logger8.debug(
               "Skip sst audio2text because audio is already handled."
             );
             return false;
@@ -3930,13 +4080,13 @@ function apply26(ctx, config, chain) {
           if (modelInfo?.value?.capabilities?.includes(
             import_types5.ModelCapabilities.AudioInput
           )) {
-            logger7.debug(
+            logger8.debug(
               "Skip sst audio2text because model supports audio input natively."
             );
             return false;
           }
           const content = await ctx2.sst.audio2text(session);
-          logger7.debug(`audio2text: ${content}`);
+          logger8.debug(`audio2text: ${content}`);
           addMessageContent(message, content);
           markAudioHandled(message, element);
         }
@@ -3994,7 +4144,7 @@ function apply26(ctx, config, chain) {
     "audio",
     async (session, element, message, model) => {
       if (isAudioHandled(message, element)) {
-        logger7.debug(
+        logger8.debug(
           "Skip audio file handler because audio is already handled."
         );
         return false;
@@ -4067,14 +4217,14 @@ async function resolveSourceUrl(ctx, session, element) {
     }
   }
   if (srcAttr) return srcAttr;
-  logger7.warn(`Failed to get source URL for element: ${element.toString()}`);
+  logger8.warn(`Failed to get source URL for element: ${element.toString()}`);
   return null;
 }
 __name(resolveSourceUrl, "resolveSourceUrl");
 async function handleFileElement(ctx, session, element, message, model, elementType) {
   const displayElementType = elementType === "audio" ? "voice" : elementType;
   if (elementType === "audio" && isAudioHandled(message, element)) {
-    logger7.debug(
+    logger8.debug(
       "Skip handling audio file because audio is already handled."
     );
     return false;
@@ -4097,15 +4247,15 @@ async function handleFileElement(ctx, session, element, message, model, elementT
     const parsedMime = typeof ctValue === "string" ? ctValue.split(";")[0].trim().toLowerCase() : null;
     responseMimeType = parsedMime != null && !INVALID_RESPONSE_MIME_TYPES.has(parsedMime) ? parsedMime : null;
   } catch (error) {
-    logger7.error(`Failed to read file from ${sourceUrl}:`, error);
+    logger8.error(`Failed to read file from ${sourceUrl}:`, error);
     return false;
   }
-  const mimeType = responseMimeType ?? (0, import_string4.getMimeTypeFromSource)(sourceUrl, fileName);
+  const mimeType = responseMimeType ?? (0, import_string5.getMimeTypeFromSource)(sourceUrl, fileName);
   if (elementType === "audio" && mimeType != null) {
     if (!SUPPORTED_AUDIO_MIME_TYPES.has(mimeType)) {
       const isInstalledMultimodalService = ctx.chatluna.getPlugin("multimodal-service") != null;
       if (!isInstalledMultimodalService) {
-        logger7.warn(
+        logger8.warn(
           `Unsupported audio format "${mimeType}". Please install chatluna-multimodal-service plugin to handle this format.`
         );
       }
@@ -4169,7 +4319,7 @@ async function handleFileElement(ctx, session, element, message, model, elementT
 }
 __name(handleFileElement, "handleFileElement");
 async function oldImageRead(ctx, url, message, element, isInstalledImageService) {
-  const imageHash = await (0, import_string4.hashString)(url, 8);
+  const imageHash = await (0, import_string5.hashString)(url, 8);
   element.attrs["imageHash"] = imageHash;
   try {
     const { base64Source, ext } = await readImage(ctx, url);
@@ -4178,7 +4328,7 @@ async function oldImageRead(ctx, url, message, element, isInstalledImageService)
     }
     if (ext === "image/gif") {
       if (!isInstalledImageService) {
-        logger7.warn(
+        logger8.warn(
           `Detected GIF image, which is not supported by most models. Please install chatluna-image-service plugin to parse GIF animations.`
         );
       }
@@ -4191,7 +4341,7 @@ async function oldImageRead(ctx, url, message, element, isInstalledImageService)
     });
   } catch (error) {
     const displayUrl = url.length > 100 ? url.substring(0, 100) + "..." : url;
-    logger7.warn(
+    logger8.warn(
       `Failed to read image from ${displayUrl}. Please check your Koishi chat adapter.`,
       error
     );
@@ -4202,7 +4352,7 @@ async function readImage(ctx, url) {
   if (url.startsWith("base64://")) {
     const base64 = url.slice("base64://".length);
     const buffer = Buffer.from(base64, "base64");
-    const ext = (0, import_string4.getImageType)(buffer);
+    const ext = (0, import_string5.getImageType)(buffer);
     return {
       base64Source: `data:${ext ?? "image/jpeg"};base64,${base64}`,
       buffer,
@@ -4211,7 +4361,7 @@ async function readImage(ctx, url) {
   }
   if (url.startsWith("data:image") && url.includes("base64")) {
     const buffer = Buffer.from(url.split(",")[1], "base64");
-    const ext = (0, import_string4.getImageType)(buffer);
+    const ext = (0, import_string5.getImageType)(buffer);
     return {
       base64Source: url,
       buffer,
@@ -4226,14 +4376,14 @@ async function readImage(ctx, url) {
     });
     const buffer = Buffer.from(response.data);
     const base64 = buffer.toString("base64");
-    const ext = (0, import_string4.getImageType)(buffer);
+    const ext = (0, import_string5.getImageType)(buffer);
     return {
       base64Source: `data:${ext};base64,${base64}`,
       buffer,
       ext
     };
   } catch (error) {
-    logger7.error(`Failed to read image from ${url}:`, error);
+    logger8.error(`Failed to read image from ${url}:`, error);
     return {
       base64Source: null,
       buffer: null,
@@ -4483,7 +4633,7 @@ function apply28(ctx, config, chain) {
     await session.send(
       session.text(".rollback_success", [rollbackRound])
     );
-    logger7.debug(
+    logger8.debug(
       `rollback chat ${room.roomName} ${context.options.inputMessage}`
     );
     return 2 /* CONTINUE */;
@@ -4496,7 +4646,7 @@ var import_count_tokens5 = require("koishi-plugin-chatluna/llm-core/utils/count_
 var import_error6 = require("koishi-plugin-chatluna/utils/error");
 var import_logger4 = require("koishi-plugin-chatluna/utils/logger");
 var import_chains = require("koishi-plugin-chatluna/chains");
-var import_string5 = require("koishi-plugin-chatluna/utils/string");
+var import_string6 = require("koishi-plugin-chatluna/utils/string");
 
 // src/utils/buffer_text.ts
 var import_koishi10 = require("koishi");
@@ -4783,7 +4933,7 @@ var MessageEditQueue = class {
     try {
       await session.bot.editMessage(session.channelId, messageId, text);
     } catch (error) {
-      logger7.error("Error editing message:", error);
+      logger8.error("Error editing message:", error);
     }
   }
   finish() {
@@ -4798,7 +4948,7 @@ async function sendInitialMessage(session, text) {
     );
     return messageIds[0];
   } catch (error) {
-    logger7.error("Error sending initial message:", error);
+    logger8.error("Error sending initial message:", error);
     throw error;
   }
 }
@@ -4806,10 +4956,10 @@ __name(sendInitialMessage, "sendInitialMessage");
 
 // src/middlewares/model/request_model.ts
 var import_crypto5 = require("crypto");
-var logger8;
+var logger9;
 var requestIdCache = /* @__PURE__ */ new Map();
 function apply29(ctx, config, chain) {
-  logger8 = (0, import_logger4.createLogger)(ctx);
+  logger9 = (0, import_logger4.createLogger)(ctx);
   chain.middleware("request_model", async (session, context) => {
     const { room, inputMessage } = context.options;
     const presetTemplate = ctx.chatluna.preset.getPreset(
@@ -4845,7 +4995,7 @@ function apply29(ctx, config, chain) {
       presetTemplate.config?.postHandler?.prefix,
       presetTemplate.config?.postHandler?.postfix
     );
-    const postHandler = presetTemplate.config?.postHandler ? new import_string5.PresetPostHandler(
+    const postHandler = presetTemplate.config?.postHandler ? new import_string6.PresetPostHandler(
       ctx,
       config,
       presetTemplate.config?.postHandler
@@ -4892,8 +5042,8 @@ function apply29(ctx, config, chain) {
           chatCallbacks,
           config.streamResponse,
           {
-            prompt: (0, import_string5.getMessageContent)(originContent),
-            ...(0, import_string5.getSystemPromptVariables)(session, config, room)
+            prompt: (0, import_string6.getMessageContent)(originContent),
+            ...(0, import_string6.getSystemPromptVariables)(session, config, room)
           },
           postHandler,
           requestId
@@ -4971,7 +5121,7 @@ function createQueueWaitingHandler(context) {
 __name(createQueueWaitingHandler, "createQueueWaitingHandler");
 function createToolCallHandler(context, config) {
   return async (tool, arg, content, log) => {
-    logger8.debug(`Call tool: ${tool} with ${JSON.stringify(arg)}`);
+    logger9.debug(`Call tool: ${tool} with ${JSON.stringify(arg)}`);
     if (context.options.room?.chatMode === "plugin" && context.options.inputMessage?.additional_kwargs?.qqbot_reply_mode === "agent") {
       return;
     }
@@ -4992,7 +5142,7 @@ function createToolCallHandler(context, config) {
       await sendMessage(context, log, config);
       return;
     }
-    await sendMessage(context, (0, import_string5.formatToolCall)(tool, arg, log), config);
+    await sendMessage(context, (0, import_string6.formatToolCall)(tool, arg, log), config);
   };
 }
 __name(createToolCallHandler, "createToolCallHandler");
@@ -5006,13 +5156,13 @@ function createTokenCountHandler(context, session, config) {
       (0, import_count_tokens5.parseRawModelName)(context.options.room.model)[0],
       tokens
     );
-    logger8.debug(`Current balance: ${balance}`);
+    logger9.debug(`Current balance: ${balance}`);
   };
 }
 __name(createTokenCountHandler, "createTokenCountHandler");
 async function processUserPrompt(config, presetTemplate, session, originContent, room) {
   if (typeof originContent === "string") {
-    return await (0, import_string5.formatUserPromptString)(
+    return await (0, import_string6.formatUserPromptString)(
       config,
       presetTemplate,
       session,
@@ -5024,7 +5174,7 @@ async function processUserPrompt(config, presetTemplate, session, originContent,
     originContent.map(
       async (message) => message.type === "text" ? {
         type: "text",
-        text: await (0, import_string5.formatUserPromptString)(
+        text: await (0, import_string6.formatUserPromptString)(
           config,
           presetTemplate,
           session,
@@ -5078,7 +5228,7 @@ function setupRegularMessageStream(context, config, textStream) {
         await sendMessage(context, value, config);
       }
     } catch (error) {
-      logger8.error("Error in message stream:", error);
+      logger9.error("Error in message stream:", error);
     } finally {
       reader.releaseLock();
       resolve();
@@ -5116,7 +5266,7 @@ function setupEditMessageStream(context, session, config, bufferText) {
       }
       messageQueue.finish();
     } catch (error) {
-      logger8.error("Error in edit message stream:", error);
+      logger9.error("Error in edit message stream:", error);
     } finally {
       reader.releaseLock();
       resolve();
@@ -5215,9 +5365,9 @@ __name(apply31, "apply");
 
 // src/middlewares/chat/thinking_message_send.ts
 var import_logger5 = require("koishi-plugin-chatluna/utils/logger");
-var logger9;
+var logger10;
 function apply32(ctx, config, chain) {
-  logger9 = (0, import_logger5.createLogger)(ctx);
+  logger10 = (0, import_logger5.createLogger)(ctx);
   chain.middleware("thinking_message_send", async (session, context) => {
     if (!config.sendThinkingMessage || context.command?.length > 0) {
       return 0 /* SKIPPED */;
@@ -5244,7 +5394,7 @@ function apply32(ctx, config, chain) {
             messageIds[0]
           );
         } catch (e) {
-          logger9.error(e);
+          logger10.error(e);
         }
         thinkingTimeoutObject.autoRecallTimeout = void 0;
         thinkingTimeoutObject.timeout = void 0;
@@ -5418,7 +5568,7 @@ function apply37(ctx, config, chain) {
     try {
       isAvailable = await checkConversationRoomAvailability(ctx, room);
     } catch (e) {
-      logger7.error(e);
+      logger8.error(e);
       return 1 /* STOP */;
     }
     if (isAvailable) {
@@ -5438,7 +5588,7 @@ function apply37(ctx, config, chain) {
         return 1 /* STOP */;
       }
     } catch (error) {
-      logger7.error(error);
+      logger8.error(error);
       return 1 /* STOP */;
     }
     return 2 /* CONTINUE */;
@@ -5771,9 +5921,9 @@ __name(apply43, "apply");
 // src/middlewares/preset/delete_preset.ts
 var import_logger6 = require("koishi-plugin-chatluna/utils/logger");
 var import_promises3 = __toESM(require("fs/promises"), 1);
-var logger10;
+var logger11;
 function apply44(ctx, config, chain) {
-  logger10 = (0, import_logger6.createLogger)(ctx);
+  logger11 = (0, import_logger6.createLogger)(ctx);
   chain.middleware("delete_preset", async (session, context) => {
     const { command: command2 } = context;
     if (command2 !== "delete_preset")
@@ -5789,7 +5939,7 @@ function apply44(ctx, config, chain) {
         return 1 /* STOP */;
       }
     } catch (e) {
-      logger10.error(e);
+      logger11.error(e);
       await context.send(session.text(".not_found"));
       return 1 /* STOP */;
     }
@@ -5811,7 +5961,7 @@ function apply44(ctx, config, chain) {
         throw new Error("Default preset is invalid");
       }
     } catch (e) {
-      logger10.error("Failed to get default preset:", e);
+      logger11.error("Failed to get default preset:", e);
       await context.send(session.text(".failed_to_get_default"));
       return 1 /* STOP */;
     }
@@ -5913,7 +6063,16 @@ __name(apply46, "apply");
 function apply47(ctx, config, chain) {
   chain.middleware("check_room", async (session, context) => {
     let room = context.options.room;
-    const rooms = await getAllJoinedConversationRoom(ctx, session);
+    let rooms = await getAllJoinedConversationRoom(ctx, session);
+    if (room != null && !rooms.some(
+      (searchRoom) => searchRoom.roomName === room.roomName || searchRoom.roomId === room.roomId
+    )) {
+      try {
+        await joinConversationRoom(ctx, session, room);
+        rooms = await getAllJoinedConversationRoom(ctx, session);
+      } catch (e) {
+      }
+    }
     if (room == null && rooms.length > 0) {
       room = rooms[Math.floor(Math.random() * rooms.length)];
       await switchConversationRoom(ctx, session, room.roomId);
@@ -6642,9 +6801,9 @@ var import_koishi11 = require("koishi");
 var import_logger7 = require("koishi-plugin-chatluna/utils/logger");
 var import_types12 = require("koishi-plugin-chatluna/llm-core/platform/types");
 var import_crypto7 = require("crypto");
-var logger11;
+var logger12;
 function apply57(ctx, config, chain) {
-  logger11 = (0, import_logger7.createLogger)(ctx);
+  logger12 = (0, import_logger7.createLogger)(ctx);
   const selectRoomForSession = /* @__PURE__ */ __name(async (session, joinedRooms) => pickContextualRoom(ctx, session, config, joinedRooms), "selectRoomForSession");
   chain.middleware("resolve_room", async (session, context) => {
     let joinRoom = await queryJoinedConversationRoom(
@@ -6692,7 +6851,7 @@ function apply57(ctx, config, chain) {
       }
       if (joinRoom != null) {
         await switchConversationRoom(ctx, session, joinRoom.roomId);
-        logger11.success(
+        logger12.success(
           session.text("chatluna.room.auto_switch", [
             session.userId,
             joinRoom.roomName
@@ -6703,7 +6862,7 @@ function apply57(ctx, config, chain) {
     if (joinRoom == null && config.autoCreateRoomFromUser !== true && !session.isDirect && (context.command?.length ?? 0) < 1) {
       joinRoom = await queryPublicConversationRoom(ctx, session);
       if (joinRoom != null) {
-        logger11.success(
+        logger12.success(
           session.text("chatluna.room.auto_switch", [
             session.userId,
             joinRoom.roomName
@@ -6734,7 +6893,7 @@ function apply57(ctx, config, chain) {
             session.isDirect ? `${session.username ?? session.userId}` : `${session.event.guild.name ?? session.username ?? session.event.guild.id.toString()}`
           ]
         );
-        logger11.success(
+        logger12.success(
           session.text("chatluna.room.auto_create", [
             session.userId,
             cloneRoom.roomName
@@ -6750,7 +6909,7 @@ function apply57(ctx, config, chain) {
             session.isDirect ? `${session.username ?? session.userId}` : `${session.event.guild.name ?? session.username ?? session.event.guild.id.toString()}`
           ]
         );
-        logger11.success(
+        logger12.success(
           session.text("chatluna.room.auto_create_template", [
             session.userId,
             cloneRoom.roomName
@@ -6773,7 +6932,7 @@ function apply57(ctx, config, chain) {
       joinRoom.preset = config.defaultPreset;
       joinRoom.chatMode = config.defaultChatMode;
       if (joinRoom.preset !== config.defaultPreset) {
-        logger11.debug(
+        logger12.debug(
           `The room ${joinRoom.roomName} preset changed to ${joinRoom.preset}. Clearing chat history.`
         );
         await ctx.chatluna.clearChatHistory(joinRoom);
@@ -6781,7 +6940,7 @@ function apply57(ctx, config, chain) {
       if (needUpdate) {
         await ctx.chatluna.clearCache(joinRoom);
         await ctx.database.upsert("chathub_room", [joinRoom]);
-        logger11.debug(
+        logger12.debug(
           session.text("chatluna.room.config_changed", [
             joinRoom.roomName
           ])
@@ -7398,9 +7557,9 @@ __name(apply67, "apply");
 // src/middlewares/system/wipe.ts
 var import_logger8 = require("koishi-plugin-chatluna/utils/logger");
 var import_promises5 = __toESM(require("fs/promises"), 1);
-var logger12;
+var logger13;
 function apply68(ctx, config, chain) {
-  logger12 = (0, import_logger8.createLogger)(ctx);
+  logger13 = (0, import_logger8.createLogger)(ctx);
   chain.middleware("wipe", async (session, context) => {
     const { command: command2 } = context;
     if (command2 !== "wipe") return 0 /* SKIPPED */;
@@ -7430,19 +7589,19 @@ function apply68(ctx, config, chain) {
     try {
       await ctx.database.drop("chathub_knowledge");
     } catch (e) {
-      logger12.warn(`wipe: ${e}`);
+      logger13.warn(`wipe: ${e}`);
     }
     await ctx.chatluna.cache.clear("chatluna/chat_limit");
     await ctx.chatluna.cache.clear("chatluna/keys");
     try {
       await import_promises5.default.rm("data/chathub/vector_store", { recursive: true });
     } catch (e) {
-      logger12.warn(`wipe: ${e}`);
+      logger13.warn(`wipe: ${e}`);
     }
     try {
       await import_promises5.default.rm("data/chatluna/temp", { recursive: true });
     } catch (e) {
-      logger12.warn(`wipe: ${e}`);
+      logger13.warn(`wipe: ${e}`);
     }
     context.message = session.text(".success");
     const appContext = ctx.scope.parent;
@@ -7681,7 +7840,7 @@ var Renderer = class {
 // src/renders/text.ts
 var import_koishi13 = require("koishi-plugin-chatluna/utils/koishi");
 var import_koishi14 = require("koishi");
-var import_string6 = require("koishi-plugin-chatluna/utils/string");
+var import_string7 = require("koishi-plugin-chatluna/utils/string");
 var TextRenderer = class extends Renderer {
   static {
     __name(this, "TextRenderer");
@@ -7690,12 +7849,12 @@ var TextRenderer = class extends Renderer {
     if (options.session != null && options.session.platform === "qq" && options.session.isDirect) {
       return {
         element: [
-          import_koishi14.h.text((0, import_string6.getMessageContent)(message.content)),
+          import_koishi14.h.text((0, import_string7.getMessageContent)(message.content)),
           ...import_koishi14.h.parse("<markdown-qq></markdown-qq>")
         ]
       };
     }
-    let transformed = (0, import_string6.transformMessageContentToElements)(message.content);
+    let transformed = (0, import_string7.transformMessageContentToElements)(message.content);
     transformed = transformAndEscape(
       transformed,
       options.session?.platform ?? "sandbox"
@@ -7733,17 +7892,17 @@ function transformAndEscape(source, platform = "sandbox") {
 __name(transformAndEscape, "transformAndEscape");
 
 // src/renders/voice.ts
-var import_koishi_plugin_chatluna5 = require("koishi-plugin-chatluna");
+var import_koishi_plugin_chatluna6 = require("koishi-plugin-chatluna");
 var import_koishi15 = require("koishi");
-var import_string7 = require("koishi-plugin-chatluna/utils/string");
+var import_string8 = require("koishi-plugin-chatluna/utils/string");
 var VoiceRenderer = class extends Renderer {
   static {
     __name(this, "VoiceRenderer");
   }
   async render(message, options) {
-    const baseElements = (0, import_string7.transformMessageContentToElements)(message.content);
+    const baseElements = (0, import_string8.transformMessageContentToElements)(message.content);
     const splitMessages = this._splitMessage(baseElements).flatMap((text) => text.trim().split("\n\n")).filter((text) => text.length > 0);
-    import_koishi_plugin_chatluna5.logger?.debug(`splitMessages: ${JSON.stringify(splitMessages)}`);
+    import_koishi_plugin_chatluna6.logger?.debug(`splitMessages: ${JSON.stringify(splitMessages)}`);
     if (splitMessages.length === 0) {
       return {
         element: []
@@ -7792,7 +7951,7 @@ var VoiceRenderer = class extends Renderer {
 };
 
 // src/renders/raw.ts
-var import_string8 = require("koishi-plugin-chatluna/utils/string");
+var import_string9 = require("koishi-plugin-chatluna/utils/string");
 var import_koishi16 = require("koishi");
 var RawRenderer = class extends Renderer {
   static {
@@ -7805,7 +7964,7 @@ var RawRenderer = class extends Renderer {
       };
     }
     return {
-      element: (0, import_string8.transformMessageContentToElements)(message.content)
+      element: (0, import_string9.transformMessageContentToElements)(message.content)
     };
   }
   schema = import_koishi16.Schema.const("raw").i18n({
@@ -7817,14 +7976,14 @@ var RawRenderer = class extends Renderer {
 // src/renders/koishi-element.ts
 var import_koishi17 = require("koishi");
 var import_he = __toESM(require("he"), 1);
-var import_koishi_plugin_chatluna6 = require("koishi-plugin-chatluna");
-var import_string9 = require("koishi-plugin-chatluna/utils/string");
+var import_koishi_plugin_chatluna7 = require("koishi-plugin-chatluna");
+var import_string10 = require("koishi-plugin-chatluna/utils/string");
 var KoishiElementRenderer = class extends Renderer {
   static {
     __name(this, "KoishiElementRenderer");
   }
   async render(message, options) {
-    let transformed = (0, import_string9.transformMessageContentToElements)(message.content);
+    let transformed = (0, import_string10.transformMessageContentToElements)(message.content);
     transformed = transformAndEscape2(transformed);
     if (options.split) {
       transformed = transformed.map((element) => {
@@ -7858,7 +8017,7 @@ function transformAndEscape2(source) {
     try {
       return import_koishi17.h.parse(element.attrs["content"]).map(unescape);
     } catch (e) {
-      import_koishi_plugin_chatluna6.logger.error(e);
+      import_koishi_plugin_chatluna7.logger.error(e);
       return [import_koishi17.h.text(source)];
     }
   });
@@ -7866,16 +8025,16 @@ function transformAndEscape2(source) {
 __name(transformAndEscape2, "transformAndEscape");
 
 // src/renders/mixed-voice.ts
-var import_koishi_plugin_chatluna7 = require("koishi-plugin-chatluna");
+var import_koishi_plugin_chatluna8 = require("koishi-plugin-chatluna");
 var import_koishi18 = require("koishi");
-var import_string10 = require("koishi-plugin-chatluna/utils/string");
+var import_string11 = require("koishi-plugin-chatluna/utils/string");
 var MixedVoiceRenderer = class extends Renderer {
   static {
     __name(this, "MixedVoiceRenderer");
   }
   async render(message, options) {
     const elements = [];
-    const baseElements = (0, import_string10.transformMessageContentToElements)(message.content);
+    const baseElements = (0, import_string11.transformMessageContentToElements)(message.content);
     const renderText = (await this.renderText(baseElements, options)).element;
     if (renderText instanceof Array) {
       elements.push(...renderText);
@@ -7905,7 +8064,7 @@ var MixedVoiceRenderer = class extends Renderer {
   }
   async renderVoice(messages, options) {
     const splitMessages = this._splitMessage(messages).flatMap((text) => text.trim().split("\n\n")).filter((text) => text.length > 0);
-    import_koishi_plugin_chatluna7.logger?.debug(`splitMessages: ${JSON.stringify(splitMessages)}`);
+    import_koishi_plugin_chatluna8.logger?.debug(`splitMessages: ${JSON.stringify(splitMessages)}`);
     if (splitMessages.length === 0) {
       return {
         element: []
@@ -8019,13 +8178,13 @@ __name(removeMarkdown, "removeMarkdown");
 
 // src/renders/pure-text.ts
 var import_he2 = __toESM(require("he"), 1);
-var import_string11 = require("koishi-plugin-chatluna/utils/string");
+var import_string12 = require("koishi-plugin-chatluna/utils/string");
 var PureTextRenderer = class extends Renderer {
   static {
     __name(this, "PureTextRenderer");
   }
   async render(message, options) {
-    let transformed = (0, import_string11.transformMessageContentToElements)(message.content);
+    let transformed = (0, import_string12.transformMessageContentToElements)(message.content);
     if (options.split) {
       transformed = transformed.flatMap((element) => {
         if (element.type !== "text") {
@@ -8153,7 +8312,7 @@ var inject2 = {
   vits: { required: false },
   chatluna_storage: { required: false }
 };
-var logger7;
+var logger8;
 var usage = `
 ## chatluna v1.3
 
@@ -8165,7 +8324,7 @@ ChatLuna 插件交流 QQ 群：282381753 （有问题或出现 Bug 先加群问�
 也可以访问 [https://preset.chatluna.chat](https://preset.chatluna.chat) 进入在线预设编辑器。更有预设广场来浏览和下载你心仪的预设。
 `;
 function apply69(ctx, config) {
-  logger7 = (0, import_logger9.createLogger)(ctx);
+  logger8 = (0, import_logger9.createLogger)(ctx);
   setupLogger(config);
   setupI18n(ctx);
   const disposables = [];
@@ -8252,7 +8411,7 @@ function setupProxy(ctx, config) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       config.proxyAddress || (ctx.http["config"] ?? ctx.http["currentConfig"])?.proxyAgent
     );
-    logger7.debug("global proxy %c", config.proxyAddress);
+    logger8.debug("global proxy %c", config.proxyAddress);
   }
 }
 __name(setupProxy, "setupProxy");
@@ -8299,17 +8458,17 @@ async function setupAutoDelete(ctx, config) {
     if (rooms.length === 0) {
       return;
     }
-    logger7.info("Auto delete task running");
+    logger8.info("Auto delete task running");
     const success = [];
     for (const room of rooms) {
       try {
         await (0, import_chains2.deleteConversationRoom)(ctx, room);
         success.push(room);
       } catch (e) {
-        logger7.error(e);
+        logger8.error(e);
       }
     }
-    logger7.success(
+    logger8.success(
       `Successfully deleted %d rooms: %s`,
       rooms.length,
       success.map((room) => room.roomName).join(",")

@@ -30,10 +30,258 @@ __export(message_exports, {
 module.exports = __toCommonJS(message_exports);
 
 // src/llm-core/memory/message/database_history.ts
-var import_messages = require("@langchain/core/messages");
+var import_messages2 = require("@langchain/core/messages");
 var import_chat_history = require("@langchain/core/chat_history");
 var import_string = require("koishi-plugin-chatluna/utils/string");
 var import_crypto = require("crypto");
+
+// src/llm-core/memory/message/history_attachment.ts
+var import_messages = require("@langchain/core/messages");
+var HISTORY_ATTACHMENT_REF_KEY = "qqbot_attachment_refs";
+var RAW_ATTACHMENT_KWARG_KEYS = ["images", "__file_total_size"];
+function normalizeText(value) {
+  return String(value ?? "").trim();
+}
+__name(normalizeText, "normalizeText");
+function isTextPart(part) {
+  return part != null && typeof part === "object" && part.type === "text" && typeof part.text === "string";
+}
+__name(isTextPart, "isTextPart");
+function toContentParts(content) {
+  if (content == null) {
+    return [];
+  }
+  if (typeof content === "string") {
+    return content ? [{ type: "text", text: content }] : [];
+  }
+  return Array.isArray(content) ? content.filter(Boolean) : [];
+}
+__name(toContentParts, "toContentParts");
+function normalizeAttachmentRef(input) {
+  if (input == null || typeof input !== "object") {
+    return null;
+  }
+  const candidate = input;
+  const refId = normalizeText(candidate.refId);
+  const kind = normalizeText(candidate.kind);
+  if (!refId || !kind) {
+    return null;
+  }
+  return {
+    refId,
+    kind,
+    filename: normalizeText(candidate.filename) || null,
+    mimeType: normalizeText(candidate.mimeType) || null,
+    storageFileId: normalizeText(candidate.storageFileId) || null,
+    storageUrl: normalizeText(candidate.storageUrl) || null,
+    byteSize: typeof candidate.byteSize === "number" && Number.isFinite(candidate.byteSize) ? candidate.byteSize : null,
+    hash: normalizeText(candidate.hash) || null,
+    createdAt: typeof candidate.createdAt === "number" && Number.isFinite(candidate.createdAt) ? candidate.createdAt : null,
+    senderId: normalizeText(candidate.senderId) || null,
+    senderName: normalizeText(candidate.senderName) || null
+  };
+}
+__name(normalizeAttachmentRef, "normalizeAttachmentRef");
+function normalizeAttachmentRefs(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const result = [];
+  for (const item of value) {
+    const ref = normalizeAttachmentRef(item);
+    if (!ref || seen.has(ref.refId)) {
+      continue;
+    }
+    seen.add(ref.refId);
+    result.push(ref);
+  }
+  return result;
+}
+__name(normalizeAttachmentRefs, "normalizeAttachmentRefs");
+function mergeAttachmentRefs(base, incoming) {
+  const merged = /* @__PURE__ */ new Map();
+  for (const ref of [...base, ...incoming]) {
+    if (!ref?.refId) {
+      continue;
+    }
+    merged.set(ref.refId, {
+      ...merged.get(ref.refId) ?? {},
+      ...ref
+    });
+  }
+  return Array.from(merged.values());
+}
+__name(mergeAttachmentRefs, "mergeAttachmentRefs");
+function formatAttachmentMarker(ref) {
+  const fields = [`ref=${ref.refId}`, `kind=${ref.kind}`];
+  if (ref.filename) {
+    fields.push(`name=${JSON.stringify(ref.filename)}`);
+  }
+  return `[attachment ${fields.join(" ")}]`;
+}
+__name(formatAttachmentMarker, "formatAttachmentMarker");
+function formatFallbackMarker(kind) {
+  return `[attachment kind=${kind}]`;
+}
+__name(formatFallbackMarker, "formatFallbackMarker");
+function buildFallbackMarkers(parts) {
+  const markers = /* @__PURE__ */ new Set();
+  for (const part of parts) {
+    if (part == null || typeof part !== "object" || part.type === "text") {
+      continue;
+    }
+    const type = normalizeText(part.type);
+    if (!type) {
+      continue;
+    }
+    if (type === "image_url") {
+      markers.add(formatFallbackMarker("image"));
+    } else if (type === "audio_url") {
+      markers.add(formatFallbackMarker("audio"));
+    } else if (type === "video_url") {
+      markers.add(formatFallbackMarker("video"));
+    } else if (type === "file_url") {
+      markers.add(formatFallbackMarker("file"));
+    }
+  }
+  return Array.from(markers);
+}
+__name(buildFallbackMarkers, "buildFallbackMarkers");
+function sanitizeTextContent(text, refs) {
+  let result = text;
+  for (const ref of refs) {
+    if (ref.storageUrl) {
+      result = result.split(ref.storageUrl).join(ref.refId);
+    }
+  }
+  return result.trim();
+}
+__name(sanitizeTextContent, "sanitizeTextContent");
+function sanitizeHistoryContent(content, refs) {
+  if (typeof content === "string") {
+    const text = sanitizeTextContent(content, refs);
+    if (!text && refs.length > 0) {
+      return refs.map(formatAttachmentMarker).join("\n");
+    }
+    if (text && refs.length > 0 && !refs.every((ref) => text.includes(ref.refId))) {
+      return `${text}
+${refs.map(formatAttachmentMarker).join("\n")}`;
+    }
+    return text;
+  }
+  const parts = toContentParts(content);
+  const textParts = parts.filter(isTextPart).map((part) => part.text);
+  const baseText = sanitizeTextContent(textParts.join(""), refs);
+  const markers = refs.length > 0 ? refs.map(formatAttachmentMarker) : buildFallbackMarkers(parts);
+  if (!baseText) {
+    return markers.join("\n");
+  }
+  if (markers.length < 1) {
+    return baseText;
+  }
+  const hasAllRefMarkers = refs.length > 0 && refs.every((ref) => baseText.includes(ref.refId));
+  if (hasAllRefMarkers) {
+    return baseText;
+  }
+  return `${baseText}
+${markers.join("\n")}`.trim();
+}
+__name(sanitizeHistoryContent, "sanitizeHistoryContent");
+function sanitizeHistoryAdditionalKwargs(additionalKwargs, refs) {
+  const kwargs = Object.assign({}, additionalKwargs ?? {});
+  for (const key of RAW_ATTACHMENT_KWARG_KEYS) {
+    delete kwargs[key];
+  }
+  if (refs.length > 0) {
+    kwargs[HISTORY_ATTACHMENT_REF_KEY] = refs;
+  } else {
+    delete kwargs[HISTORY_ATTACHMENT_REF_KEY];
+  }
+  return kwargs;
+}
+__name(sanitizeHistoryAdditionalKwargs, "sanitizeHistoryAdditionalKwargs");
+function cloneMessageWithFields(message, content, additionalKwargs) {
+  const candidate = message;
+  const fields = {
+    content,
+    id: message.id ?? void 0,
+    name: message.name ?? void 0,
+    additional_kwargs: additionalKwargs
+  };
+  if (candidate.response_metadata != null) {
+    fields.response_metadata = Object.assign({}, candidate.response_metadata);
+  }
+  if (candidate.usage_metadata != null) {
+    fields.usage_metadata = candidate.usage_metadata;
+  }
+  if (message.getType() === "ai") {
+    fields.tool_calls = message.tool_calls;
+    return new import_messages.AIMessage(fields);
+  }
+  if (message.getType() === "tool") {
+    fields.tool_call_id = message.tool_call_id;
+    return new import_messages.ToolMessage(fields);
+  }
+  if (message.getType() === "function") {
+    return new import_messages.FunctionMessage(fields);
+  }
+  if (message.getType() === "system") {
+    return new import_messages.SystemMessage(fields);
+  }
+  return new import_messages.HumanMessage(fields);
+}
+__name(cloneMessageWithFields, "cloneMessageWithFields");
+async function collectArchivedRefs(ctx, conversationId, message) {
+  const attachmentArchiver = ctx.qqbotAttachment;
+  if (attachmentArchiver?.archiveMessageAttachments == null) {
+    return [];
+  }
+  try {
+    const archived = await attachmentArchiver.archiveMessageAttachments({
+      conversationId,
+      message
+    });
+    if (Array.isArray(archived)) {
+      return normalizeAttachmentRefs(archived);
+    }
+    if (archived != null && typeof archived === "object") {
+      return normalizeAttachmentRefs(archived.refs);
+    }
+  } catch (error) {
+    ctx.logger.warn(
+      `Failed to archive message attachments for %s: %s`,
+      conversationId,
+      error.message
+    );
+  }
+  return [];
+}
+__name(collectArchivedRefs, "collectArchivedRefs");
+async function prepareMessageForHistory(ctx, conversationId, message) {
+  const existingRefs = normalizeAttachmentRefs(
+    message.additional_kwargs?.[HISTORY_ATTACHMENT_REF_KEY]
+  );
+  const archivedRefs = await collectArchivedRefs(ctx, conversationId, message);
+  const refs = mergeAttachmentRefs(existingRefs, archivedRefs);
+  const content = sanitizeHistoryContent(message.content, refs);
+  const additionalKwargs = sanitizeHistoryAdditionalKwargs(
+    message.additional_kwargs,
+    refs
+  );
+  return cloneMessageWithFields(message, content, additionalKwargs);
+}
+__name(prepareMessageForHistory, "prepareMessageForHistory");
+function sanitizeLoadedHistoryFields(content, additionalKwargs) {
+  const refs = normalizeAttachmentRefs(additionalKwargs?.[HISTORY_ATTACHMENT_REF_KEY]);
+  return {
+    content: sanitizeHistoryContent(content, refs),
+    additionalKwargs: sanitizeHistoryAdditionalKwargs(additionalKwargs, refs)
+  };
+}
+__name(sanitizeLoadedHistoryFields, "sanitizeLoadedHistoryFields");
+
+// src/llm-core/memory/message/database_history.ts
 async function serializeMessage(message, conversationId, parent) {
   let additionalArgs = Object.assign({}, message.additional_kwargs);
   delete additionalArgs["preset"];
@@ -62,7 +310,7 @@ async function serializeMessage(message, conversationId, parent) {
 __name(serializeMessage, "serializeMessage");
 function createAgentToolMessages(steps) {
   return [
-    new import_messages.AIMessage({
+    new import_messages2.AIMessage({
       content: "",
       tool_calls: steps.map((step) => ({
         id: step.action.toolCallId,
@@ -71,7 +319,7 @@ function createAgentToolMessages(steps) {
       }))
     }),
     ...steps.map(
-      (step) => new import_messages.ToolMessage({
+      (step) => new import_messages2.ToolMessage({
         content: step.observation,
         tool_call_id: step.action.toolCallId,
         name: step.action.tool
@@ -282,11 +530,11 @@ var KoishiChatMessageHistory = class extends import_chat_history.BaseChatMessage
     return this._chatHistory;
   }
   async addUserMessage(message) {
-    const humanMessage = new import_messages.HumanMessage(message);
+    const humanMessage = new import_messages2.HumanMessage(message);
     await this.addMessage(humanMessage);
   }
   async addAIChatMessage(message) {
-    const aiMessage = new import_messages.AIMessage(message);
+    const aiMessage = new import_messages2.AIMessage(message);
     await this.addMessage(aiMessage);
   }
   async addMessage(message) {
@@ -298,19 +546,26 @@ var KoishiChatMessageHistory = class extends import_chat_history.BaseChatMessage
     }
     await this.loadConversation();
     const serializedMessages = [];
+    const preparedMessages = [];
     let parent = this._latestId;
     for (const message of messages) {
+      const preparedMessage = await prepareMessageForHistory(
+        this._ctx,
+        this.conversationId,
+        message
+      );
       const serializedMessage = await serializeMessage(
-        message,
+        preparedMessage,
         this.conversationId,
         parent
       );
       serializedMessages.push(serializedMessage);
+      preparedMessages.push(preparedMessage);
       parent = serializedMessage.id;
     }
     await this._ctx.database.upsert("chathub_message", serializedMessages);
     this._serializedChatHistory.push(...serializedMessages);
-    this._chatHistory.push(...messages);
+    this._chatHistory.push(...preparedMessages);
     this._latestId = serializedMessages[serializedMessages.length - 1].id;
     const updatedAt = /* @__PURE__ */ new Date();
     await this._trimMessages();
@@ -372,7 +627,7 @@ var KoishiChatMessageHistory = class extends import_chat_history.BaseChatMessage
         let normalizedMessageId2 = null;
         if (normalizedText2.length > 0) {
           const normalizedMessage = await serializeMessage(
-            new import_messages.AIMessage(normalizedText2),
+            new import_messages2.AIMessage(normalizedText2),
             this.conversationId,
             boundaryParentId
           );
@@ -403,7 +658,7 @@ var KoishiChatMessageHistory = class extends import_chat_history.BaseChatMessage
     let normalizedMessageId = null;
     if (normalizedText.length > 0) {
       const normalizedMessage = await serializeMessage(
-        new import_messages.AIMessage(normalizedText),
+        new import_messages2.AIMessage(normalizedText),
         this.conversationId,
         boundaryParentId
       );
@@ -588,25 +843,29 @@ var KoishiChatMessageHistory = class extends import_chat_history.BaseChatMessage
         );
         content = typeof item.text === "string" ? item.text : "";
       }
-      const fields = {
+      const sanitizedFields = sanitizeLoadedHistoryFields(
         content,
+        args
+      );
+      const fields = {
+        content: sanitizedFields.content,
         id: item.rawId ?? void 0,
         name: item.name ?? void 0,
         tool_calls: item.tool_calls ?? void 0,
         tool_call_id: item.tool_call_id ?? void 0,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        additional_kwargs: args
+        additional_kwargs: sanitizedFields.additionalKwargs
       };
       if (item.role === "system") {
-        return new import_messages.SystemMessage(fields);
+        return new import_messages2.SystemMessage(fields);
       } else if (item.role === "human") {
-        return new import_messages.HumanMessage(fields);
+        return new import_messages2.HumanMessage(fields);
       } else if (item.role === "ai") {
-        return new import_messages.AIMessage(fields);
+        return new import_messages2.AIMessage(fields);
       } else if (item.role === "function") {
-        return new import_messages.FunctionMessage(fields);
+        return new import_messages2.FunctionMessage(fields);
       } else if (item.role === "tool") {
-        return new import_messages.ToolMessage(fields);
+        return new import_messages2.ToolMessage(fields);
       } else {
         throw new Error("Unknown role");
       }

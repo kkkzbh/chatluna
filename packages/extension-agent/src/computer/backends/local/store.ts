@@ -33,6 +33,10 @@ export class FileStore implements BaseFileStore {
     }
 
     isInScope(filePath: string) {
+        if (this._cfg.dangerouslySkipPermissions) {
+            return true
+        }
+
         if (!this._cfg.scopePath) {
             return true
         }

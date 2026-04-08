@@ -45,6 +45,7 @@ import {
 } from 'koishi-plugin-chatluna/utils/string'
 import type { ChatLunaContextManagerService } from 'koishi-plugin-chatluna/llm-core/prompt'
 import type { AgentFinishContract } from '../agent'
+import { applyQqbotRequestBudget } from './qqbot_request_budget'
 
 export interface ChatLunaPluginChainInput {
     prompt: ChatLunaChatPrompt
@@ -363,11 +364,26 @@ export class ChatLunaPluginChain
             await chatHistory.removeAllToolAndFunctionMessages()
         }
 
-        requests['chat_history'] = [...messages]
+        const budgetedHistory = await applyQqbotRequestBudget(
+            this.llm,
+            [...messages],
+            message.additional_kwargs
+        )
+
+        requests['chat_history'] = [...budgetedHistory.messages]
         requests['id'] = conversationId
         requests['variables'] = Object.assign(nextVars, {
-            prompt: getMessageContent(message.content)
+            prompt: getMessageContent(message.content),
+            ...(budgetedHistory.stats != null
+                ? { qqbot_request_budget: budgetedHistory.stats }
+                : {})
         })
+        if (budgetedHistory.stats?.applied) {
+            logger.debug(
+                '[qqbot-request-budget] %s',
+                JSON.stringify(budgetedHistory.stats)
+            )
+        }
         requests['variables']['built'] = {
             conversationId
         }

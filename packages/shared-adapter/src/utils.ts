@@ -157,16 +157,13 @@ export async function langchainMessageToOpenAIMessage(
             const imageContents = await Promise.all(
                 images.map(async (image) => {
                     try {
-                        const url = await fetchImageUrl(plugin, {
-                            type: 'image_url',
-                            image_url: { url: image }
-                        } as MessageContentImageUrl)
+                        const imageUrl = await resolveOpenAIInputImageUrl(
+                            plugin,
+                            image
+                        )
                         return {
                             type: 'image_url',
-                            image_url: {
-                                url,
-                                detail: 'high'
-                            }
+                            image_url: imageUrl
                         } as const
                     } catch {
                         return null
@@ -183,13 +180,18 @@ export async function langchainMessageToOpenAIMessage(
                     if (!isMessageContentImageUrl(content)) return content
 
                     try {
-                        const url = await fetchImageUrl(plugin, content)
+                        const imageUrl = await resolveOpenAIInputImageUrl(
+                            plugin,
+                            typeof content.image_url === 'string'
+                                ? content.image_url
+                                : {
+                                      url: content.image_url.url,
+                                      detail: content.image_url.detail
+                                  }
+                        )
                         return {
                             type: 'image_url',
-                            image_url: {
-                                url,
-                                detail: 'high'
-                            }
+                            image_url: imageUrl
                         }
                     } catch {
                         return null
@@ -318,6 +320,100 @@ export async function langchainMessageToResponsesInput(
     return result
 }
 
+function isPrivateOrLoopbackHost(hostname: string) {
+    const lower = hostname.toLowerCase()
+
+    if (
+        lower === 'localhost' ||
+        lower === '0.0.0.0' ||
+        lower === '::1' ||
+        lower.endsWith('.local')
+    ) {
+        return true
+    }
+
+    if (/^127\./.test(lower) || /^10\./.test(lower) || /^192\.168\./.test(lower)) {
+        return true
+    }
+
+    const match = lower.match(/^172\.(\d+)\./)
+    if (match) {
+        const octet = Number(match[1])
+        if (octet >= 16 && octet <= 31) {
+            return true
+        }
+    }
+
+    return false
+}
+
+function canUseRemoteOpenAIUrl(url: string) {
+    if (!/^https?:\/\//i.test(url)) {
+        return false
+    }
+
+    try {
+        const parsed = new URL(url)
+        return !isPrivateOrLoopbackHost(parsed.hostname)
+    } catch {
+        return false
+    }
+}
+
+async function resolveOpenAIInputImageUrl(
+    plugin: ChatLunaPlugin,
+    image:
+        | string
+        | {
+              url: string
+              detail?: unknown
+          }
+) {
+    if (typeof image === 'string') {
+        if (canUseRemoteOpenAIUrl(image)) {
+            return {
+                url: image,
+                detail: 'high' as const
+            }
+        }
+
+        return {
+            url: await fetchImageUrl(plugin, {
+                type: 'image_url',
+                image_url: { url: image }
+            } as MessageContentImageUrl),
+            detail: 'high' as const
+        }
+    }
+
+    if (canUseRemoteOpenAIUrl(image.url)) {
+        return {
+            url: image.url,
+            ...(typeof image.detail === 'string'
+                ? {
+                      detail: image.detail
+                  }
+                : {
+                      detail: 'high'
+                  })
+        }
+    }
+
+    return {
+        url: await fetchImageUrl(plugin, {
+            type: 'image_url',
+            image_url: image
+        } as MessageContentImageUrl),
+        ...(typeof image.detail === 'string'
+            ? {
+                  detail: image.detail
+              }
+            : {
+                  detail: 'high'
+              })
+    }
+}
+
 function normalizeResponsesMessageContent(
     content: ChatCompletionResponseMessage['content']
 ): ChatCompletionResponseMessage['content'] | Record<string, unknown>[] {
@@ -371,6 +467,30 @@ function normalizeResponsesMessageContent(
                                   detail: imageUrl.detail
                               }
                             : {})
+                    }
+                }
+            }
+
+            if (typedPart.type === 'file_url') {
+                const rawFileUrl = (typedPart as {
+                    file_url?: unknown
+                }).file_url
+
+                if (typeof rawFileUrl === 'string') {
+                    return {
+                        type: 'input_file',
+                        file_url: rawFileUrl
+                    }
+                }
+
+                if (
+                    rawFileUrl != null &&
+                    typeof rawFileUrl === 'object' &&
+                    typeof (rawFileUrl as { url?: unknown }).url === 'string'
+                ) {
+                    return {
+                        type: 'input_file',
+                        file_url: (rawFileUrl as { url: string }).url
                     }
                 }
             }
@@ -733,6 +853,16 @@ function enforceResponsesStrictSchema(
             Object.hasOwn(current, 'properties')
         ) {
             current['additionalProperties'] = false
+            const properties =
+                current['properties'] &&
+                typeof current['properties'] === 'object' &&
+                !Array.isArray(current['properties'])
+                    ? (current['properties'] as Record<string, unknown>)
+                    : null
+
+            if (properties) {
+                current['required'] = Object.keys(properties)
+            }
         }
 
         for (const key of Object.keys(current)) {

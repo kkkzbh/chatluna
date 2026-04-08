@@ -971,7 +971,17 @@ __name(apply9, "apply");
 async function command(ctx, config) {
   const middlewares = (
     // middleware start
-    [apply, apply2, apply3, apply4, apply5, apply6, apply7, apply8, apply9]
+    [
+      apply,
+      apply2,
+      apply3,
+      apply4,
+      apply5,
+      apply6,
+      apply7,
+      apply8,
+      apply9
+    ]
   );
   for (const middleware2 of middlewares) {
     await middleware2(ctx, config, ctx.chatluna.chatChain);
@@ -980,7 +990,7 @@ async function command(ctx, config) {
 __name(command, "command");
 
 // src/llm-core/chat/default.ts
-import { logger as logger2 } from "koishi-plugin-chatluna";
+import { logger as logger3 } from "koishi-plugin-chatluna";
 
 // src/llm-core/chain/chat_chain.ts
 import { AIMessage } from "@langchain/core/messages";
@@ -994,7 +1004,117 @@ import {
   ChatLunaError as ChatLunaError2,
   ChatLunaErrorCode as ChatLunaErrorCode2
 } from "koishi-plugin-chatluna/utils/error";
+import { getMessageContent as getMessageContent2 } from "koishi-plugin-chatluna/utils/string";
+import { logger } from "koishi-plugin-chatluna";
+
+// src/llm-core/chain/qqbot_request_budget.ts
 import { getMessageContent } from "koishi-plugin-chatluna/utils/string";
+function clampNatural(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+}
+__name(clampNatural, "clampNatural");
+function clampRatio(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
+    return fallback;
+  }
+  return parsed;
+}
+__name(clampRatio, "clampRatio");
+function parsePolicy(additionalKwargs) {
+  const raw = additionalKwargs?.qqbot_request_budget_policy;
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  return {
+    historyWindow: clampNatural(
+      raw.historyWindow,
+      80
+    ),
+    historyTriggerCount: clampNatural(
+      raw.historyTriggerCount,
+      120
+    ),
+    historyTokenRatio: clampRatio(
+      raw.historyTokenRatio,
+      0.7
+    )
+  };
+}
+__name(parsePolicy, "parsePolicy");
+async function estimateHistoryTokens(llm, messages) {
+  if (messages.length < 1) {
+    return 0;
+  }
+  const text = messages.map((message) => `${message.getType()}: ${getMessageContent(message.content)}`).join("\n");
+  return await llm.getNumTokens(text);
+}
+__name(estimateHistoryTokens, "estimateHistoryTokens");
+async function applyQqbotRequestBudget(llm, history, additionalKwargs) {
+  const policy = parsePolicy(additionalKwargs);
+  if (policy == null) {
+    return {
+      messages: history,
+      stats: null
+    };
+  }
+  const originalHistoryCount = history.length;
+  const maxPromptTokens = Math.max(
+    1,
+    Math.floor(llm.getModelMaxContextSize() * policy.historyTokenRatio)
+  );
+  const originalEstimatedInputTokens = await estimateHistoryTokens(llm, history);
+  const needsTrim = history.length > policy.historyTriggerCount || originalEstimatedInputTokens > maxPromptTokens;
+  if (!needsTrim) {
+    return {
+      messages: history,
+      stats: {
+        historyWindowCount: history.length,
+        originalHistoryCount,
+        estimatedInputTokens: originalEstimatedInputTokens,
+        trimmedHistoryCount: 0,
+        applied: false
+      }
+    };
+  }
+  const systemMessages = history.filter((message) => message.getType() === "system");
+  let tailMessages = history.filter((message) => message.getType() !== "system");
+  if (tailMessages.length > policy.historyWindow) {
+    tailMessages = tailMessages.slice(-policy.historyWindow);
+  }
+  let trimmed = history;
+  let estimatedInputTokens = originalEstimatedInputTokens;
+  while (true) {
+    const kept = /* @__PURE__ */ new Set([...systemMessages, ...tailMessages]);
+    trimmed = history.filter((message) => kept.has(message));
+    estimatedInputTokens = await estimateHistoryTokens(llm, trimmed);
+    if (estimatedInputTokens <= maxPromptTokens || tailMessages.length <= 1) {
+      break;
+    }
+    const shrinkBy = Math.max(
+      1,
+      Math.min(8, tailMessages.length - 1)
+    );
+    tailMessages = tailMessages.slice(shrinkBy);
+  }
+  return {
+    messages: trimmed,
+    stats: {
+      historyWindowCount: trimmed.length,
+      originalHistoryCount,
+      estimatedInputTokens,
+      trimmedHistoryCount: Math.max(0, originalHistoryCount - trimmed.length),
+      applied: trimmed.length !== originalHistoryCount
+    }
+  };
+}
+__name(applyQqbotRequestBudget, "applyQqbotRequestBudget");
+
+// src/llm-core/chain/chat_chain.ts
 var ChatLunaChatChain = class _ChatLunaChatChain extends ChatLunaLLMChainWrapper {
   static {
     __name(this, "ChatLunaChatChain");
@@ -1059,10 +1179,28 @@ var ChatLunaChatChain = class _ChatLunaChatChain extends ChatLunaLLMChainWrapper
       input: message
     };
     const chatHistory = await this.historyMemory.loadMemoryVariables(requests);
-    requests["chat_history"] = chatHistory[this.historyMemory.memoryKey];
-    requests["variables"] = Object.assign(variables ?? {}, {
-      prompt: getMessageContent(message.content)
-    });
+    const budgetedHistory = await applyQqbotRequestBudget(
+      this.chain.llm,
+      chatHistory[this.historyMemory.memoryKey],
+      message.additional_kwargs
+    );
+    requests["chat_history"] = budgetedHistory.messages;
+    if (budgetedHistory.stats != null) {
+      requests["variables"] = Object.assign(variables ?? {}, {
+        prompt: getMessageContent2(message.content),
+        qqbot_request_budget: budgetedHistory.stats
+      });
+    } else {
+      requests["variables"] = Object.assign(variables ?? {}, {
+        prompt: getMessageContent2(message.content)
+      });
+    }
+    if (budgetedHistory.stats?.applied) {
+      logger.debug(
+        "[qqbot-request-budget] %s",
+        JSON.stringify(budgetedHistory.stats)
+      );
+    }
     requests["variables"]["built"] = {
       conversationId
     };
@@ -1115,7 +1253,7 @@ import {
   createToolsRef,
   intersectToolMasks
 } from "koishi-plugin-chatluna/llm-core/agent";
-import { logger } from "koishi-plugin-chatluna";
+import { logger as logger2 } from "koishi-plugin-chatluna";
 import {
   ChatLunaError as ChatLunaError3,
   ChatLunaErrorCode as ChatLunaErrorCode3
@@ -1124,7 +1262,7 @@ import { ChatLunaChatPrompt as ChatLunaChatPrompt2 } from "koishi-plugin-chatlun
 import { TOOL_MEMORY_STORAGE_KEY } from "koishi-plugin-chatluna/llm-core/memory/message";
 import { computed } from "@vue/reactivity";
 import {
-  getMessageContent as getMessageContent2,
+  getMessageContent as getMessageContent3,
   sanitizeToolLogValue
 } from "koishi-plugin-chatluna/utils/string";
 function cloneAIMessage(message, toolCalls) {
@@ -1345,11 +1483,23 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends ChatLunaLLMChainWra
     if (this.agentMode === "react") {
       await chatHistory.removeAllToolAndFunctionMessages();
     }
-    requests["chat_history"] = [...messages];
+    const budgetedHistory = await applyQqbotRequestBudget(
+      this.llm,
+      [...messages],
+      message.additional_kwargs
+    );
+    requests["chat_history"] = [...budgetedHistory.messages];
     requests["id"] = conversationId;
     requests["variables"] = Object.assign(nextVars, {
-      prompt: getMessageContent2(message.content)
+      prompt: getMessageContent3(message.content),
+      ...budgetedHistory.stats != null ? { qqbot_request_budget: budgetedHistory.stats } : {}
     });
+    if (budgetedHistory.stats?.applied) {
+      logger2.debug(
+        "[qqbot-request-budget] %s",
+        JSON.stringify(budgetedHistory.stats)
+      );
+    }
     requests["variables"]["built"] = {
       conversationId
     };
@@ -1407,7 +1557,7 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends ChatLunaLLMChainWra
                 );
               },
               handleToolEnd(out) {
-                logger.debug(
+                logger2.debug(
                   "Tool end:",
                   sanitizeToolLogValue(out)
                 );
@@ -1448,7 +1598,7 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends ChatLunaLLMChainWra
       if (e?.message?.includes("Aborted")) {
         throw new ChatLunaError3(ChatLunaErrorCode3.ABORTED);
       }
-      logger.error(e);
+      logger2.error(e);
       error = e;
     }
     await events?.["llm-used-token-count"]?.(usedToken);
@@ -1496,7 +1646,7 @@ async function defaultFactory(ctx, service) {
     ).forEach(async ([id, info]) => {
       const result = await wrapper.clearCache(info.room);
       if (result) {
-        logger2?.debug(`Cleared cache for room ${id}`);
+        logger3?.debug(`Cleared cache for room ${id}`);
       }
     });
   });
@@ -1510,7 +1660,7 @@ async function defaultFactory(ctx, service) {
     ).forEach(async ([id, info]) => {
       const result = await wrapper.clearCache(info.room);
       if (result) {
-        logger2?.debug(`Cleared cache for room ${id}`);
+        logger3?.debug(`Cleared cache for room ${id}`);
       }
     });
   });
@@ -1553,7 +1703,7 @@ function getTools(service) {
 __name(getTools, "getTools");
 
 // src/llm-core/memory/lore_book/index.ts
-import { logger as logger3 } from "koishi-plugin-chatluna";
+import { logger as logger4 } from "koishi-plugin-chatluna";
 import { AIMessage as AIMessage3 } from "@langchain/core/messages";
 function apply10(ctx, config) {
   const cache = /* @__PURE__ */ new Map();
@@ -1580,7 +1730,7 @@ function apply10(ctx, config) {
       messages.push(message);
       const matchedLores = matcher.matchLoreBooks(messages);
       if (matchedLores.length > 0) {
-        logger3.debug(
+        logger4.debug(
           `Found ${matchedLores.length} matched lore books: ${JSON.stringify(
             matchedLores.map((lore) => lore.keywords)
           )}`
@@ -2165,13 +2315,6 @@ async function deleteConversationRoomByRoomId(ctx, roomId) {
 __name(deleteConversationRoomByRoomId, "deleteConversationRoomByRoomId");
 async function joinConversationRoom(ctx, session, roomId, isDirect = session.isDirect, userId = session.userId) {
   const room = typeof roomId === "number" ? await resolveConversationRoom(ctx, roomId) : roomId;
-  await ctx.database.upsert("chathub_user", [
-    {
-      userId,
-      defaultRoomId: room.roomId,
-      groupId: session.isDirect ? "0" : session.guildId
-    }
-  ]);
   if (isDirect === false) {
     const groupMemberList = await ctx.database.get(
       "chathub_room_group_member",
@@ -2196,6 +2339,13 @@ async function joinConversationRoom(ctx, session, roomId, isDirect = session.isD
       roomPermission: userId === room.roomMasterId ? "owner" : "member"
     });
   }
+  await ctx.database.upsert("chathub_user", [
+    {
+      userId,
+      defaultRoomId: room.roomId,
+      groupId: session.isDirect ? "0" : session.guildId
+    }
+  ]);
 }
 __name(joinConversationRoom, "joinConversationRoom");
 async function getConversationRoomUser(ctx, session, roomId, userId = session.userId) {
@@ -2307,13 +2457,13 @@ __name(apply13, "apply");
 
 // src/middlewares/auth/black_list.ts
 import { createLogger as createLogger2 } from "koishi-plugin-chatluna/utils/logger";
-var logger4;
+var logger5;
 function apply14(ctx, config, chain) {
-  logger4 = createLogger2(ctx);
+  logger5 = createLogger2(ctx);
   chain.middleware("black_list", async (session, context) => {
     const resolved = await session.resolve(config.blackList);
     if (resolved === 1) {
-      logger4.debug(
+      logger5.debug(
         `[黑名单] ${session.username}(${session.userId}): ${session.content}`
       );
       context.message = session.text("chatluna.block_message");
@@ -3277,7 +3427,7 @@ var DatabaseCache = class {
 // src/middlewares/chat/chat_time_limit_check.ts
 import { createHash } from "crypto";
 import { ModelType as ModelType4 } from "koishi-plugin-chatluna/llm-core/platform/types";
-import { logger as logger5 } from "koishi-plugin-chatluna";
+import { logger as logger6 } from "koishi-plugin-chatluna";
 function apply22(ctx, config, chain) {
   const chatLimitCache = new Cache(ctx, config, "chatluna/chat_limit");
   const authService = ctx.chatluna_auth;
@@ -3348,17 +3498,17 @@ function apply22(ctx, config, chain) {
       ;
       [platformClient] = parseRawModelName3(model);
     } catch (e) {
-      logger5.error(e);
+      logger6.error(e);
       return session.text("chatluna.not_available_model");
     }
     const client = await ctx.chatluna.platform.getClient(platformClient);
     if (!client.value) {
-      logger5.error(`Can't find model adapter for ${model}`);
+      logger6.error(`Can't find model adapter for ${model}`);
       return session.text("chatluna.not_available_model");
     }
     const clientConfig = client.value.configPool.getConfig(true);
     if (!clientConfig) {
-      logger5.error(`Can't find model adapter for ${model}`);
+      logger6.error(`Can't find model adapter for ${model}`);
       return session.text("chatluna.not_available_model");
     }
     const chatLimitRaw = clientConfig.value.chatLimit;
@@ -3540,10 +3690,10 @@ function serializeQqbotHumanMessageContent(content, additionalKwargs) {
 __name(serializeQqbotHumanMessageContent, "serializeQqbotHumanMessageContent");
 
 // src/middlewares/chat/message_delay.ts
-var logger6;
+var logger7;
 var queues = /* @__PURE__ */ new Map();
 function apply25(ctx, config, chain) {
-  logger6 = createLogger3(ctx);
+  logger7 = createLogger3(ctx);
   chain.middleware("message_delay", async (session, context) => {
     if (!config.messageQueue || context.command?.length > 0) {
       return 2 /* CONTINUE */;
@@ -3558,7 +3708,7 @@ function apply25(ctx, config, chain) {
       createPendingMessage(session, room, inputMessage),
       room.chatMode
     )) {
-      logger6.debug(
+      logger7.debug(
         `Appending pending message for ${conversationId}, messageId: ${messageId}`
       );
       return 1 /* STOP */;
@@ -3572,7 +3722,7 @@ function apply25(ctx, config, chain) {
     let turn;
     if (tailTurn && tailTurn.state !== "processing" && tailTurn.userName === userName) {
       turn = tailTurn;
-      logger6.debug(
+      logger7.debug(
         `Joining turn for ${conversationId}, messageId: ${messageId}, user: ${userName}, total: ${turn.messages.length + 1}`
       );
     } else {
@@ -3583,7 +3733,7 @@ function apply25(ctx, config, chain) {
         state
       };
       conversation.turns.push(turn);
-      logger6.debug(
+      logger7.debug(
         `Creating new turn for ${conversationId}, messageId: ${messageId}, user: ${userName}, queue: ${conversation.turns.length}`
       );
     }
@@ -3615,7 +3765,7 @@ function apply25(ctx, config, chain) {
     }
     tryStartHeadTurn(conversationId, conversation);
     if (current) {
-      logger6.debug(
+      logger7.debug(
         `Completing turn for ${conversationId}, remaining: ${conversation.turns.length}`
       );
     }
@@ -3631,7 +3781,7 @@ function apply25(ctx, config, chain) {
       const stoppedWaiters = conversation.turns.filter(
         (turn) => !!turn.starter
       ).length;
-      logger6.debug(
+      logger7.debug(
         `Clearing chat history for ${conversationId}, stopping ${stoppedWaiters} waiters`
       );
       for (const turn of conversation.turns) {
@@ -3673,7 +3823,7 @@ function resetTurnTimeout(ctx, config, conversationId, turn) {
     if (conversation.inFlight) {
       return;
     }
-    logger6.debug(
+    logger7.debug(
       // eslint-disable-next-line max-len
       `Delay timeout (${config.messageQueueDelay}s) for ${conversationId}, starting turn with ${turn.messages.length} messages`
     );
@@ -3767,7 +3917,7 @@ __name(createPendingMessage, "createPendingMessage");
 import { h as h4 } from "koishi";
 import {
   getImageType,
-  getMessageContent as getMessageContent3,
+  getMessageContent as getMessageContent4,
   getMimeTypeFromSource,
   hashString
 } from "koishi-plugin-chatluna/utils/string";
@@ -3824,7 +3974,7 @@ function apply26(ctx, config, chain) {
       }
       delete kwargs?.[forwardHistoryInternalKey];
     }
-    if (transformedMessage.content.length < 1 && getMessageContent3(transformedMessage.content).trim().length < 1) {
+    if (transformedMessage.content.length < 1 && getMessageContent4(transformedMessage.content).trim().length < 1) {
       return 1 /* STOP */;
     }
     context.options.inputMessage = transformedMessage;
@@ -3886,7 +4036,7 @@ function apply26(ctx, config, chain) {
         ModelCapabilities.ImageInput
       )) {
         if (!isInstalledImageService) {
-          logger7.warn(
+          logger8.warn(
             `Model "${model}" does not support image input. Please use a model that supports vision capabilities, or install chatluna-multimodal-service plugin to enable image description.`
           );
         }
@@ -3894,7 +4044,7 @@ function apply26(ctx, config, chain) {
       }
       const url = element.attrs.url ?? element.attrs.src;
       const displayUrl = url.length > 100 ? url.substring(0, 100) + "..." : url;
-      logger7.debug(`Processing image: ${displayUrl}`);
+      logger8.debug(`Processing image: ${displayUrl}`);
       if (!ctx.chatluna_storage) {
         return await oldImageRead(
           ctx,
@@ -3910,7 +4060,7 @@ function apply26(ctx, config, chain) {
       }
       if (ext === "image/gif") {
         if (!isInstalledImageService) {
-          logger7.warn(
+          logger8.warn(
             `Detected GIF image, which is not supported by most models. Please install chatluna-image-service plugin to parse GIF animations.`
           );
         }
@@ -3922,7 +4072,7 @@ function apply26(ctx, config, chain) {
       if (fileName == null || fileName.length > 50) {
         fileName = `${await hashString(url, 8)}.${fileExt}`;
       }
-      logger7.debug(`Saving image as temp file: ${fileName}`);
+      logger8.debug(`Saving image as temp file: ${fileName}`);
       const tempFile = await ctx.chatluna_storage.createTempFile(
         buffer,
         fileName
@@ -3937,14 +4087,14 @@ function apply26(ctx, config, chain) {
     -100
   );
   ctx.inject(["sst"], (ctx2) => {
-    logger7.debug("sst service loaded.");
+    logger8.debug("sst service loaded.");
     ctx2.effect(
       () => ctx2.chatluna.messageTransformer.intercept(
         "audio",
         async (session, element, message, model) => {
           const modelInfo = model != null ? ctx2.chatluna.platform.findModel(model) : void 0;
           if (isAudioHandled(message, element)) {
-            logger7.debug(
+            logger8.debug(
               "Skip sst audio2text because audio is already handled."
             );
             return false;
@@ -3952,13 +4102,13 @@ function apply26(ctx, config, chain) {
           if (modelInfo?.value?.capabilities?.includes(
             ModelCapabilities.AudioInput
           )) {
-            logger7.debug(
+            logger8.debug(
               "Skip sst audio2text because model supports audio input natively."
             );
             return false;
           }
           const content = await ctx2.sst.audio2text(session);
-          logger7.debug(`audio2text: ${content}`);
+          logger8.debug(`audio2text: ${content}`);
           addMessageContent(message, content);
           markAudioHandled(message, element);
         }
@@ -4016,7 +4166,7 @@ function apply26(ctx, config, chain) {
     "audio",
     async (session, element, message, model) => {
       if (isAudioHandled(message, element)) {
-        logger7.debug(
+        logger8.debug(
           "Skip audio file handler because audio is already handled."
         );
         return false;
@@ -4089,14 +4239,14 @@ async function resolveSourceUrl(ctx, session, element) {
     }
   }
   if (srcAttr) return srcAttr;
-  logger7.warn(`Failed to get source URL for element: ${element.toString()}`);
+  logger8.warn(`Failed to get source URL for element: ${element.toString()}`);
   return null;
 }
 __name(resolveSourceUrl, "resolveSourceUrl");
 async function handleFileElement(ctx, session, element, message, model, elementType) {
   const displayElementType = elementType === "audio" ? "voice" : elementType;
   if (elementType === "audio" && isAudioHandled(message, element)) {
-    logger7.debug(
+    logger8.debug(
       "Skip handling audio file because audio is already handled."
     );
     return false;
@@ -4119,7 +4269,7 @@ async function handleFileElement(ctx, session, element, message, model, elementT
     const parsedMime = typeof ctValue === "string" ? ctValue.split(";")[0].trim().toLowerCase() : null;
     responseMimeType = parsedMime != null && !INVALID_RESPONSE_MIME_TYPES.has(parsedMime) ? parsedMime : null;
   } catch (error) {
-    logger7.error(`Failed to read file from ${sourceUrl}:`, error);
+    logger8.error(`Failed to read file from ${sourceUrl}:`, error);
     return false;
   }
   const mimeType = responseMimeType ?? getMimeTypeFromSource(sourceUrl, fileName);
@@ -4127,7 +4277,7 @@ async function handleFileElement(ctx, session, element, message, model, elementT
     if (!SUPPORTED_AUDIO_MIME_TYPES.has(mimeType)) {
       const isInstalledMultimodalService = ctx.chatluna.getPlugin("multimodal-service") != null;
       if (!isInstalledMultimodalService) {
-        logger7.warn(
+        logger8.warn(
           `Unsupported audio format "${mimeType}". Please install chatluna-multimodal-service plugin to handle this format.`
         );
       }
@@ -4200,7 +4350,7 @@ async function oldImageRead(ctx, url, message, element, isInstalledImageService)
     }
     if (ext === "image/gif") {
       if (!isInstalledImageService) {
-        logger7.warn(
+        logger8.warn(
           `Detected GIF image, which is not supported by most models. Please install chatluna-image-service plugin to parse GIF animations.`
         );
       }
@@ -4213,7 +4363,7 @@ async function oldImageRead(ctx, url, message, element, isInstalledImageService)
     });
   } catch (error) {
     const displayUrl = url.length > 100 ? url.substring(0, 100) + "..." : url;
-    logger7.warn(
+    logger8.warn(
       `Failed to read image from ${displayUrl}. Please check your Koishi chat adapter.`,
       error
     );
@@ -4255,7 +4405,7 @@ async function readImage(ctx, url) {
       ext
     };
   } catch (error) {
-    logger7.error(`Failed to read image from ${url}:`, error);
+    logger8.error(`Failed to read image from ${url}:`, error);
     return {
       base64Source: null,
       buffer: null,
@@ -4505,7 +4655,7 @@ function apply28(ctx, config, chain) {
     await session.send(
       session.text(".rollback_success", [rollbackRound])
     );
-    logger7.debug(
+    logger8.debug(
       `rollback chat ${room.roomName} ${context.options.inputMessage}`
     );
     return 2 /* CONTINUE */;
@@ -4526,7 +4676,7 @@ import {
 import {
   formatToolCall,
   formatUserPromptString,
-  getMessageContent as getMessageContent4,
+  getMessageContent as getMessageContent5,
   getSystemPromptVariables,
   PresetPostHandler
 } from "koishi-plugin-chatluna/utils/string";
@@ -4816,7 +4966,7 @@ var MessageEditQueue = class {
     try {
       await session.bot.editMessage(session.channelId, messageId, text);
     } catch (error) {
-      logger7.error("Error editing message:", error);
+      logger8.error("Error editing message:", error);
     }
   }
   finish() {
@@ -4831,7 +4981,7 @@ async function sendInitialMessage(session, text) {
     );
     return messageIds[0];
   } catch (error) {
-    logger7.error("Error sending initial message:", error);
+    logger8.error("Error sending initial message:", error);
     throw error;
   }
 }
@@ -4839,10 +4989,10 @@ __name(sendInitialMessage, "sendInitialMessage");
 
 // src/middlewares/model/request_model.ts
 import { randomUUID as randomUUID2 } from "crypto";
-var logger8;
+var logger9;
 var requestIdCache = /* @__PURE__ */ new Map();
 function apply29(ctx, config, chain) {
-  logger8 = createLogger4(ctx);
+  logger9 = createLogger4(ctx);
   chain.middleware("request_model", async (session, context) => {
     const { room, inputMessage } = context.options;
     const presetTemplate = ctx.chatluna.preset.getPreset(
@@ -4925,7 +5075,7 @@ function apply29(ctx, config, chain) {
           chatCallbacks,
           config.streamResponse,
           {
-            prompt: getMessageContent4(originContent),
+            prompt: getMessageContent5(originContent),
             ...getSystemPromptVariables(session, config, room)
           },
           postHandler,
@@ -5004,7 +5154,7 @@ function createQueueWaitingHandler(context) {
 __name(createQueueWaitingHandler, "createQueueWaitingHandler");
 function createToolCallHandler(context, config) {
   return async (tool, arg, content, log) => {
-    logger8.debug(`Call tool: ${tool} with ${JSON.stringify(arg)}`);
+    logger9.debug(`Call tool: ${tool} with ${JSON.stringify(arg)}`);
     if (context.options.room?.chatMode === "plugin" && context.options.inputMessage?.additional_kwargs?.qqbot_reply_mode === "agent") {
       return;
     }
@@ -5039,7 +5189,7 @@ function createTokenCountHandler(context, session, config) {
       parseRawModelName5(context.options.room.model)[0],
       tokens
     );
-    logger8.debug(`Current balance: ${balance}`);
+    logger9.debug(`Current balance: ${balance}`);
   };
 }
 __name(createTokenCountHandler, "createTokenCountHandler");
@@ -5111,7 +5261,7 @@ function setupRegularMessageStream(context, config, textStream) {
         await sendMessage(context, value, config);
       }
     } catch (error) {
-      logger8.error("Error in message stream:", error);
+      logger9.error("Error in message stream:", error);
     } finally {
       reader.releaseLock();
       resolve();
@@ -5149,7 +5299,7 @@ function setupEditMessageStream(context, session, config, bufferText) {
       }
       messageQueue.finish();
     } catch (error) {
-      logger8.error("Error in edit message stream:", error);
+      logger9.error("Error in edit message stream:", error);
     } finally {
       reader.releaseLock();
       resolve();
@@ -5248,9 +5398,9 @@ __name(apply31, "apply");
 
 // src/middlewares/chat/thinking_message_send.ts
 import { createLogger as createLogger5 } from "koishi-plugin-chatluna/utils/logger";
-var logger9;
+var logger10;
 function apply32(ctx, config, chain) {
-  logger9 = createLogger5(ctx);
+  logger10 = createLogger5(ctx);
   chain.middleware("thinking_message_send", async (session, context) => {
     if (!config.sendThinkingMessage || context.command?.length > 0) {
       return 0 /* SKIPPED */;
@@ -5277,7 +5427,7 @@ function apply32(ctx, config, chain) {
             messageIds[0]
           );
         } catch (e) {
-          logger9.error(e);
+          logger10.error(e);
         }
         thinkingTimeoutObject.autoRecallTimeout = void 0;
         thinkingTimeoutObject.timeout = void 0;
@@ -5451,7 +5601,7 @@ function apply37(ctx, config, chain) {
     try {
       isAvailable = await checkConversationRoomAvailability(ctx, room);
     } catch (e) {
-      logger7.error(e);
+      logger8.error(e);
       return 1 /* STOP */;
     }
     if (isAvailable) {
@@ -5471,7 +5621,7 @@ function apply37(ctx, config, chain) {
         return 1 /* STOP */;
       }
     } catch (error) {
-      logger7.error(error);
+      logger8.error(error);
       return 1 /* STOP */;
     }
     return 2 /* CONTINUE */;
@@ -5804,9 +5954,9 @@ __name(apply43, "apply");
 // src/middlewares/preset/delete_preset.ts
 import { createLogger as createLogger6 } from "koishi-plugin-chatluna/utils/logger";
 import fs3 from "fs/promises";
-var logger10;
+var logger11;
 function apply44(ctx, config, chain) {
-  logger10 = createLogger6(ctx);
+  logger11 = createLogger6(ctx);
   chain.middleware("delete_preset", async (session, context) => {
     const { command: command2 } = context;
     if (command2 !== "delete_preset")
@@ -5822,7 +5972,7 @@ function apply44(ctx, config, chain) {
         return 1 /* STOP */;
       }
     } catch (e) {
-      logger10.error(e);
+      logger11.error(e);
       await context.send(session.text(".not_found"));
       return 1 /* STOP */;
     }
@@ -5844,7 +5994,7 @@ function apply44(ctx, config, chain) {
         throw new Error("Default preset is invalid");
       }
     } catch (e) {
-      logger10.error("Failed to get default preset:", e);
+      logger11.error("Failed to get default preset:", e);
       await context.send(session.text(".failed_to_get_default"));
       return 1 /* STOP */;
     }
@@ -5946,7 +6096,16 @@ __name(apply46, "apply");
 function apply47(ctx, config, chain) {
   chain.middleware("check_room", async (session, context) => {
     let room = context.options.room;
-    const rooms = await getAllJoinedConversationRoom(ctx, session);
+    let rooms = await getAllJoinedConversationRoom(ctx, session);
+    if (room != null && !rooms.some(
+      (searchRoom) => searchRoom.roomName === room.roomName || searchRoom.roomId === room.roomId
+    )) {
+      try {
+        await joinConversationRoom(ctx, session, room);
+        rooms = await getAllJoinedConversationRoom(ctx, session);
+      } catch (e) {
+      }
+    }
     if (room == null && rooms.length > 0) {
       room = rooms[Math.floor(Math.random() * rooms.length)];
       await switchConversationRoom(ctx, session, room.roomId);
@@ -6675,9 +6834,9 @@ import { h as h7 } from "koishi";
 import { createLogger as createLogger7 } from "koishi-plugin-chatluna/utils/logger";
 import { ModelType as ModelType11 } from "koishi-plugin-chatluna/llm-core/platform/types";
 import { randomUUID as randomUUID4 } from "crypto";
-var logger11;
+var logger12;
 function apply57(ctx, config, chain) {
-  logger11 = createLogger7(ctx);
+  logger12 = createLogger7(ctx);
   const selectRoomForSession = /* @__PURE__ */ __name(async (session, joinedRooms) => pickContextualRoom(ctx, session, config, joinedRooms), "selectRoomForSession");
   chain.middleware("resolve_room", async (session, context) => {
     let joinRoom = await queryJoinedConversationRoom(
@@ -6725,7 +6884,7 @@ function apply57(ctx, config, chain) {
       }
       if (joinRoom != null) {
         await switchConversationRoom(ctx, session, joinRoom.roomId);
-        logger11.success(
+        logger12.success(
           session.text("chatluna.room.auto_switch", [
             session.userId,
             joinRoom.roomName
@@ -6736,7 +6895,7 @@ function apply57(ctx, config, chain) {
     if (joinRoom == null && config.autoCreateRoomFromUser !== true && !session.isDirect && (context.command?.length ?? 0) < 1) {
       joinRoom = await queryPublicConversationRoom(ctx, session);
       if (joinRoom != null) {
-        logger11.success(
+        logger12.success(
           session.text("chatluna.room.auto_switch", [
             session.userId,
             joinRoom.roomName
@@ -6767,7 +6926,7 @@ function apply57(ctx, config, chain) {
             session.isDirect ? `${session.username ?? session.userId}` : `${session.event.guild.name ?? session.username ?? session.event.guild.id.toString()}`
           ]
         );
-        logger11.success(
+        logger12.success(
           session.text("chatluna.room.auto_create", [
             session.userId,
             cloneRoom.roomName
@@ -6783,7 +6942,7 @@ function apply57(ctx, config, chain) {
             session.isDirect ? `${session.username ?? session.userId}` : `${session.event.guild.name ?? session.username ?? session.event.guild.id.toString()}`
           ]
         );
-        logger11.success(
+        logger12.success(
           session.text("chatluna.room.auto_create_template", [
             session.userId,
             cloneRoom.roomName
@@ -6806,7 +6965,7 @@ function apply57(ctx, config, chain) {
       joinRoom.preset = config.defaultPreset;
       joinRoom.chatMode = config.defaultChatMode;
       if (joinRoom.preset !== config.defaultPreset) {
-        logger11.debug(
+        logger12.debug(
           `The room ${joinRoom.roomName} preset changed to ${joinRoom.preset}. Clearing chat history.`
         );
         await ctx.chatluna.clearChatHistory(joinRoom);
@@ -6814,7 +6973,7 @@ function apply57(ctx, config, chain) {
       if (needUpdate) {
         await ctx.chatluna.clearCache(joinRoom);
         await ctx.database.upsert("chathub_room", [joinRoom]);
-        logger11.debug(
+        logger12.debug(
           session.text("chatluna.room.config_changed", [
             joinRoom.roomName
           ])
@@ -7431,9 +7590,9 @@ __name(apply67, "apply");
 // src/middlewares/system/wipe.ts
 import { createLogger as createLogger8 } from "koishi-plugin-chatluna/utils/logger";
 import fs5 from "fs/promises";
-var logger12;
+var logger13;
 function apply68(ctx, config, chain) {
-  logger12 = createLogger8(ctx);
+  logger13 = createLogger8(ctx);
   chain.middleware("wipe", async (session, context) => {
     const { command: command2 } = context;
     if (command2 !== "wipe") return 0 /* SKIPPED */;
@@ -7463,19 +7622,19 @@ function apply68(ctx, config, chain) {
     try {
       await ctx.database.drop("chathub_knowledge");
     } catch (e) {
-      logger12.warn(`wipe: ${e}`);
+      logger13.warn(`wipe: ${e}`);
     }
     await ctx.chatluna.cache.clear("chatluna/chat_limit");
     await ctx.chatluna.cache.clear("chatluna/keys");
     try {
       await fs5.rm("data/chathub/vector_store", { recursive: true });
     } catch (e) {
-      logger12.warn(`wipe: ${e}`);
+      logger13.warn(`wipe: ${e}`);
     }
     try {
       await fs5.rm("data/chatluna/temp", { recursive: true });
     } catch (e) {
-      logger12.warn(`wipe: ${e}`);
+      logger13.warn(`wipe: ${e}`);
     }
     context.message = session.text(".success");
     const appContext = ctx.scope.parent;
@@ -7719,7 +7878,7 @@ var Renderer = class {
 import { transformToMarkdown } from "koishi-plugin-chatluna/utils/koishi";
 import { h as h8, Schema as Schema2 } from "koishi";
 import {
-  getMessageContent as getMessageContent5,
+  getMessageContent as getMessageContent6,
   transformMessageContentToElements
 } from "koishi-plugin-chatluna/utils/string";
 var TextRenderer = class extends Renderer {
@@ -7730,7 +7889,7 @@ var TextRenderer = class extends Renderer {
     if (options.session != null && options.session.platform === "qq" && options.session.isDirect) {
       return {
         element: [
-          h8.text(getMessageContent5(message.content)),
+          h8.text(getMessageContent6(message.content)),
           ...h8.parse("<markdown-qq></markdown-qq>")
         ]
       };
@@ -7773,7 +7932,7 @@ function transformAndEscape(source, platform = "sandbox") {
 __name(transformAndEscape, "transformAndEscape");
 
 // src/renders/voice.ts
-import { logger as logger13 } from "koishi-plugin-chatluna";
+import { logger as logger14 } from "koishi-plugin-chatluna";
 import { h as h9, Schema as Schema3 } from "koishi";
 import { transformMessageContentToElements as transformMessageContentToElements2 } from "koishi-plugin-chatluna/utils/string";
 var VoiceRenderer = class extends Renderer {
@@ -7783,7 +7942,7 @@ var VoiceRenderer = class extends Renderer {
   async render(message, options) {
     const baseElements = transformMessageContentToElements2(message.content);
     const splitMessages = this._splitMessage(baseElements).flatMap((text) => text.trim().split("\n\n")).filter((text) => text.length > 0);
-    logger13?.debug(`splitMessages: ${JSON.stringify(splitMessages)}`);
+    logger14?.debug(`splitMessages: ${JSON.stringify(splitMessages)}`);
     if (splitMessages.length === 0) {
       return {
         element: []
@@ -7857,7 +8016,7 @@ var RawRenderer = class extends Renderer {
 // src/renders/koishi-element.ts
 import { h as h11, Schema as Schema5 } from "koishi";
 import he from "he";
-import { logger as logger14 } from "koishi-plugin-chatluna";
+import { logger as logger15 } from "koishi-plugin-chatluna";
 import { transformMessageContentToElements as transformMessageContentToElements4 } from "koishi-plugin-chatluna/utils/string";
 var KoishiElementRenderer = class extends Renderer {
   static {
@@ -7898,7 +8057,7 @@ function transformAndEscape2(source) {
     try {
       return h11.parse(element.attrs["content"]).map(unescape);
     } catch (e) {
-      logger14.error(e);
+      logger15.error(e);
       return [h11.text(source)];
     }
   });
@@ -7906,7 +8065,7 @@ function transformAndEscape2(source) {
 __name(transformAndEscape2, "transformAndEscape");
 
 // src/renders/mixed-voice.ts
-import { logger as logger15 } from "koishi-plugin-chatluna";
+import { logger as logger16 } from "koishi-plugin-chatluna";
 import { h as h12, Schema as Schema6 } from "koishi";
 import { transformMessageContentToElements as transformMessageContentToElements5 } from "koishi-plugin-chatluna/utils/string";
 var MixedVoiceRenderer = class extends Renderer {
@@ -7945,7 +8104,7 @@ var MixedVoiceRenderer = class extends Renderer {
   }
   async renderVoice(messages, options) {
     const splitMessages = this._splitMessage(messages).flatMap((text) => text.trim().split("\n\n")).filter((text) => text.length > 0);
-    logger15?.debug(`splitMessages: ${JSON.stringify(splitMessages)}`);
+    logger16?.debug(`splitMessages: ${JSON.stringify(splitMessages)}`);
     if (splitMessages.length === 0) {
       return {
         element: []
@@ -8193,7 +8352,7 @@ var inject2 = {
   vits: { required: false },
   chatluna_storage: { required: false }
 };
-var logger7;
+var logger8;
 var usage = `
 ## chatluna v1.3
 
@@ -8205,7 +8364,7 @@ ChatLuna 插件交流 QQ 群：282381753 （有问题或出现 Bug 先加群问�
 也可以访问 [https://preset.chatluna.chat](https://preset.chatluna.chat) 进入在线预设编辑器。更有预设广场来浏览和下载你心仪的预设。
 `;
 function apply69(ctx, config) {
-  logger7 = createLogger9(ctx);
+  logger8 = createLogger9(ctx);
   setupLogger(config);
   setupI18n(ctx);
   const disposables = [];
@@ -8292,7 +8451,7 @@ function setupProxy(ctx, config) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       config.proxyAddress || (ctx.http["config"] ?? ctx.http["currentConfig"])?.proxyAgent
     );
-    logger7.debug("global proxy %c", config.proxyAddress);
+    logger8.debug("global proxy %c", config.proxyAddress);
   }
 }
 __name(setupProxy, "setupProxy");
@@ -8339,17 +8498,17 @@ async function setupAutoDelete(ctx, config) {
     if (rooms.length === 0) {
       return;
     }
-    logger7.info("Auto delete task running");
+    logger8.info("Auto delete task running");
     const success = [];
     for (const room of rooms) {
       try {
         await deleteConversationRoom2(ctx, room);
         success.push(room);
       } catch (e) {
-        logger7.error(e);
+        logger8.error(e);
       }
     }
-    logger7.success(
+    logger8.success(
       `Successfully deleted %d rooms: %s`,
       rooms.length,
       success.map((room) => room.roomName).join(",")
@@ -8369,7 +8528,7 @@ export {
   apply69 as apply,
   inject,
   inject2,
-  logger7 as logger,
+  logger8 as logger,
   name,
   usage
 };

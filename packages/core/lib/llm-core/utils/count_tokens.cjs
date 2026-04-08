@@ -35,7 +35,9 @@ __export(count_tokens_exports, {
   getModelContextSize: () => getModelContextSize,
   getModelNameForTiktoken: () => getModelNameForTiktoken,
   messageTypeToOpenAIRole: () => messageTypeToOpenAIRole,
-  parseRawModelName: () => parseRawModelName
+  parseRawModelName: () => parseRawModelName,
+  resolveKnownModelContextSize: () => resolveKnownModelContextSize,
+  resolveModelContextSize: () => resolveModelContextSize
 });
 module.exports = __toCommonJS(count_tokens_exports);
 
@@ -100,6 +102,117 @@ async function encodingForModel(model, options) {
   return result;
 }
 __name(encodingForModel, "encodingForModel");
+
+// src/llm-core/utils/model_context_size.ts
+var CONTEXT_LOOKUP_REASONING_SUFFIX = /-(?:none|minimal|low|medium|high|xhigh|tiny)-thinking$|-thinking$/;
+var knownModelContextSizeTable = [
+  {
+    size: 4e5,
+    match: /* @__PURE__ */ __name((candidates) => candidates.some(
+      (candidate) => /^gpt-5(?:[.-].*)?$/i.test(candidate)
+    ), "match")
+  },
+  {
+    size: 2e6,
+    match: /* @__PURE__ */ __name((candidates) => candidates.some((candidate) => candidate.includes("claude")), "match")
+  },
+  {
+    size: 1048576,
+    match: /* @__PURE__ */ __name((candidates) => candidates.some(
+      (candidate) => candidate.includes("gemini-1.5-pro")
+    ), "match")
+  },
+  {
+    size: 2097152,
+    match: /* @__PURE__ */ __name((candidates) => candidates.some(
+      (candidate) => candidate.includes("gemini-1.5-flash")
+    ), "match")
+  },
+  {
+    size: 30720,
+    match: /* @__PURE__ */ __name((candidates) => candidates.some(
+      (candidate) => candidate.includes("gemini-1.0-pro")
+    ), "match")
+  },
+  {
+    size: 1048576,
+    match: /* @__PURE__ */ __name((candidates) => candidates.some(
+      (candidate) => candidate.includes("gemini-2.0-flash")
+    ), "match")
+  },
+  {
+    size: 2097152,
+    match: /* @__PURE__ */ __name((candidates) => candidates.some(
+      (candidate) => candidate.includes("gemini-2.0-pro") || candidate.includes("gemini-2.0")
+    ), "match")
+  },
+  {
+    size: 2097152,
+    match: /* @__PURE__ */ __name((candidates) => candidates.some(
+      (candidate) => candidate.includes("gemini-2.5")
+    ), "match")
+  },
+  {
+    size: 1097152,
+    match: /* @__PURE__ */ __name((candidates) => candidates.some(
+      (candidate) => candidate.includes("gemini-3.0-pro")
+    ), "match")
+  },
+  {
+    size: 128e3,
+    match: /* @__PURE__ */ __name((candidates) => candidates.some(
+      (candidate) => candidate.includes("deepseek") || candidate.includes("llama3.1") || candidate.includes("command-r-plus") || candidate.includes("moonshot-v1-128k") || candidate.includes("kimi-k2.5") || candidate.includes("qwen2.5") || candidate.includes("qwen3")
+    ), "match")
+  },
+  {
+    size: 8192,
+    match: /* @__PURE__ */ __name((candidates) => candidates.some(
+      (candidate) => candidate.includes("moonshot-v1-8k")
+    ), "match")
+  },
+  {
+    size: 32e3,
+    match: /* @__PURE__ */ __name((candidates) => candidates.some(
+      (candidate) => candidate.includes("moonshot-v1-32k")
+    ), "match")
+  },
+  {
+    size: 32e3,
+    match: /* @__PURE__ */ __name((candidates) => candidates.some((candidate) => candidate.includes("qwen2")), "match")
+  }
+];
+function buildModelContextLookupCandidates(modelName) {
+  const normalized = modelName.trim().toLowerCase();
+  if (normalized.length < 1) {
+    return [];
+  }
+  const segments = normalized.split("/").filter(Boolean);
+  const tail = segments.at(-1);
+  const strippedTail = tail != null ? tail.replace(CONTEXT_LOOKUP_REASONING_SUFFIX, "") : null;
+  return [
+    normalized,
+    tail,
+    strippedTail
+  ].filter(
+    (candidate, index, all) => candidate != null && candidate.length > 0 && all.indexOf(candidate) === index
+  );
+}
+__name(buildModelContextLookupCandidates, "buildModelContextLookupCandidates");
+function getPreferredContextLookupName(modelName) {
+  const candidates = buildModelContextLookupCandidates(modelName);
+  return candidates[2] ?? candidates[1] ?? candidates[0] ?? modelName;
+}
+__name(getPreferredContextLookupName, "getPreferredContextLookupName");
+function resolveKnownModelContextSize(modelName) {
+  const candidates = buildModelContextLookupCandidates(modelName);
+  for (const { size, match } of knownModelContextSizeTable) {
+    if (match(candidates)) {
+      return size;
+    }
+  }
+  return null;
+}
+__name(resolveKnownModelContextSize, "resolveKnownModelContextSize");
 
 // src/llm-core/utils/count_tokens.ts
 var import_error = require("koishi-plugin-chatluna/utils/error");
@@ -238,7 +351,11 @@ function messageTypeToOpenAIRole(type) {
 }
 __name(messageTypeToOpenAIRole, "messageTypeToOpenAIRole");
 var getModelContextSize = /* @__PURE__ */ __name((modelName) => {
-  switch (getModelNameForTiktoken(modelName)) {
+  const knownContextSize = resolveKnownModelContextSize(modelName);
+  if (knownContextSize != null) {
+    return knownContextSize;
+  }
+  switch (getModelNameForTiktoken(getPreferredContextLookupName(modelName))) {
     case "gpt-4o":
     case "gpt-4o-2024-05-13":
     case "gpt-4-0125-preview":
@@ -268,6 +385,13 @@ var getModelContextSize = /* @__PURE__ */ __name((modelName) => {
       return 4097;
   }
 }, "getModelContextSize");
+function resolveModelContextSize(modelName, maxTokens) {
+  if (maxTokens != null && Number.isFinite(maxTokens) && maxTokens > 0) {
+    return maxTokens;
+  }
+  return getModelContextSize(modelName);
+}
+__name(resolveModelContextSize, "resolveModelContextSize");
 function parseRawModelName(modelName) {
   if (modelName == null || modelName.trim().length < 1) {
     try {
@@ -287,5 +411,7 @@ __name(parseRawModelName, "parseRawModelName");
   getModelContextSize,
   getModelNameForTiktoken,
   messageTypeToOpenAIRole,
-  parseRawModelName
+  parseRawModelName,
+  resolveKnownModelContextSize,
+  resolveModelContextSize
 });

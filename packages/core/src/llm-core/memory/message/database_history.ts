@@ -17,6 +17,10 @@ import {
 } from 'koishi-plugin-chatluna/utils/string'
 import { randomUUID } from 'crypto'
 import type { AgentStep } from '../../agent/types'
+import {
+    prepareMessageForHistory,
+    sanitizeLoadedHistoryFields
+} from './history_attachment'
 
 async function serializeMessage(
     message: BaseMessage,
@@ -386,22 +390,29 @@ export class KoishiChatMessageHistory extends BaseChatMessageHistory {
         await this.loadConversation()
 
         const serializedMessages: ChatLunaMessage[] = []
+        const preparedMessages: BaseMessage[] = []
         let parent = this._latestId
 
         for (const message of messages) {
+            const preparedMessage = await prepareMessageForHistory(
+                this._ctx,
+                this.conversationId,
+                message
+            )
             const serializedMessage = await serializeMessage(
-                message,
+                preparedMessage,
                 this.conversationId,
                 parent
             )
             serializedMessages.push(serializedMessage)
+            preparedMessages.push(preparedMessage)
             parent = serializedMessage.id
         }
 
         await this._ctx.database.upsert('chathub_message', serializedMessages)
 
         this._serializedChatHistory.push(...serializedMessages)
-        this._chatHistory.push(...messages)
+        this._chatHistory.push(...preparedMessages)
         this._latestId = serializedMessages[serializedMessages.length - 1].id
 
         const updatedAt = new Date()
@@ -778,14 +789,18 @@ export class KoishiChatMessageHistory extends BaseChatMessageHistory {
                         : ('' as MessageContent)
             }
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const fields = {
+            const sanitizedFields = sanitizeLoadedHistoryFields(
                 content,
+                args as Record<string, unknown>
+            )
+            const fields = {
+                content: sanitizedFields.content,
                 id: item.rawId ?? undefined,
                 name: item.name ?? undefined,
                 tool_calls: item.tool_calls ?? undefined,
                 tool_call_id: item.tool_call_id ?? undefined,
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                additional_kwargs: args as any
+                additional_kwargs: sanitizedFields.additionalKwargs as any
             }
             if (item.role === 'system') {
                 return new SystemMessage(fields)

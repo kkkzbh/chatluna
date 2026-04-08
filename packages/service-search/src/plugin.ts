@@ -10,7 +10,7 @@ import { apply as google_web } from './providers/google_web'
 import { apply as searxng } from './providers/searxng'
 import { apply as serper } from './providers/serper'
 import { apply as tavily } from './providers/tavily'
-import { apply as wikipedia } from './providers/wikipedia' // import end
+import { apply as wikipedia } from './providers/wikipedia'// import end
 
 export async function providerPlugin(
     ctx: Context,
@@ -27,16 +27,16 @@ export async function providerPlugin(
 
     const middlewares: Plugin[] =
         // middleware start
-        [
-            bing_api,
-            bing_web,
-            duckduckgo_lite,
-            google_web,
-            searxng,
-            serper,
-            tavily,
-            wikipedia
-        ] // middleware end
+[
+bing_api,
+bing_web,
+duckduckgo_lite,
+google_web,
+searxng,
+serper,
+tavily,
+wikipedia,
+]// middleware end
 
     for (const middleware of middlewares) {
         await middleware(ctx, config, plugin, manager)
