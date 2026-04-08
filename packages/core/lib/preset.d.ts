@@ -23,6 +23,7 @@ export declare class PresetService {
     private _updateSchema;
     resetDefaultPreset(): Promise<void>;
     resolvePresetDir(): string;
+    resolvePresetDirs(): string[];
     private _checkPresetDir;
     private _copyDefaultPresets;
 }

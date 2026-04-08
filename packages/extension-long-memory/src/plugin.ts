@@ -9,7 +9,7 @@ import { apply as edit_memory } from './plugins/edit_memory'
 import { apply as init_layer } from './plugins/init_layer'
 import { apply as prompt_varaiable } from './plugins/prompt_varaiable'
 import { apply as search_memory } from './plugins/search_memory'
-import { apply as tool } from './plugins/tool' // import end
+import { apply as tool } from './plugins/tool'// import end
 import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
 import { Config } from '.'
 
@@ -26,18 +26,18 @@ export async function plugins(
 
     const middlewares: Plugin[] =
         // middleware start
-        [
-            add_memory,
-            chat_middleware,
-            clear_memory,
-            config,
-            delete_memory,
-            edit_memory,
-            init_layer,
-            prompt_varaiable,
-            search_memory,
-            tool
-        ] // middleware end
+[
+add_memory,
+chat_middleware,
+clear_memory,
+config,
+delete_memory,
+edit_memory,
+init_layer,
+prompt_varaiable,
+search_memory,
+tool,
+]// middleware end
 
     for (const middleware of middlewares) {
         await middleware(ctx, parent, plugin)

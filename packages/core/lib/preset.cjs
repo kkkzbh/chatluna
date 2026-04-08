@@ -40,10 +40,34 @@ var import_prompt = require("koishi-plugin-chatluna/llm-core/prompt");
 var import_error = require("koishi-plugin-chatluna/utils/error");
 var import_logger = require("koishi-plugin-chatluna/utils/logger");
 var import_lock = require("koishi-plugin-chatluna/utils/lock");
-var import_path = __toESM(require("path"), 1);
+var import_path2 = __toESM(require("path"), 1);
 var import_url = require("url");
 var import_reactivity = require("@vue/reactivity");
-var import_crypto = require("crypto");
+
+// src/preset_dirs.ts
+var import_path = __toESM(require("path"), 1);
+function resolveOptionalPath(baseDir, input) {
+  return import_path.default.isAbsolute(input) ? input : import_path.default.resolve(baseDir, input);
+}
+__name(resolveOptionalPath, "resolveOptionalPath");
+function resolvePresetDirectoriesFromEnv(baseDir, env = process.env) {
+  const configured = String(env.CHATLUNA_PRESET_DIRS ?? "").split(import_path.default.delimiter).map((part) => part.trim()).filter(Boolean).map((part) => resolveOptionalPath(baseDir, part));
+  if (configured.length > 0) {
+    return [...new Set(configured)];
+  }
+  return [import_path.default.resolve(baseDir, "data/chathub/presets")];
+}
+__name(resolvePresetDirectoriesFromEnv, "resolvePresetDirectoriesFromEnv");
+function resolveRuntimePresetDirectoryFromEnv(baseDir, env = process.env) {
+  const explicit = env.CHATLUNA_RUNTIME_PRESET_DIR?.trim();
+  if (explicit) {
+    return resolveOptionalPath(baseDir, explicit);
+  }
+  return resolvePresetDirectoriesFromEnv(baseDir, env)[0];
+}
+__name(resolveRuntimePresetDirectoryFromEnv, "resolveRuntimePresetDirectoryFromEnv");
+
+// src/preset.ts
 var import_meta = {};
 var logger;
 var PresetService = class {
@@ -110,18 +134,33 @@ var PresetService = class {
   async loadAllPreset() {
     await this._lock.runLocked(async () => {
       await this._checkPresetDir();
-      const presetDir = this.resolvePresetDir();
-      const files = await import_promises.default.readdir(presetDir);
+      const seenNames = /* @__PURE__ */ new Set();
       const presets = [];
-      for (const file of files) {
-        const extension = import_path.default.extname(file);
-        if (extension !== ".txt" && extension !== ".yml") {
-          continue;
+      for (const presetDir of this.resolvePresetDirs()) {
+        let files;
+        try {
+          files = await import_promises.default.readdir(presetDir);
+        } catch (error) {
+          if (error.code === "ENOENT") {
+            continue;
+          }
+          throw error;
         }
-        const presetPath = import_path.default.join(presetDir, file);
-        const preset = await this._loadPresetFromPath(presetPath);
-        if (preset) {
-          presets.push(preset);
+        for (const file of files) {
+          const extension = import_path2.default.extname(file);
+          if (extension !== ".txt" && extension !== ".yml") {
+            continue;
+          }
+          const presetName = import_path2.default.basename(file, extension);
+          if (seenNames.has(presetName)) {
+            continue;
+          }
+          const presetPath = import_path2.default.join(presetDir, file);
+          const preset = await this._loadPresetFromPath(presetPath);
+          if (preset) {
+            presets.push(preset);
+            seenNames.add(presetName);
+          }
         }
       }
       this._presets.value = presets;
@@ -129,56 +168,46 @@ var PresetService = class {
     });
   }
   watchPreset() {
-    let fsWait = false;
-    const md5Cache = /* @__PURE__ */ new Map();
     if (this._aborter != null) {
       this._aborter.abort();
     }
     this._aborter = new AbortController();
-    (0, import_fs.watch)(
-      this.resolvePresetDir(),
-      {
-        signal: this._aborter.signal
-      },
-      async (event, filename) => {
-        if (!filename) {
-          await this.loadAllPreset();
-          logger.debug(`trigger full reload preset`);
-          return;
-        }
-        if (fsWait) return;
-        fsWait = setTimeout(() => {
-          fsWait = false;
-        }, 100);
-        const filePath = import_path.default.join(this.resolvePresetDir(), filename);
-        try {
-          const fileStat = await import_promises.default.stat(filePath);
-          if (fileStat.isDirectory()) return;
-          if (event === "rename" && !fileStat) {
-            this._removePreset(filePath);
-            md5Cache.delete(filePath);
-            logger.debug(`Removed preset: ${filename}`);
-            this._updateSchema();
-            return;
-          }
-          const md5Current = (0, import_crypto.createHash)("md5").update(await import_promises.default.readFile(filePath)).digest("hex");
-          if (md5Current === md5Cache.get(filePath)) return;
-          md5Cache.set(filePath, md5Current);
-          const preset = await this._loadPresetFromPath(filePath);
-          if (preset) {
-            this._updatePreset(preset);
-            logger.debug(`Updated/Added preset: ${filename}`);
-            this._updateSchema();
-          }
-        } catch (e) {
-          logger.error(
-            `Error when watching preset file ${filePath}`,
-            e
-          );
-          await this.loadAllPreset();
-        }
+    let reloadTimer = null;
+    const scheduleReload = /* @__PURE__ */ __name(() => {
+      if (reloadTimer) {
+        clearTimeout(reloadTimer);
       }
-    );
+      reloadTimer = setTimeout(async () => {
+        reloadTimer = null;
+        await this.loadAllPreset();
+        logger.debug(`trigger full reload preset`);
+      }, 120);
+    }, "scheduleReload");
+    for (const presetDir of this.resolvePresetDirs()) {
+      try {
+        (0, import_fs.watch)(
+          presetDir,
+          {
+            signal: this._aborter.signal
+          },
+          async (_event, _filename) => {
+            try {
+              scheduleReload();
+            } catch (e) {
+              logger.error(`Error when watching preset dir ${presetDir}`, e);
+              await this.loadAllPreset();
+            }
+          }
+        );
+      } catch (e) {
+        logger.warn(`Skip watching missing preset dir ${presetDir}`, e);
+      }
+    }
+    this.ctx.on("dispose", () => {
+      if (reloadTimer) {
+        clearTimeout(reloadTimer);
+      }
+    });
   }
   async init() {
     await this.loadAllPreset();
@@ -252,35 +281,36 @@ var PresetService = class {
     await this._copyDefaultPresets();
   }
   resolvePresetDir() {
-    return import_path.default.resolve(this.ctx.baseDir, "data/chathub/presets");
+    return resolveRuntimePresetDirectoryFromEnv(this.ctx.baseDir);
+  }
+  resolvePresetDirs() {
+    return resolvePresetDirectoriesFromEnv(this.ctx.baseDir);
   }
   async _checkPresetDir() {
-    const presetDir = import_path.default.join(this.resolvePresetDir());
-    try {
-      await import_promises.default.access(presetDir);
-    } catch (err) {
-      if (err.code === "ENOENT") {
-        await import_promises.default.mkdir(presetDir, { recursive: true });
-        await this._copyDefaultPresets();
-      } else {
-        throw err;
-      }
+    const runtimePresetDir = this.resolvePresetDir();
+    await import_promises.default.mkdir(runtimePresetDir, { recursive: true });
+    if (process.env.CHATLUNA_PRESET_DIRS?.trim()) {
+      return;
+    }
+    const files = await import_promises.default.readdir(runtimePresetDir).catch(() => []);
+    if (files.length === 0) {
+      await this._copyDefaultPresets();
     }
   }
   async _copyDefaultPresets() {
-    const currentPresetDir = import_path.default.join(this.resolvePresetDir());
+    const currentPresetDir = import_path2.default.join(this.resolvePresetDir());
     const dirname = __dirname?.length > 0 ? __dirname : (0, import_url.fileURLToPath)(import_meta.url);
-    const defaultPresetDir = import_path.default.join(dirname, "../resources/presets");
+    const defaultPresetDir = import_path2.default.join(dirname, "../resources/presets");
     const files = await import_promises.default.readdir(defaultPresetDir);
     for (const file of files) {
-      const filePath = import_path.default.join(defaultPresetDir, file);
+      const filePath = import_path2.default.join(defaultPresetDir, file);
       const fileStat = await import_promises.default.stat(filePath);
       if (fileStat.isFile()) {
         await import_promises.default.mkdir(currentPresetDir, { recursive: true });
         logger.debug(
           `copy preset file ${filePath} to ${currentPresetDir}`
         );
-        await import_promises.default.copyFile(filePath, import_path.default.join(currentPresetDir, file));
+        await import_promises.default.copyFile(filePath, import_path2.default.join(currentPresetDir, file));
       }
     }
   }

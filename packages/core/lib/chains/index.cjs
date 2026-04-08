@@ -1114,13 +1114,6 @@ async function deleteConversationRoomByRoomId(ctx, roomId) {
 __name(deleteConversationRoomByRoomId, "deleteConversationRoomByRoomId");
 async function joinConversationRoom(ctx, session, roomId, isDirect = session.isDirect, userId = session.userId) {
   const room = typeof roomId === "number" ? await resolveConversationRoom(ctx, roomId) : roomId;
-  await ctx.database.upsert("chathub_user", [
-    {
-      userId,
-      defaultRoomId: room.roomId,
-      groupId: session.isDirect ? "0" : session.guildId
-    }
-  ]);
   if (isDirect === false) {
     const groupMemberList = await ctx.database.get(
       "chathub_room_group_member",
@@ -1145,6 +1138,13 @@ async function joinConversationRoom(ctx, session, roomId, isDirect = session.isD
       roomPermission: userId === room.roomMasterId ? "owner" : "member"
     });
   }
+  await ctx.database.upsert("chathub_user", [
+    {
+      userId,
+      defaultRoomId: room.roomId,
+      groupId: session.isDirect ? "0" : session.guildId
+    }
+  ]);
 }
 __name(joinConversationRoom, "joinConversationRoom");
 async function getConversationRoomUser(ctx, session, roomId, userId = session.userId) {

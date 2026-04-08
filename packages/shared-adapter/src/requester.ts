@@ -206,10 +206,17 @@ function summarizeLastUserMessage(messages: unknown) {
                 typeof part === 'object' &&
                 (part as { type?: unknown }).type === 'image_url'
         ).length
+        const fileCount = content.filter(
+            (part) =>
+                part != null &&
+                typeof part === 'object' &&
+                (part as { type?: unknown }).type === 'file_url'
+        ).length
 
         return {
             contentKind: 'array',
             imageCount,
+            fileCount,
             hasImageUrl: imageCount > 0
         }
     }
@@ -249,10 +256,19 @@ function summarizeLastUserInput(input: unknown) {
             const type = (part as { type?: unknown }).type
             return type === 'image_url' || type === 'input_image'
         }).length
+        const fileCount = content.filter((part) => {
+            if (part == null || typeof part !== 'object') {
+                return false
+            }
+
+            const type = (part as { type?: unknown }).type
+            return type === 'file_url' || type === 'input_file'
+        }).length
 
         return {
             contentKind: 'array',
             imageCount,
+            fileCount,
             hasImageUrl: imageCount > 0
         }
     }
@@ -275,8 +291,42 @@ function logRequestPayloadSummary(
         'llm request payload summary: %s',
         JSON.stringify({
             model: payload.model,
+            requestBytes: estimateRequestBytes(payload),
             lastUserMessage: summary
         })
+    )
+}
+
+function resolveMaxRequestBodyBytes() {
+    const raw = Number(process.env.QQBOT_ATTACHMENT_MAX_REQUEST_BODY_BYTES)
+    if (!Number.isFinite(raw) || raw < 1) {
+        return 20 * 1024 * 1024
+    }
+
+    return Math.floor(raw)
+}
+
+function estimateRequestBytes(payload: Record<string, unknown>) {
+    try {
+        return Buffer.byteLength(JSON.stringify(payload))
+    } catch {
+        return 0
+    }
+}
+
+function enforceRequestBodyBudget(payload: Record<string, unknown>) {
+    const bytes = estimateRequestBytes(payload)
+    const maxBytes = resolveMaxRequestBodyBytes()
+
+    if (bytes <= maxBytes) {
+        return
+    }
+
+    throw new ChatLunaError(
+        ChatLunaErrorCode.API_REQUEST_FAILED,
+        new Error(
+            `Attachment request body is too large before provider call (${bytes} bytes > ${maxBytes} bytes).`
+        )
     )
 }
 
@@ -743,6 +793,7 @@ export async function* completionStream<
         enableGoogleSearch ?? false,
         supportImageInput ?? true
     )
+    enforceRequestBodyBudget(chatCompletionParams)
     logRequestPayloadSummary(requestContext, chatCompletionParams)
 
     try {
@@ -800,6 +851,7 @@ export async function completion<
         enableGoogleSearch ?? false,
         supportImageInput ?? true
     )
+    enforceRequestBodyBudget(chatCompletionParams)
     logRequestPayloadSummary(requestContext, chatCompletionParams)
 
     delete chatCompletionParams.stream
@@ -849,6 +901,7 @@ export async function completionResponses<
         enableGoogleSearch ?? false,
         supportImageInput ?? true
     )
+    enforceRequestBodyBudget(requestParams)
     logRequestPayloadSummary(requestContext, requestParams)
 
     try {

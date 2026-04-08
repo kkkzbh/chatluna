@@ -2,10 +2,16 @@ import { MessageType } from '@langchain/core/messages'
 import { type TiktokenModel } from 'js-tiktoken/lite'
 import { encodingForModel } from './tiktoken'
 import {
+    getPreferredContextLookupName,
+    resolveKnownModelContextSize
+} from './model_context_size'
+import {
     ChatLunaError,
     ChatLunaErrorCode
 } from 'koishi-plugin-chatluna/utils/error'
 import { logger } from 'koishi-plugin-chatluna'
+
+export { resolveKnownModelContextSize }
 
 // https://www.npmjs.com/package/js-tiktoken
 
@@ -79,6 +85,7 @@ const tiktokenModels: string[] = [
     'gpt-4o-realtime',
     'gpt-4o-realtime-preview-2024-10-01'
 ]
+
 export const getModelNameForTiktoken = (modelName: string): TiktokenModel => {
     if (modelName.startsWith('gpt-3.5-turbo-16k')) {
         return 'gpt-3.5-turbo-16k'
@@ -161,7 +168,12 @@ export function messageTypeToOpenAIRole(type: MessageType): string {
 }
 
 export const getModelContextSize = (modelName: string): number => {
-    switch (getModelNameForTiktoken(modelName)) {
+    const knownContextSize = resolveKnownModelContextSize(modelName)
+    if (knownContextSize != null) {
+        return knownContextSize
+    }
+
+    switch (getModelNameForTiktoken(getPreferredContextLookupName(modelName))) {
         case 'gpt-4o':
         case 'gpt-4o-2024-05-13':
         case 'gpt-4-0125-preview':
@@ -190,6 +202,17 @@ export const getModelContextSize = (modelName: string): number => {
         default:
             return 4097
     }
+}
+
+export function resolveModelContextSize(
+    modelName: string,
+    maxTokens?: number | null
+): number {
+    if (maxTokens != null && Number.isFinite(maxTokens) && maxTokens > 0) {
+        return maxTokens
+    }
+
+    return getModelContextSize(modelName)
 }
 
 export function parseRawModelName(modelName: string): [string, string] {

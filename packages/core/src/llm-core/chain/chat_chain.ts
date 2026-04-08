@@ -1,4 +1,4 @@
-import { AIMessage } from '@langchain/core/messages'
+import { AIMessage, BaseMessage } from '@langchain/core/messages'
 import { ChainValues } from '@langchain/core/utils/types'
 import {
     callChatLunaChain,
@@ -18,6 +18,8 @@ import {
 } from 'koishi-plugin-chatluna/utils/error'
 import { ComputedRef } from '@vue/reactivity'
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
+import { logger } from 'koishi-plugin-chatluna'
+import { applyQqbotRequestBudget } from './qqbot_request_budget'
 
 export interface ChatLunaChatChainInput {
     botName: string
@@ -111,11 +113,29 @@ export class ChatLunaChatChain
         }
         const chatHistory =
             await this.historyMemory.loadMemoryVariables(requests)
+        const budgetedHistory = await applyQqbotRequestBudget(
+            this.chain.llm,
+            chatHistory[this.historyMemory.memoryKey] as BaseMessage[],
+            message.additional_kwargs
+        )
 
-        requests['chat_history'] = chatHistory[this.historyMemory.memoryKey]
-        requests['variables'] = Object.assign(variables ?? {}, {
-            prompt: getMessageContent(message.content)
-        })
+        requests['chat_history'] = budgetedHistory.messages
+        if (budgetedHistory.stats != null) {
+            requests['variables'] = Object.assign(variables ?? {}, {
+                prompt: getMessageContent(message.content),
+                qqbot_request_budget: budgetedHistory.stats
+            })
+        } else {
+            requests['variables'] = Object.assign(variables ?? {}, {
+                prompt: getMessageContent(message.content)
+            })
+        }
+        if (budgetedHistory.stats?.applied) {
+            logger.debug(
+                '[qqbot-request-budget] %s',
+                JSON.stringify(budgetedHistory.stats)
+            )
+        }
         requests['variables']['built'] = {
             conversationId
         }

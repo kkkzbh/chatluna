@@ -16,7 +16,7 @@ Automatically uses the correct shell for the current platform (cmd/PowerShell on
 
 Rules:
 - Working directory defaults to the configured scope path
-- Absolute paths outside the scope path are blocked
+- Absolute paths outside the scope path are only blocked when permission checks remain enabled
 - Certain high-risk commands require explicit user confirmation
 - Commands in the blocked list are always rejected
 - If a command may take a while, keep running, or exceed the normal timeout, prefer background=true and query it later yourself
@@ -39,7 +39,7 @@ When to use:
                 .string()
                 .optional()
                 .describe(
-                    'Working directory for the command. Defaults to the scope path. Must be within the scope path when scope is set.'
+                    'Working directory for the command. Defaults to the configured scope path. When permission checks are enabled it must remain inside that scope.'
                 ),
             timeout: z
                 .number()
