@@ -15,7 +15,7 @@ import {
     ChatCompletionResponseMessageRoleEnum,
     CreateEmbeddingResponse,
     ResponsesApiResponse
-} from './types'
+} from './types.js'
 import {
     createUsageMetadata,
     convertDeltaToMessageChunk,
@@ -25,7 +25,7 @@ import {
     langchainMessageToResponsesInput,
     langchainMessageToOpenAIMessage,
     openAIUsageToUsageMetadata
-} from './utils'
+} from './utils.js'
 import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
 import { Context } from 'koishi'
 import { AIMessageChunk } from '@langchain/core/messages'
@@ -37,7 +37,7 @@ import { deepAssign } from 'koishi-plugin-chatluna/utils/object'
 import {
     expandReasoningEffortModelVariants,
     parseOpenAIModelNameWithReasoningEffort
-} from './client'
+} from './client.js'
 
 interface RequestContext<
     T extends ClientConfig = ClientConfig,
@@ -48,6 +48,18 @@ interface RequestContext<
     pluginConfig: R
     plugin: ChatLunaPlugin
     modelRequester: ModelRequester<T, R>
+}
+
+type RequestLogContext = Context & {
+    chatluna?: {
+        currentConfig?: {
+            isLog?: boolean
+        }
+    }
+}
+
+function isRequestLoggingEnabled(ctx: Context): boolean {
+    return (ctx as RequestLogContext).chatluna?.currentConfig?.isLog === true
 }
 
 export async function buildChatCompletionParams(
@@ -808,7 +820,7 @@ export async function* completionStream<
         const iterator = sseIterable(response)
         yield* processStreamResponse(requestContext, iterator)
     } catch (e) {
-        if (requestContext.ctx.chatluna.currentConfig.isLog) {
+        if (isRequestLoggingEnabled(requestContext.ctx)) {
             await trackLogToLocal(
                 'Request',
                 JSON.stringify(chatCompletionParams),
@@ -868,7 +880,7 @@ export async function completion<
 
         return await processResponse(requestContext, response)
     } catch (e) {
-        if (requestContext.ctx.chatluna.currentConfig.isLog) {
+        if (isRequestLoggingEnabled(requestContext.ctx)) {
             await trackLogToLocal(
                 'Request',
                 JSON.stringify(chatCompletionParams),
@@ -915,7 +927,7 @@ export async function completionResponses<
 
         return await processResponsesApiResponse(requestContext, response)
     } catch (e) {
-        if (requestContext.ctx.chatluna.currentConfig.isLog) {
+        if (isRequestLoggingEnabled(requestContext.ctx)) {
             await trackLogToLocal(
                 'Request',
                 JSON.stringify(requestParams),

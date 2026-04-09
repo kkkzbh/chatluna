@@ -5084,6 +5084,10 @@ function apply29(ctx, config, chain) {
         streamPromise
       ]);
     } catch (e) {
+      await maybeHandleReplyRequestModelError(
+        session,
+        e
+      );
       if (e?.message?.includes("output values have 1 keys")) {
         throw new ChatLunaError6(
           ChatLunaErrorCode6.MODEL_RESPONSE_IS_EMPTY
@@ -5103,6 +5107,14 @@ function apply29(ctx, config, chain) {
   }).after("lifecycle-request_model");
 }
 __name(apply29, "apply");
+async function maybeHandleReplyRequestModelError(session, error) {
+  const handler = session.state?.qqReplyTransport?.handleRequestModelError;
+  if (typeof handler !== "function") {
+    return;
+  }
+  await handler(error);
+}
+__name(maybeHandleReplyRequestModelError, "maybeHandleReplyRequestModelError");
 function getRequestId(session, room) {
   const userKey = session.userId + "-" + (session.guildId ?? "") + "-" + room.conversationId;
   return requestIdCache.get(userKey);

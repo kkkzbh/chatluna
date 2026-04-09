@@ -16,13 +16,14 @@ import {
 import { StructuredTool } from '@langchain/core/tools'
 import { JsonSchema7Type, zodToJsonSchema } from 'zod-to-json-schema'
 import {
+    ChatCompletionParts,
     ChatCompletionResponseMessage,
     ChatCompletionResponseMessageRoleEnum,
     ChatCompletionTool,
     ResponsesFunctionTool,
     ChatCompletionUsage,
     ResponsesTool
-} from './types'
+} from './types.js'
 import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
 import {
     getImageMimeType,
@@ -31,7 +32,7 @@ import {
 } from 'koishi-plugin-chatluna/utils/string'
 import { ToolCallChunk } from '@langchain/core/messages/tool'
 import { isZodSchemaV3 } from '@langchain/core/utils/types'
-import { normalizeOpenAIModelName, supportImageInput } from './client'
+import { normalizeOpenAIModelName, supportImageInput } from './client.js'
 
 export function createUsageMetadata(data: {
     inputTokens: number
@@ -129,14 +130,21 @@ export async function langchainMessageToOpenAIMessage(
             const toolCalls = (rawMessage as AIMessage).tool_calls
 
             if (Array.isArray(toolCalls) && toolCalls.length > 0) {
-                msg.tool_calls = toolCalls.map((toolCall) => ({
-                    id: toolCall.id,
-                    type: 'function',
-                    function: {
-                        name: toolCall.name,
-                        arguments: JSON.stringify(toolCall.args)
-                    }
-                }))
+                msg.tool_calls = toolCalls
+                    .filter(
+                        (
+                            toolCall
+                        ): toolCall is typeof toolCall & { id: string } =>
+                            typeof toolCall?.id === 'string'
+                    )
+                    .map((toolCall) => ({
+                        id: toolCall.id,
+                        type: 'function',
+                        function: {
+                            name: toolCall.name,
+                            arguments: JSON.stringify(toolCall.args)
+                        }
+                    }))
             }
         }
 
@@ -176,17 +184,21 @@ export async function langchainMessageToOpenAIMessage(
             )
         } else if (Array.isArray(msg.content) && msg.content.length > 0) {
             const mappedContent = await Promise.all(
-                msg.content.map(async (content) => {
+                msg.content.map(async (content: ChatCompletionParts) => {
                     if (!isMessageContentImageUrl(content)) return content
 
                     try {
+                        const imageContent = content as Extract<
+                            ChatCompletionParts,
+                            { type: 'image_url' }
+                        >
                         const imageUrl = await resolveOpenAIInputImageUrl(
                             plugin,
-                            typeof content.image_url === 'string'
-                                ? content.image_url
+                            typeof imageContent.image_url === 'string'
+                                ? imageContent.image_url
                                 : {
-                                      url: content.image_url.url,
-                                      detail: content.image_url.detail
+                                      url: imageContent.image_url.url,
+                                      detail: imageContent.image_url.detail
                                   }
                         )
                         return {
@@ -199,51 +211,34 @@ export async function langchainMessageToOpenAIMessage(
                 })
             )
 
-            msg.content = mappedContent.filter((content) => content != null)
+            msg.content = mappedContent.filter((content) => content != null) as ChatCompletionParts[]
         }
 
         result.push(msg)
     }
 
-    // Fix missing tool_call_ids: match assistant tool_calls with following tool messages
+    // Conservatively recover missing tool_call_ids only when the previous
+    // assistant message exposed exactly one real tool call.
     for (let i = 0; i < result.length; i++) {
         if (result[i].role !== 'assistant') continue
 
         const assistantMsg = result[i]
-        const toolMessages: ChatCompletionResponseMessage[] = []
+        const toolCalls =
+            assistantMsg.tool_calls?.filter(
+                (toolCall: NonNullable<ChatCompletionResponseMessage['tool_calls']>[number]) =>
+                    typeof toolCall?.id === 'string' &&
+                    toolCall.id.trim().length > 0
+            ) ?? []
+
+        if (toolCalls.length !== 1) continue
 
         for (
             let j = i + 1;
             j < result.length && result[j].role === 'tool';
             j++
         ) {
-            toolMessages.push(result[j])
-        }
-
-        if (toolMessages.length === 0) continue
-
-        if (!assistantMsg.tool_calls) {
-            assistantMsg.tool_calls = []
-        }
-
-        for (let k = 0; k < toolMessages.length; k++) {
-            if (!assistantMsg.tool_calls[k]) {
-                assistantMsg.tool_calls[k] = {
-                    id: `call_${k}`,
-                    type: 'function',
-                    function: {
-                        name: toolMessages[k].name || 'unknown',
-                        arguments: '{}'
-                    }
-                }
-            }
-
-            if (!assistantMsg.tool_calls[k].id) {
-                assistantMsg.tool_calls[k].id = `call_${k}`
-            }
-
-            if (!toolMessages[k].tool_call_id) {
-                toolMessages[k].tool_call_id = assistantMsg.tool_calls[k].id
+            if (!normalizeToolCallId(result[j].tool_call_id)) {
+                result[j].tool_call_id = toolCalls[0].id
             }
         }
     }
@@ -270,6 +265,8 @@ export async function langchainMessageToResponsesInput(
         removeSystemMessage
     )
     const result: Record<string, unknown>[] = []
+    const emittedToolCallIds = new Set<string>()
+    let singleToolFallbackId: string | undefined
 
     for (const message of converted) {
         if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
@@ -288,10 +285,24 @@ export async function langchainMessageToResponsesInput(
                 })
             }
 
-            for (const toolCall of message.tool_calls) {
+            const validToolCalls = message.tool_calls.filter(
+                (toolCall: NonNullable<ChatCompletionResponseMessage['tool_calls']>[number]) =>
+                    typeof toolCall?.id === 'string' &&
+                    toolCall.id.trim().length > 0 &&
+                    typeof toolCall?.function?.name === 'string' &&
+                    toolCall.function.name.trim().length > 0 &&
+                    typeof toolCall?.function?.arguments === 'string'
+            )
+
+            singleToolFallbackId =
+                validToolCalls.length === 1 ? validToolCalls[0].id.trim() : undefined
+
+            for (const toolCall of validToolCalls) {
+                const callId = toolCall.id.trim()
+                emittedToolCallIds.add(callId)
                 result.push({
                     type: 'function_call',
-                    call_id: toolCall.id,
+                    call_id: callId,
                     name: toolCall.function.name,
                     arguments: toolCall.function.arguments
                 })
@@ -300,9 +311,24 @@ export async function langchainMessageToResponsesInput(
         }
 
         if (message.role === 'tool' || message.role === 'function') {
+            const explicitCallId = normalizeToolCallId(message.tool_call_id)
+            const callId = explicitCallId ?? singleToolFallbackId
+
+            if (singleToolFallbackId != null && callId === singleToolFallbackId) {
+                singleToolFallbackId = undefined
+            }
+
+            if (callId == null || !emittedToolCallIds.has(callId)) {
+                warnOrphanResponsesToolOutput(
+                    callId ?? explicitCallId ?? '<missing>',
+                    message.name ?? '<unknown>'
+                )
+                continue
+            }
+
             result.push({
                 type: 'function_call_output',
-                call_id: message.tool_call_id,
+                call_id: callId,
                 output:
                     typeof message.content === 'string'
                         ? message.content
@@ -311,6 +337,7 @@ export async function langchainMessageToResponsesInput(
             continue
         }
 
+        singleToolFallbackId = undefined
         result.push({
             role: message.role,
             content: normalizeResponsesMessageContent(message.content)
@@ -318,6 +345,21 @@ export async function langchainMessageToResponsesInput(
     }
 
     return result
+}
+
+function normalizeToolCallId(value: unknown): string | undefined {
+    if (typeof value !== 'string') {
+        return undefined
+    }
+
+    const normalized = value.trim()
+    return normalized.length > 0 ? normalized : undefined
+}
+
+function warnOrphanResponsesToolOutput(callId: string, name: string) {
+    console.warn(
+        `[chatluna-shared-adapter] dropping orphan responses tool output: call_id=${callId} name=${name}`
+    )
 }
 
 function isPrivateOrLoopbackHost(hostname: string) {
@@ -727,7 +769,7 @@ export function messageTypeToOpenAIRole(
 export function formatToolsToOpenAITools(
     tools: StructuredTool[],
     includeGoogleSearch: boolean
-): ChatCompletionTool[] {
+): ChatCompletionTool[] | undefined {
     const result = tools.map(formatToolToOpenAITool)
 
     if (includeGoogleSearch) {
@@ -847,26 +889,27 @@ function enforceResponsesStrictSchema(
     while (stack.length > 0) {
         const current = stack.pop()
         if (!current || typeof current !== 'object') continue
+        const currentRecord = current as Record<string, unknown>
 
         if (
-            current['type'] === 'object' ||
-            Object.hasOwn(current, 'properties')
+            currentRecord.type === 'object' ||
+            Object.hasOwn(currentRecord, 'properties')
         ) {
-            current['additionalProperties'] = false
+            currentRecord.additionalProperties = false
             const properties =
-                current['properties'] &&
-                typeof current['properties'] === 'object' &&
-                !Array.isArray(current['properties'])
-                    ? (current['properties'] as Record<string, unknown>)
+                currentRecord.properties &&
+                typeof currentRecord.properties === 'object' &&
+                !Array.isArray(currentRecord.properties)
+                    ? (currentRecord.properties as Record<string, unknown>)
                     : null
 
             if (properties) {
-                current['required'] = Object.keys(properties)
+                currentRecord.required = Object.keys(properties)
             }
         }
 
-        for (const key of Object.keys(current)) {
-            const value = current[key]
+        for (const key of Object.keys(currentRecord)) {
+            const value = currentRecord[key]
             if (value && typeof value === 'object') {
                 stack.push(value as JsonSchema7Type)
             }
@@ -907,31 +950,34 @@ export function removeAdditionalProperties(
     const stack: [JsonSchema7Type, string | null][] = [[schema, null]]
 
     while (stack.length > 0) {
-        const [current] = stack.pop()
+        const next = stack.pop()
+        if (!next) continue
+        const [current] = next
 
         if (typeof current !== 'object' || current === null) continue
+        const currentRecord = current as Record<string, unknown>
 
         // Remove additionalProperties and $schema
-        if (Object.hasOwn(current, 'additionalProperties')) {
-            delete current['additionalProperties']
+        if (Object.hasOwn(currentRecord, 'additionalProperties')) {
+            delete currentRecord['additionalProperties']
         }
 
-        if (Object.hasOwn(current, '$schema')) {
-            delete current['$schema']
+        if (Object.hasOwn(currentRecord, '$schema')) {
+            delete currentRecord['$schema']
         }
 
         // Convert const to enum for Gemini/Vertex AI compatibility
         // const: X is semantically equivalent to enum: [X] per JSON Schema spec
-        if (Object.hasOwn(current, 'const')) {
-            if (!Object.hasOwn(current, 'enum')) {
-                current['enum'] = [current['const']]
+        if (Object.hasOwn(currentRecord, 'const')) {
+            if (!Object.hasOwn(currentRecord, 'enum')) {
+                currentRecord['enum'] = [currentRecord['const']]
             }
-            delete current['const']
+            delete currentRecord['const']
         }
 
         // Process all keys in the object
-        for (const key of Object.keys(current)) {
-            const value = current[key]
+        for (const key of Object.keys(currentRecord)) {
+            const value = currentRecord[key]
             if (value && typeof value === 'object') {
                 stack.push([value, key])
             }
@@ -972,10 +1018,10 @@ export function convertMessageToMessageChunk(
                 let name = rawToolCall.function?.name
 
                 if (name != null && name.length < 1) {
-                    name = undefined
+                    name = ''
                 }
                 toolCallChunks.push({
-                    name,
+                    name: name ?? '',
                     args: rawToolCall.function?.arguments,
                     id: rawToolCall.id
                 })
@@ -998,7 +1044,7 @@ export function convertMessageToMessageChunk(
         return new ToolMessageChunk({
             content,
             additional_kwargs: additionalKwargs,
-            tool_call_id: message.tool_call_id
+            tool_call_id: message.tool_call_id ?? ''
         })
     } else {
         return new ChatMessageChunk({ content, role })
