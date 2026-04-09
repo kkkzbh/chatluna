@@ -1,4 +1,5 @@
 import { Awaitable, Session } from 'koishi';
+import type { RenderConfigurable as BaseRenderConfigurable } from '@chatluna/shared-prompt-renderer';
 import { ConversationRoom, ConversationRoomGroupInfo, ConversationRoomMemberInfo, ConversationRoomUserInfo } from '../types';
 import { ChatLunaService } from './chat';
 import { BaseMessageChunk } from '@langchain/core/messages';
@@ -25,14 +26,12 @@ declare module 'koishi' {
         chathub_user: ConversationRoomUserInfo;
     }
 }
-declare module '@chatluna/shared-prompt-renderer' {
-    interface RenderConfigurable {
-        session?: Session;
-        conversationId?: string;
-        subagentContext?: SubagentContext;
-    }
-}
 export * from '@chatluna/shared-prompt-renderer';
+export interface RenderConfigurable extends BaseRenderConfigurable {
+    session?: Session;
+    conversationId?: string;
+    subagentContext?: SubagentContext;
+}
 export interface ToolMaskArg {
     session: Session;
     room?: ConversationRoom;

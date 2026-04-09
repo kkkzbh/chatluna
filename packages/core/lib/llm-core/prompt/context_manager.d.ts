@@ -2,7 +2,8 @@ import { BaseMessage } from '@langchain/core/messages';
 import { Document } from '@langchain/core/documents';
 import { ChainValues } from '@langchain/core/utils/types';
 import { AuthorsNote, PresetTemplate, RoleBook } from './type';
-import type { ChatLunaPromptRenderService, RenderConfigurable } from '../../services/chat';
+import type { ChatLunaPromptRenderService } from '../../services/prompt_renderer';
+import type { RenderConfigurable } from '../../services/types';
 import { Context } from 'koishi';
 /**
  * Built-in pipeline stages executed in order during prompt assembly.

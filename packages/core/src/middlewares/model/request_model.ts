@@ -39,6 +39,14 @@ let logger: Logger
 
 const requestIdCache = new Map<string, string>()
 
+type SessionWithReplyRequestModelHandler = Session & {
+    state?: Record<string, unknown> & {
+        qqReplyTransport?: {
+            handleRequestModelError?: (error: unknown) => Promise<void> | void
+        }
+    }
+}
+
 type InputContentMeta = {
     hasImageInput?: boolean
     imageCount?: number
@@ -159,6 +167,10 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                     streamPromise
                 ])
             } catch (e) {
+                await maybeHandleReplyRequestModelError(
+                    session as SessionWithReplyRequestModelHandler,
+                    e
+                )
                 if (e?.message?.includes('output values have 1 keys')) {
                     throw new ChatLunaError(
                         ChatLunaErrorCode.MODEL_RESPONSE_IS_EMPTY
@@ -180,6 +192,17 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             return ChainMiddlewareRunStatus.CONTINUE
         })
         .after('lifecycle-request_model')
+}
+
+async function maybeHandleReplyRequestModelError(
+    session: SessionWithReplyRequestModelHandler,
+    error: unknown
+) {
+    const handler = session.state?.qqReplyTransport?.handleRequestModelError
+    if (typeof handler !== 'function') {
+        return
+    }
+    await handler(error)
 }
 
 export function getRequestId(session: Session, room: ConversationRoom) {

@@ -3,7 +3,8 @@ import { BaseChatPromptTemplate, HumanMessagePromptTemplate, MessagesPlaceholder
 import { ChainValues, PartialValues } from '@langchain/core/utils/types';
 import { ChatLunaContextManagerService, PresetTemplate } from 'koishi-plugin-chatluna/llm-core/prompt';
 import { SystemPrompts } from 'koishi-plugin-chatluna/llm-core/chain/base';
-import type { ChatLunaPromptRenderService, RenderConfigurable } from 'koishi-plugin-chatluna/services/chat';
+import type { ChatLunaPromptRenderService } from '../../services/prompt_renderer';
+import type { RenderConfigurable } from '../../services/types';
 import { ComputedRef } from '@vue/reactivity';
 export interface ChatLunaChatPromptInput {
     messagesPlaceholder?: MessagesPlaceholder;
