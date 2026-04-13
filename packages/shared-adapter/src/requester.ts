@@ -24,10 +24,11 @@ import {
     formatToolsToResponsesTools,
     langchainMessageToResponsesInput,
     langchainMessageToOpenAIMessage,
+    PROVIDER_RESPONSE_DIAGNOSTIC_KEY,
     openAIUsageToUsageMetadata
 } from './utils.js'
-import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
-import { Context } from 'koishi'
+import type { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
+import type { Context } from 'koishi'
 import { AIMessageChunk } from '@langchain/core/messages'
 import { Response } from 'undici/types/fetch'
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
@@ -352,6 +353,249 @@ function isResponsesRequestMode(params: ModelRequestParams) {
     )
 }
 
+type ProviderResponseDiagnostic = {
+    requestMode: 'chat_completions' | 'responses'
+    providerToolCallCount: number
+    messageToolCallCount: number
+    toolCallChunkCount: number
+    unparseableToolCallCount: number
+    functionCallPresent: boolean
+    providerOutputTokens: number | null
+    rawMessageKeys: string[]
+    rawChoiceKeys: string[]
+    rawContentKind: string | null
+    rawContentLength: number | null
+}
+
+function summarizeRecordKeys(value: unknown) {
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+        return []
+    }
+
+    return Object.keys(value).slice(0, 24)
+}
+
+function summarizeContentShape(content: unknown): {
+    kind: string | null
+    length: number | null
+} {
+    if (typeof content === 'string') {
+        return {
+            kind: 'string',
+            length: content.length
+        }
+    }
+
+    if (Array.isArray(content)) {
+        return {
+            kind: 'array',
+            length: content.length
+        }
+    }
+
+    if (content == null) {
+        return {
+            kind: 'null',
+            length: 0
+        }
+    }
+
+    if (typeof content === 'object') {
+        return {
+            kind: 'object',
+            length: Object.keys(content).length
+        }
+    }
+
+    return {
+        kind: typeof content,
+        length: null
+    }
+}
+
+function countMessageToolCalls(message: unknown) {
+    if (
+        message == null ||
+        typeof message !== 'object' ||
+        !('tool_calls' in message)
+    ) {
+        return 0
+    }
+
+    const toolCalls = (message as { tool_calls?: unknown }).tool_calls
+    return Array.isArray(toolCalls) ? toolCalls.length : 0
+}
+
+function countToolCallChunks(message: unknown) {
+    if (
+        message == null ||
+        typeof message !== 'object' ||
+        !('tool_call_chunks' in message)
+    ) {
+        return 0
+    }
+
+    const toolCallChunks = (message as { tool_call_chunks?: unknown })
+        .tool_call_chunks
+    return Array.isArray(toolCallChunks) ? toolCallChunks.length : 0
+}
+
+function hasFunctionCall(message: unknown) {
+    if (
+        message == null ||
+        typeof message !== 'object' ||
+        !('additional_kwargs' in message)
+    ) {
+        return false
+    }
+
+    const additionalKwargs = (message as { additional_kwargs?: unknown })
+        .additional_kwargs
+    return (
+        additionalKwargs != null &&
+        typeof additionalKwargs === 'object' &&
+        !Array.isArray(additionalKwargs) &&
+        'function_call' in additionalKwargs &&
+        (additionalKwargs as { function_call?: unknown }).function_call != null
+    )
+}
+
+function countUnparseableToolCalls(message: unknown) {
+    if (
+        message == null ||
+        typeof message !== 'object' ||
+        !('additional_kwargs' in message)
+    ) {
+        return 0
+    }
+
+    const additionalKwargs = (message as { additional_kwargs?: unknown })
+        .additional_kwargs
+    if (
+        additionalKwargs == null ||
+        typeof additionalKwargs !== 'object' ||
+        Array.isArray(additionalKwargs)
+    ) {
+        return 0
+    }
+
+    const count = (
+        additionalKwargs as {
+            __provider_tool_calls_unparseable?: unknown
+        }
+    ).__provider_tool_calls_unparseable
+    return typeof count === 'number' && Number.isFinite(count) ? count : 0
+}
+
+function buildProviderResponseDiagnostic(args: {
+    requestMode: 'chat_completions' | 'responses'
+    rawChoice?: unknown
+    rawMessage?: unknown
+    messageChunk: unknown
+    outputTokens?: number | null
+    providerToolCallCount?: number
+}) {
+    const contentShape = summarizeContentShape(
+        args.rawMessage != null &&
+            typeof args.rawMessage === 'object' &&
+            !Array.isArray(args.rawMessage) &&
+            'content' in args.rawMessage
+            ? (args.rawMessage as { content?: unknown }).content
+            : undefined
+    )
+
+    return {
+        requestMode: args.requestMode,
+        providerToolCallCount:
+            args.providerToolCallCount ?? countMessageToolCalls(args.rawMessage),
+        messageToolCallCount: countMessageToolCalls(args.messageChunk),
+        toolCallChunkCount: countToolCallChunks(args.messageChunk),
+        unparseableToolCallCount: countUnparseableToolCalls(args.messageChunk),
+        functionCallPresent: hasFunctionCall(args.messageChunk),
+        providerOutputTokens:
+            typeof args.outputTokens === 'number' &&
+            Number.isFinite(args.outputTokens)
+                ? args.outputTokens
+                : null,
+        rawMessageKeys: summarizeRecordKeys(args.rawMessage),
+        rawChoiceKeys: summarizeRecordKeys(args.rawChoice),
+        rawContentKind: contentShape.kind,
+        rawContentLength: contentShape.length
+    } satisfies ProviderResponseDiagnostic
+}
+
+function attachProviderResponseDiagnostic(
+    messageChunk: unknown,
+    diagnostic: ProviderResponseDiagnostic
+) {
+    if (
+        messageChunk == null ||
+        typeof messageChunk !== 'object' ||
+        !('additional_kwargs' in messageChunk)
+    ) {
+        return
+    }
+
+    const currentAdditionalKwargs =
+        (messageChunk as { additional_kwargs?: unknown }).additional_kwargs
+    const additionalKwargs =
+        currentAdditionalKwargs != null &&
+        typeof currentAdditionalKwargs === 'object' &&
+        !Array.isArray(currentAdditionalKwargs)
+            ? { ...(currentAdditionalKwargs as Record<string, unknown>) }
+            : {}
+
+    additionalKwargs[PROVIDER_RESPONSE_DIAGNOSTIC_KEY] = diagnostic
+    ;(messageChunk as { additional_kwargs?: Record<string, unknown> })
+        .additional_kwargs = additionalKwargs
+}
+
+function isEmptyAssistantFinish(diagnostic: ProviderResponseDiagnostic) {
+    return (
+        (diagnostic.rawContentLength ?? 0) < 1 &&
+        diagnostic.messageToolCallCount < 1 &&
+        diagnostic.toolCallChunkCount < 1 &&
+        !diagnostic.functionCallPresent
+    )
+}
+
+function logProviderResponseDiagnosticIfNeeded<
+    T extends ClientConfig,
+    R extends ChatLunaPlugin.Config
+>(
+    requestContext: RequestContext<T, R>,
+    diagnostic: ProviderResponseDiagnostic
+) {
+    if (isEmptyAssistantFinish(diagnostic)) {
+        requestContext.modelRequester.logger.warn(
+            'provider returned empty assistant finish: %s',
+            JSON.stringify(diagnostic)
+        )
+        return
+    }
+
+    if (
+        diagnostic.unparseableToolCallCount > 0
+    ) {
+        requestContext.modelRequester.logger.warn(
+            'provider tool calls contained unparseable arguments: %s',
+            JSON.stringify(diagnostic)
+        )
+    }
+
+    if (
+        diagnostic.providerToolCallCount > 0 &&
+        diagnostic.messageToolCallCount < 1 &&
+        diagnostic.toolCallChunkCount < 1 &&
+        !diagnostic.functionCallPresent
+    ) {
+        requestContext.modelRequester.logger.warn(
+            'provider tool calls were not preserved on assistant finish: %s',
+            JSON.stringify(diagnostic)
+        )
+    }
+}
+
 // eslint-disable-next-line generator-star-spacing
 export async function* processStreamResponse<
     T extends ClientConfig,
@@ -413,6 +657,18 @@ export async function* processStreamResponse<
                               reasoning_content: reasoningState.content
                           }
                         : choice.message
+                )
+                const diagnostic = buildProviderResponseDiagnostic({
+                    requestMode: 'chat_completions',
+                    rawChoice: choice,
+                    rawMessage: choice.message,
+                    messageChunk,
+                    outputTokens: data.usage?.completion_tokens ?? null
+                })
+                attachProviderResponseDiagnostic(messageChunk, diagnostic)
+                logProviderResponseDiagnosticIfNeeded(
+                    requestContext,
+                    diagnostic
                 )
 
                 reasoningState.content = ''
@@ -578,6 +834,15 @@ export async function processResponse<
         const usageMetadata = data.usage
             ? openAIUsageToUsageMetadata(data.usage)
             : undefined
+        const diagnostic = buildProviderResponseDiagnostic({
+            requestMode: 'chat_completions',
+            rawChoice: choice,
+            rawMessage: choice.message,
+            messageChunk,
+            outputTokens: data.usage?.completion_tokens ?? null
+        })
+        attachProviderResponseDiagnostic(messageChunk, diagnostic)
+        logProviderResponseDiagnosticIfNeeded(requestContext, diagnostic)
 
         if (messageChunk instanceof AIMessageChunk) {
             messageChunk.usage_metadata = usageMetadata
@@ -745,6 +1010,21 @@ export async function processResponsesApiResponse<
                       usage_metadata: usageMetadata
                   })
         })
+        const diagnostic = buildProviderResponseDiagnostic({
+            requestMode: 'responses',
+            rawMessage: {
+                content: text,
+                output
+            },
+            rawChoice: {
+                output
+            },
+            messageChunk: message,
+            outputTokens: data.usage?.output_tokens ?? null,
+            providerToolCallCount: toolCalls.length
+        })
+        attachProviderResponseDiagnostic(message, diagnostic)
+        logProviderResponseDiagnosticIfNeeded(requestContext, diagnostic)
 
         return new ChatGenerationChunk({
             message,

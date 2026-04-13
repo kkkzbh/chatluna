@@ -24,7 +24,7 @@ import {
     ChatCompletionUsage,
     ResponsesTool
 } from './types.js'
-import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
+import type { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
 import {
     getImageMimeType,
     getMimeTypeFromSource,
@@ -33,6 +33,9 @@ import {
 import { ToolCallChunk } from '@langchain/core/messages/tool'
 import { isZodSchemaV3 } from '@langchain/core/utils/types'
 import { normalizeOpenAIModelName, supportImageInput } from './client.js'
+
+export const PROVIDER_RESPONSE_DIAGNOSTIC_KEY =
+    '__chatluna_provider_response_diagnostic_v1'
 
 export function createUsageMetadata(data: {
     inputTokens: number
@@ -1003,6 +1006,7 @@ export function convertMessageToMessageChunk(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/naming-convention
         tool_calls?: any
         reasoning_content?: string
+        __provider_tool_calls_unparseable?: number
     } = {}
 
     if (reasoningContent.length > 0) {
@@ -1013,6 +1017,12 @@ export function convertMessageToMessageChunk(
         return new HumanMessageChunk({ content })
     } else if (role === 'assistant') {
         const toolCallChunks: ToolCallChunk[] = []
+        const normalizedToolCalls: {
+            id: string
+            name: string
+            args: Record<string, any>
+        }[] = []
+        let unparseableToolCallCount = 0
         if (Array.isArray(message.tool_calls)) {
             for (const rawToolCall of message.tool_calls) {
                 let name = rawToolCall.function?.name
@@ -1025,11 +1035,54 @@ export function convertMessageToMessageChunk(
                     args: rawToolCall.function?.arguments,
                     id: rawToolCall.id
                 })
+
+                if (
+                    typeof rawToolCall.id === 'string' &&
+                    typeof name === 'string' &&
+                    name.length > 0
+                ) {
+                    let parsedArgs: Record<string, any> = {}
+                    const rawArguments = rawToolCall.function?.arguments
+                    if (
+                        typeof rawArguments === 'string' &&
+                        rawArguments.length > 0
+                    ) {
+                        try {
+                            const parsed = JSON.parse(rawArguments) as unknown
+                            parsedArgs =
+                                parsed != null &&
+                                typeof parsed === 'object' &&
+                                !Array.isArray(parsed)
+                                    ? (parsed as Record<string, any>)
+                                    : {
+                                          input: parsed
+                                      }
+                        } catch {
+                            unparseableToolCallCount++
+                            continue
+                        }
+                    }
+
+                    normalizedToolCalls.push({
+                        id: rawToolCall.id,
+                        name,
+                        args: parsedArgs
+                    })
+                }
             }
+        }
+
+        additionalKwargs.tool_calls = message.tool_calls
+        if (unparseableToolCallCount > 0) {
+            additionalKwargs.__provider_tool_calls_unparseable =
+                unparseableToolCallCount
         }
         return new AIMessageChunk({
             content,
             tool_call_chunks: toolCallChunks,
+            ...(normalizedToolCalls.length > 0
+                ? { tool_calls: normalizedToolCalls }
+                : {}),
             additional_kwargs: additionalKwargs
         })
     } else if (role === 'system') {
@@ -1065,6 +1118,8 @@ export function convertDeltaToMessageChunk(
     let additionalKwargs: {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/naming-convention
         function_call?: any
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/naming-convention
+        tool_calls?: any
         reasoning_content?: string
     }
     if (delta.function_call) {
@@ -1103,7 +1158,12 @@ export function convertDeltaToMessageChunk(
         return new AIMessageChunk({
             content,
             tool_call_chunks: toolCallChunks,
-            additional_kwargs: additionalKwargs
+            additional_kwargs: Array.isArray(delta.tool_calls)
+                ? {
+                      ...additionalKwargs,
+                      tool_calls: delta.tool_calls
+                  }
+                : additionalKwargs
         })
     } else if (role === 'system') {
         return new SystemMessageChunk({ content })
