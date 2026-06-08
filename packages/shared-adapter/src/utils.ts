@@ -20,11 +20,11 @@ import {
     ChatCompletionResponseMessage,
     ChatCompletionResponseMessageRoleEnum,
     ChatCompletionTool,
-    ResponsesFunctionTool,
     ChatCompletionUsage,
+    ResponsesFunctionTool,
     ResponsesTool
 } from './types.js'
-import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
+import type { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
 import {
     getImageMimeType,
     getMimeTypeFromSource,
@@ -33,6 +33,9 @@ import {
 import { ToolCallChunk } from '@langchain/core/messages/tool'
 import { isZodSchemaV3 } from '@langchain/core/utils/types'
 import { normalizeOpenAIModelName, supportImageInput } from './client.js'
+
+export const PROVIDER_RESPONSE_DIAGNOSTIC_KEY =
+    '__chatluna_provider_response_diagnostic_v1'
 
 export function createUsageMetadata(data: {
     inputTokens: number
@@ -103,8 +106,7 @@ export async function langchainMessageToOpenAIMessage(
     const normalizedModel = model ? normalizeOpenAIModelName(model) : model
     for (const rawMessage of messages) {
         const role = messageTypeToOpenAIRole(rawMessage.getType())
-        const content =
-            rawMessage.content == null ? '' : rawMessage.content
+        const content = rawMessage.content == null ? '' : rawMessage.content
 
         const msg = {
             content,
@@ -211,7 +213,9 @@ export async function langchainMessageToOpenAIMessage(
                 })
             )
 
-            msg.content = mappedContent.filter((content) => content != null) as ChatCompletionParts[]
+            msg.content = mappedContent.filter(
+                (content) => content != null
+            ) as ChatCompletionParts[]
         }
 
         result.push(msg)
@@ -225,7 +229,11 @@ export async function langchainMessageToOpenAIMessage(
         const assistantMsg = result[i]
         const toolCalls =
             assistantMsg.tool_calls?.filter(
-                (toolCall: NonNullable<ChatCompletionResponseMessage['tool_calls']>[number]) =>
+                (
+                    toolCall: NonNullable<
+                        ChatCompletionResponseMessage['tool_calls']
+                    >[number]
+                ) =>
                     typeof toolCall?.id === 'string' &&
                     toolCall.id.trim().length > 0
             ) ?? []
@@ -278,7 +286,10 @@ export async function langchainMessageToResponsesInput(
                     role: 'assistant',
                     content: message.content
                 })
-            } else if (Array.isArray(message.content) && message.content.length > 0) {
+            } else if (
+                Array.isArray(message.content) &&
+                message.content.length > 0
+            ) {
                 result.push({
                     role: 'assistant',
                     content: normalizeResponsesMessageContent(message.content)
@@ -286,7 +297,11 @@ export async function langchainMessageToResponsesInput(
             }
 
             const validToolCalls = message.tool_calls.filter(
-                (toolCall: NonNullable<ChatCompletionResponseMessage['tool_calls']>[number]) =>
+                (
+                    toolCall: NonNullable<
+                        ChatCompletionResponseMessage['tool_calls']
+                    >[number]
+                ) =>
                     typeof toolCall?.id === 'string' &&
                     toolCall.id.trim().length > 0 &&
                     typeof toolCall?.function?.name === 'string' &&
@@ -295,7 +310,9 @@ export async function langchainMessageToResponsesInput(
             )
 
             singleToolFallbackId =
-                validToolCalls.length === 1 ? validToolCalls[0].id.trim() : undefined
+                validToolCalls.length === 1
+                    ? validToolCalls[0].id.trim()
+                    : undefined
 
             for (const toolCall of validToolCalls) {
                 const callId = toolCall.id.trim()
@@ -314,7 +331,10 @@ export async function langchainMessageToResponsesInput(
             const explicitCallId = normalizeToolCallId(message.tool_call_id)
             const callId = explicitCallId ?? singleToolFallbackId
 
-            if (singleToolFallbackId != null && callId === singleToolFallbackId) {
+            if (
+                singleToolFallbackId != null &&
+                callId === singleToolFallbackId
+            ) {
                 singleToolFallbackId = undefined
             }
 
@@ -374,7 +394,11 @@ function isPrivateOrLoopbackHost(hostname: string) {
         return true
     }
 
-    if (/^127\./.test(lower) || /^10\./.test(lower) || /^192\.168\./.test(lower)) {
+    if (
+        /^127\./.test(lower) ||
+        /^10\./.test(lower) ||
+        /^192\.168\./.test(lower)
+    ) {
         return true
     }
 
@@ -475,7 +499,10 @@ function normalizeResponsesMessageContent(
                 image_url?: unknown
             }
 
-            if (typedPart.type === 'text' && typeof typedPart.text === 'string') {
+            if (
+                typedPart.type === 'text' &&
+                typeof typedPart.text === 'string'
+            ) {
                 return {
                     type: 'input_text',
                     text: typedPart.text
@@ -514,9 +541,11 @@ function normalizeResponsesMessageContent(
             }
 
             if (typedPart.type === 'file_url') {
-                const rawFileUrl = (typedPart as {
-                    file_url?: unknown
-                }).file_url
+                const rawFileUrl = (
+                    typedPart as {
+                        file_url?: unknown
+                    }
+                ).file_url
 
                 if (typeof rawFileUrl === 'string') {
                     return {
@@ -1003,6 +1032,7 @@ export function convertMessageToMessageChunk(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/naming-convention
         tool_calls?: any
         reasoning_content?: string
+        __provider_tool_calls_unparseable?: number
     } = {}
 
     if (reasoningContent.length > 0) {
@@ -1013,6 +1043,12 @@ export function convertMessageToMessageChunk(
         return new HumanMessageChunk({ content })
     } else if (role === 'assistant') {
         const toolCallChunks: ToolCallChunk[] = []
+        const normalizedToolCalls: {
+            id: string
+            name: string
+            args: Record<string, unknown>
+        }[] = []
+        let unparseableToolCallCount = 0
         if (Array.isArray(message.tool_calls)) {
             for (const rawToolCall of message.tool_calls) {
                 let name = rawToolCall.function?.name
@@ -1025,11 +1061,54 @@ export function convertMessageToMessageChunk(
                     args: rawToolCall.function?.arguments,
                     id: rawToolCall.id
                 })
+
+                if (
+                    typeof rawToolCall.id === 'string' &&
+                    typeof name === 'string' &&
+                    name.length > 0
+                ) {
+                    let parsedArgs: Record<string, unknown> = {}
+                    const rawArguments = rawToolCall.function?.arguments
+                    if (
+                        typeof rawArguments === 'string' &&
+                        rawArguments.length > 0
+                    ) {
+                        try {
+                            const parsed = JSON.parse(rawArguments) as unknown
+                            parsedArgs =
+                                parsed != null &&
+                                typeof parsed === 'object' &&
+                                !Array.isArray(parsed)
+                                    ? (parsed as Record<string, unknown>)
+                                    : {
+                                          input: parsed
+                                      }
+                        } catch {
+                            unparseableToolCallCount++
+                            continue
+                        }
+                    }
+
+                    normalizedToolCalls.push({
+                        id: rawToolCall.id,
+                        name,
+                        args: parsedArgs
+                    })
+                }
             }
+        }
+
+        additionalKwargs.tool_calls = message.tool_calls
+        if (unparseableToolCallCount > 0) {
+            additionalKwargs.__provider_tool_calls_unparseable =
+                unparseableToolCallCount
         }
         return new AIMessageChunk({
             content,
             tool_call_chunks: toolCallChunks,
+            ...(normalizedToolCalls.length > 0
+                ? { tool_calls: normalizedToolCalls }
+                : {}),
             additional_kwargs: additionalKwargs
         })
     } else if (role === 'system') {
@@ -1065,6 +1144,8 @@ export function convertDeltaToMessageChunk(
     let additionalKwargs: {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/naming-convention
         function_call?: any
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/naming-convention
+        tool_calls?: any
         reasoning_content?: string
     }
     if (delta.function_call) {
@@ -1103,7 +1184,12 @@ export function convertDeltaToMessageChunk(
         return new AIMessageChunk({
             content,
             tool_call_chunks: toolCallChunks,
-            additional_kwargs: additionalKwargs
+            additional_kwargs: Array.isArray(delta.tool_calls)
+                ? {
+                      ...additionalKwargs,
+                      tool_calls: delta.tool_calls
+                  }
+                : additionalKwargs
         })
     } else if (role === 'system') {
         return new SystemMessageChunk({ content })
