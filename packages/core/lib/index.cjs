@@ -1513,13 +1513,9 @@ var ChatLunaPluginChain = class _ChatLunaPluginChain extends import_base2.ChatLu
     if (afterUserMessage != null) {
       requests["after_user_message"] = afterUserMessage;
     }
-    const finalResponseSchema = message.additional_kwargs?.qqbot_final_response_schema;
-    if (finalResponseSchema != null) {
-      requests["qqbot_final_response_schema"] = finalResponseSchema;
-    }
-    const finalResponseInstruction = message.additional_kwargs?.qqbot_final_response_instruction;
-    if (typeof finalResponseInstruction === "string" && finalResponseInstruction.trim().length > 0) {
-      requests["qqbot_final_response_instruction"] = finalResponseInstruction.trim();
+    const finalResponseContract = message.additional_kwargs?.qqbot_final_response_contract;
+    if (finalResponseContract != null) {
+      requests["qqbot_final_response_contract"] = finalResponseContract;
     }
     requests["configurable"] = {
       session,

@@ -223,8 +223,8 @@ export interface AgentFinishContract {
 }
 
 export interface AgentFinalResponseContract {
-    schema: Record<string, unknown>
     name?: string
+    schema?: Record<string, unknown> | null
     instruction?: string
 }
 

@@ -547,20 +547,33 @@ function buildFinishContractViolationMessage(finishContract, output, retryCount)
   });
 }
 __name(buildFinishContractViolationMessage, "buildFinishContractViolationMessage");
-function normalizeFinalResponseContract(rawSchema, rawInstruction) {
-  if (rawSchema == null || typeof rawSchema !== "object" || Array.isArray(rawSchema)) {
+function isPlainRecord(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+__name(isPlainRecord, "isPlainRecord");
+function normalizeFinalResponseContract(rawContract) {
+  if (!isPlainRecord(rawContract)) {
     return null;
   }
-  const instruction = typeof rawInstruction === "string" && rawInstruction.trim().length > 0 ? rawInstruction.trim() : void 0;
+  const rawSchema = rawContract["schema"];
+  const schema = isPlainRecord(rawSchema) ? rawSchema : null;
+  const instruction = typeof rawContract["instruction"] === "string" && rawContract["instruction"].trim().length > 0 ? rawContract["instruction"].trim() : void 0;
+  const name = typeof rawContract["name"] === "string" && rawContract["name"].trim().length > 0 ? rawContract["name"].trim() : void 0;
+  if (schema == null && instruction == null) {
+    return null;
+  }
   return {
-    schema: rawSchema,
-    name: "qqbot_structured_reply_v1",
+    schema,
+    name,
     instruction
   };
 }
 __name(normalizeFinalResponseContract, "normalizeFinalResponseContract");
 function buildFinalResponseOverrideRequestParams(contract, rawOverride) {
-  const base = rawOverride != null && typeof rawOverride === "object" && !Array.isArray(rawOverride) ? { ...rawOverride } : {};
+  const base = isPlainRecord(rawOverride) ? { ...rawOverride } : {};
+  if (!isPlainRecord(contract.schema)) {
+    return base;
+  }
   if (base["qqbot_request_mode"] === "responses") {
     return {
       ...base,
@@ -587,6 +600,29 @@ function buildFinalResponseOverrideRequestParams(contract, rawOverride) {
   };
 }
 __name(buildFinalResponseOverrideRequestParams, "buildFinalResponseOverrideRequestParams");
+function mergeFinalResponseInstructionAfterUserMessage(existing, instruction) {
+  const normalizedInstruction = instruction?.trim();
+  if (!normalizedInstruction) {
+    return existing;
+  }
+  if (existing == null) {
+    return normalizedInstruction;
+  }
+  if (typeof existing === "string") {
+    const normalizedExisting = existing.trim();
+    if (!normalizedExisting) {
+      return normalizedInstruction;
+    }
+    return `${normalizedExisting}
+
+${normalizedInstruction}`;
+  }
+  if (Array.isArray(existing)) {
+    return [...existing, normalizedInstruction];
+  }
+  return [existing, normalizedInstruction];
+}
+__name(mergeFinalResponseInstructionAfterUserMessage, "mergeFinalResponseInstructionAfterUserMessage");
 function tryParseJsonText(text) {
   const trimmed = text.trim();
   if (trimmed.length < 2 || !(trimmed.startsWith("{") && trimmed.endsWith("}") || trimmed.startsWith("[") && trimmed.endsWith("]"))) {
@@ -758,13 +794,23 @@ function summarizeVariables(value) {
 }
 __name(summarizeVariables, "summarizeVariables");
 function summarizeResponseContract(input) {
-  const rawSchema = input["qqbot_final_response_schema"];
+  const rawContract = input["qqbot_final_response_contract"];
+  const contract = isLogRecord(rawContract) ? rawContract : null;
+  const rawSchema = isLogRecord(contract?.["schema"]) ? contract["schema"] : null;
   const overrideRequestParams = input["overrideRequestParams"];
   const responseFormat = isLogRecord(overrideRequestParams) ? overrideRequestParams["response_format"] : null;
   const jsonSchema = isLogRecord(responseFormat) ? responseFormat["json_schema"] : null;
   const summary = {
-    hasSchema: isLogRecord(rawSchema)
+    hasContract: contract != null,
+    hasSchema: isLogRecord(rawSchema),
+    hasInstruction: typeof contract?.["instruction"] === "string" && contract["instruction"].trim().length > 0
   };
+  if (typeof contract?.["protocol"] === "string") {
+    summary["protocol"] = contract["protocol"];
+  }
+  if (typeof contract?.["requestMode"] === "string") {
+    summary["requestMode"] = contract["requestMode"];
+  }
   if (isLogRecord(responseFormat) && typeof responseFormat["type"] === "string") {
     summary["responseFormatType"] = responseFormat["type"];
   }
@@ -911,8 +957,7 @@ async function* runAgent(options) {
   const handleParsingErrors = options.handleParsingErrors ?? true;
   const finishContract = options.finishContract;
   const finalResponseContract = normalizeFinalResponseContract(
-    options.input["qqbot_final_response_schema"],
-    options.input["qqbot_final_response_instruction"]
+    options.input["qqbot_final_response_contract"]
   );
   let finishContractRetryCount = 0;
   let hasLoggedInitialInput = false;
@@ -936,6 +981,10 @@ async function* runAgent(options) {
     let output;
     const planningInput = finalResponseContract != null ? {
       ...options.input,
+      after_user_message: mergeFinalResponseInstructionAfterUserMessage(
+        options.input["after_user_message"],
+        finalResponseContract.instruction
+      ),
       overrideRequestParams: buildFinalResponseOverrideRequestParams(
         finalResponseContract,
         options.input["overrideRequestParams"]

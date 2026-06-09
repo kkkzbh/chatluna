@@ -264,26 +264,34 @@ function buildFinishContractViolationMessage(
     })
 }
 
-function normalizeFinalResponseContract(
-    rawSchema: unknown,
-    rawInstruction: unknown
-): AgentFinalResponseContract | null {
-    if (
-        rawSchema == null ||
-        typeof rawSchema !== 'object' ||
-        Array.isArray(rawSchema)
-    ) {
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+    return value != null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function normalizeFinalResponseContract(rawContract: unknown): AgentFinalResponseContract | null {
+    if (!isPlainRecord(rawContract)) {
         return null
     }
 
+    const rawSchema = rawContract['schema']
+    const schema = isPlainRecord(rawSchema) ? rawSchema : null
     const instruction =
-        typeof rawInstruction === 'string' && rawInstruction.trim().length > 0
-            ? rawInstruction.trim()
+        typeof rawContract['instruction'] === 'string' &&
+        rawContract['instruction'].trim().length > 0
+            ? rawContract['instruction'].trim()
+            : undefined
+    const name =
+        typeof rawContract['name'] === 'string' && rawContract['name'].trim().length > 0
+            ? rawContract['name'].trim()
             : undefined
 
+    if (schema == null && instruction == null) {
+        return null
+    }
+
     return {
-        schema: rawSchema as Record<string, unknown>,
-        name: 'qqbot_structured_reply_v1',
+        schema,
+        name,
         instruction
     }
 }
@@ -293,11 +301,13 @@ function buildFinalResponseOverrideRequestParams(
     rawOverride: unknown
 ) {
     const base =
-        rawOverride != null &&
-        typeof rawOverride === 'object' &&
-        !Array.isArray(rawOverride)
+        isPlainRecord(rawOverride)
             ? { ...(rawOverride as Record<string, unknown>) }
             : {}
+
+    if (!isPlainRecord(contract.schema)) {
+        return base
+    }
 
     if (base['qqbot_request_mode'] === 'responses') {
         return {
@@ -324,6 +334,34 @@ function buildFinalResponseOverrideRequestParams(
             }
         }
     }
+}
+
+function mergeFinalResponseInstructionAfterUserMessage(
+    existing: unknown,
+    instruction: string | undefined
+): unknown {
+    const normalizedInstruction = instruction?.trim()
+    if (!normalizedInstruction) {
+        return existing
+    }
+
+    if (existing == null) {
+        return normalizedInstruction
+    }
+
+    if (typeof existing === 'string') {
+        const normalizedExisting = existing.trim()
+        if (!normalizedExisting) {
+            return normalizedInstruction
+        }
+        return `${normalizedExisting}\n\n${normalizedInstruction}`
+    }
+
+    if (Array.isArray(existing)) {
+        return [...existing, normalizedInstruction]
+    }
+
+    return [existing, normalizedInstruction]
 }
 
 function tryParseJsonText(text: string): unknown {
@@ -546,7 +584,11 @@ function summarizeVariables(value: unknown) {
 }
 
 function summarizeResponseContract(input: ChainValues) {
-    const rawSchema = input['qqbot_final_response_schema']
+    const rawContract = input['qqbot_final_response_contract']
+    const contract = isLogRecord(rawContract) ? rawContract : null
+    const rawSchema = isLogRecord(contract?.['schema'])
+        ? contract['schema']
+        : null
     const overrideRequestParams = input['overrideRequestParams']
     const responseFormat = isLogRecord(overrideRequestParams)
         ? overrideRequestParams['response_format']
@@ -555,7 +597,19 @@ function summarizeResponseContract(input: ChainValues) {
         ? responseFormat['json_schema']
         : null
     const summary: Record<string, unknown> = {
-        hasSchema: isLogRecord(rawSchema)
+        hasContract: contract != null,
+        hasSchema: isLogRecord(rawSchema),
+        hasInstruction:
+            typeof contract?.['instruction'] === 'string' &&
+            contract['instruction'].trim().length > 0
+    }
+
+    if (typeof contract?.['protocol'] === 'string') {
+        summary['protocol'] = contract['protocol']
+    }
+
+    if (typeof contract?.['requestMode'] === 'string') {
+        summary['requestMode'] = contract['requestMode']
     }
 
     if (isLogRecord(responseFormat) && typeof responseFormat['type'] === 'string') {
@@ -783,8 +837,7 @@ export async function* runAgent(
     const handleParsingErrors = options.handleParsingErrors ?? true
     const finishContract = options.finishContract
     const finalResponseContract = normalizeFinalResponseContract(
-        options.input['qqbot_final_response_schema'],
-        options.input['qqbot_final_response_instruction']
+        options.input['qqbot_final_response_contract']
     )
     let finishContractRetryCount = 0
     let hasLoggedInitialInput = false
@@ -817,6 +870,11 @@ export async function* runAgent(
             finalResponseContract != null
                 ? {
                       ...options.input,
+                      after_user_message:
+                          mergeFinalResponseInstructionAfterUserMessage(
+                              options.input['after_user_message'],
+                              finalResponseContract.instruction
+                          ),
                       overrideRequestParams:
                           buildFinalResponseOverrideRequestParams(
                               finalResponseContract,
