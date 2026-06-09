@@ -63,6 +63,28 @@ function isRequestLoggingEnabled(ctx: Context): boolean {
     return (ctx as RequestLogContext).chatluna?.currentConfig?.isLog === true
 }
 
+function sanitizeOverrideRequestParams(
+    overrideRequestParams: ModelRequestParams['overrideRequestParams']
+) {
+    if (
+        overrideRequestParams == null ||
+        typeof overrideRequestParams !== 'object' ||
+        Array.isArray(overrideRequestParams)
+    ) {
+        return undefined
+    }
+
+    const sanitized: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(overrideRequestParams)) {
+        if (key.startsWith('qqbot_')) {
+            continue
+        }
+        sanitized[key] = value
+    }
+
+    return sanitized
+}
+
 export async function buildChatCompletionParams(
     params: ModelRequestParams,
     plugin: ChatLunaPlugin,
@@ -127,7 +149,11 @@ export async function buildChatCompletionParams(
         delete base.n
         delete base.top_p
     }
-    return deepAssign({}, base, params.overrideRequestParams ?? {})
+    return deepAssign(
+        {},
+        base,
+        sanitizeOverrideRequestParams(params.overrideRequestParams) ?? {}
+    )
 }
 
 export async function buildResponsesParams(
@@ -184,9 +210,11 @@ export async function buildResponsesParams(
         text: undefined
     }
 
-    const request = deepAssign({}, base, overrideRequestParams ?? {})
-    delete request['qqbot_request_mode']
-    return request
+    return deepAssign(
+        {},
+        base,
+        sanitizeOverrideRequestParams(overrideRequestParams) ?? {}
+    )
 }
 
 function summarizeLastUserMessage(messages: unknown) {
