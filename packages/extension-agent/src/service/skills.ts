@@ -454,7 +454,7 @@ export class ChatLunaAgentSkillsService implements SkillToolService {
                     remote
                 )
 
-                if (skills.length > 0 || active.length > 0 || !sub) {
+                if (skills.length > 0 || active.length > 0) {
                     const msg = renderAvailableSkills(
                         skills,
                         active,
