@@ -336,6 +336,37 @@ function isConversationBoundaryRole(role) {
   return role === "human" || role === "system";
 }
 __name(isConversationBoundaryRole, "isConversationBoundaryRole");
+function stripLegacyQqbotAssistantHeader(text) {
+  const withoutAssistantHeader = text.replace(
+    /^\s*(?:\[assistant_message\s+mentions=\[[^\]\r\n]*\]\]\s*)+/u,
+    ""
+  );
+  if (withoutAssistantHeader === text) {
+    return text;
+  }
+  return withoutAssistantHeader.replace(/^\s*(?:\[mention:\d+\]\s*)+/u, "").trimStart();
+}
+__name(stripLegacyQqbotAssistantHeader, "stripLegacyQqbotAssistantHeader");
+function sanitizeLoadedAiHistoryContent(content) {
+  if (typeof content === "string") {
+    return stripLegacyQqbotAssistantHeader(content);
+  }
+  if (!Array.isArray(content)) {
+    return content;
+  }
+  return content.map((part) => {
+    if (part != null && typeof part === "object" && part.type === "text" && typeof part.text === "string") {
+      return {
+        ...part,
+        text: stripLegacyQqbotAssistantHeader(
+          part.text
+        )
+      };
+    }
+    return part;
+  });
+}
+__name(sanitizeLoadedAiHistoryContent, "sanitizeLoadedAiHistoryContent");
 var INTERNAL_ADDITIONAL_ARG_PREFIX = "__chatluna_internal_";
 var TOOL_MEMORY_STORAGE_KEY = `${INTERNAL_ADDITIONAL_ARG_PREFIX}tool_memory_v1`;
 var DEFAULT_TOOL_MEMORY_MAX_ENTRIES = 3;
@@ -848,7 +879,7 @@ var KoishiChatMessageHistory = class extends import_chat_history.BaseChatMessage
         args
       );
       const fields = {
-        content: sanitizedFields.content,
+        content: item.role === "ai" ? sanitizeLoadedAiHistoryContent(sanitizedFields.content) : sanitizedFields.content,
         id: item.rawId ?? void 0,
         name: item.name ?? void 0,
         tool_calls: item.tool_calls ?? void 0,

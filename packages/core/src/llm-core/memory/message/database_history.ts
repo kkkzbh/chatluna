@@ -92,6 +92,49 @@ function isConversationBoundaryRole(
     return role === 'human' || role === 'system'
 }
 
+function stripLegacyQqbotAssistantHeader(text: string): string {
+    const withoutAssistantHeader = text.replace(
+        /^\s*(?:\[assistant_message\s+mentions=\[[^\]\r\n]*\]\]\s*)+/u,
+        ''
+    )
+
+    if (withoutAssistantHeader === text) {
+        return text
+    }
+
+    return withoutAssistantHeader
+        .replace(/^\s*(?:\[mention:\d+\]\s*)+/u, '')
+        .trimStart()
+}
+
+function sanitizeLoadedAiHistoryContent(content: MessageContent): MessageContent {
+    if (typeof content === 'string') {
+        return stripLegacyQqbotAssistantHeader(content)
+    }
+
+    if (!Array.isArray(content)) {
+        return content
+    }
+
+    return content.map((part) => {
+        if (
+            part != null &&
+            typeof part === 'object' &&
+            (part as { type?: unknown }).type === 'text' &&
+            typeof (part as { text?: unknown }).text === 'string'
+        ) {
+            return {
+                ...part,
+                text: stripLegacyQqbotAssistantHeader(
+                    (part as { text: string }).text
+                )
+            }
+        }
+
+        return part
+    }) as MessageContent
+}
+
 export const INTERNAL_ADDITIONAL_ARG_PREFIX = '__chatluna_internal_'
 export const TOOL_MEMORY_STORAGE_KEY = `${INTERNAL_ADDITIONAL_ARG_PREFIX}tool_memory_v1`
 export const DEFAULT_TOOL_MEMORY_MAX_ENTRIES = 3
@@ -794,7 +837,10 @@ export class KoishiChatMessageHistory extends BaseChatMessageHistory {
                 args as Record<string, unknown>
             )
             const fields = {
-                content: sanitizedFields.content,
+                content:
+                    item.role === 'ai'
+                        ? sanitizeLoadedAiHistoryContent(sanitizedFields.content)
+                        : sanitizedFields.content,
                 id: item.rawId ?? undefined,
                 name: item.name ?? undefined,
                 tool_calls: item.tool_calls ?? undefined,
