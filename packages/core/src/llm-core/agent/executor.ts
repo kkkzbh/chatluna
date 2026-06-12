@@ -4,6 +4,7 @@ import {
     AIMessage,
     AIMessageChunk,
     HumanMessage,
+    SystemMessage,
     isBaseMessage
 } from '@langchain/core/messages'
 import { OutputParserException } from '@langchain/core/output_parsers'
@@ -344,24 +345,25 @@ function mergeFinalResponseInstructionAfterUserMessage(
     if (!normalizedInstruction) {
         return existing
     }
+    const instructionMessage = new SystemMessage(normalizedInstruction)
 
     if (existing == null) {
-        return normalizedInstruction
+        return instructionMessage
     }
 
     if (typeof existing === 'string') {
         const normalizedExisting = existing.trim()
         if (!normalizedExisting) {
-            return normalizedInstruction
+            return instructionMessage
         }
-        return `${normalizedExisting}\n\n${normalizedInstruction}`
+        return [normalizedExisting, instructionMessage]
     }
 
     if (Array.isArray(existing)) {
-        return [...existing, normalizedInstruction]
+        return [...existing, instructionMessage]
     }
 
-    return [existing, normalizedInstruction]
+    return [existing, instructionMessage]
 }
 
 function tryParseJsonText(text: string): unknown {

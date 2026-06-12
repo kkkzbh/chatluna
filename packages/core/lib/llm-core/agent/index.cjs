@@ -612,22 +612,21 @@ function mergeFinalResponseInstructionAfterUserMessage(existing, instruction) {
   if (!normalizedInstruction) {
     return existing;
   }
+  const instructionMessage = new import_messages3.SystemMessage(normalizedInstruction);
   if (existing == null) {
-    return normalizedInstruction;
+    return instructionMessage;
   }
   if (typeof existing === "string") {
     const normalizedExisting = existing.trim();
     if (!normalizedExisting) {
-      return normalizedInstruction;
+      return instructionMessage;
     }
-    return `${normalizedExisting}
-
-${normalizedInstruction}`;
+    return [normalizedExisting, instructionMessage];
   }
   if (Array.isArray(existing)) {
-    return [...existing, normalizedInstruction];
+    return [...existing, instructionMessage];
   }
-  return [existing, normalizedInstruction];
+  return [existing, instructionMessage];
 }
 __name(mergeFinalResponseInstructionAfterUserMessage, "mergeFinalResponseInstructionAfterUserMessage");
 function tryParseJsonText(text) {

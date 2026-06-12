@@ -298,6 +298,7 @@ __name(createOpenAIAgent, "createOpenAIAgent");
 import {
   AIMessage as AIMessage3,
   HumanMessage as HumanMessage2,
+  SystemMessage,
   isBaseMessage as isBaseMessage2
 } from "@langchain/core/messages";
 import { OutputParserException as OutputParserException2 } from "@langchain/core/output_parsers";
@@ -605,22 +606,21 @@ function mergeFinalResponseInstructionAfterUserMessage(existing, instruction) {
   if (!normalizedInstruction) {
     return existing;
   }
+  const instructionMessage = new SystemMessage(normalizedInstruction);
   if (existing == null) {
-    return normalizedInstruction;
+    return instructionMessage;
   }
   if (typeof existing === "string") {
     const normalizedExisting = existing.trim();
     if (!normalizedExisting) {
-      return normalizedInstruction;
+      return instructionMessage;
     }
-    return `${normalizedExisting}
-
-${normalizedInstruction}`;
+    return [normalizedExisting, instructionMessage];
   }
   if (Array.isArray(existing)) {
-    return [...existing, normalizedInstruction];
+    return [...existing, instructionMessage];
   }
-  return [existing, normalizedInstruction];
+  return [existing, instructionMessage];
 }
 __name(mergeFinalResponseInstructionAfterUserMessage, "mergeFinalResponseInstructionAfterUserMessage");
 function tryParseJsonText(text) {
