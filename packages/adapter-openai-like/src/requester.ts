@@ -34,6 +34,16 @@ import { RunnableConfig } from '@langchain/core/runnables'
 import { hashString } from 'koishi-plugin-chatluna/utils/string'
 import type {} from 'koishi-plugin-chatluna-storage-service'
 
+function isResponsesRequestMode(params: ModelRequestParams) {
+    const override = params.overrideRequestParams
+    return (
+        override != null &&
+        typeof override === 'object' &&
+        !Array.isArray(override) &&
+        override['qqbot_request_mode'] === 'responses'
+    )
+}
+
 export class OpenAIRequester
     extends ModelRequester
     implements EmbeddingsRequester, RerankerRequester
@@ -48,9 +58,11 @@ export class OpenAIRequester
     }
 
     async completion(params: ModelRequestParams): Promise<ChatGeneration> {
+        const shouldUseResponses = isResponsesRequestMode(params)
         if (
             !this._pluginConfig.nonStreaming &&
-            !this._pluginConfig.responseApi
+            !this._pluginConfig.responseApi &&
+            !shouldUseResponses
         ) {
             return super.completion(params)
         }
@@ -63,7 +75,7 @@ export class OpenAIRequester
             this
         )
 
-        if (this._pluginConfig.responseApi) {
+        if (this._pluginConfig.responseApi || shouldUseResponses) {
             return responseApiCompletion(
                 requestContext,
                 params,
@@ -120,7 +132,7 @@ export class OpenAIRequester
             this
         )
 
-        if (this._pluginConfig.responseApi) {
+        if (this._pluginConfig.responseApi || isResponsesRequestMode(params)) {
             yield* responseApiCompletionStream(
                 requestContext,
                 params,

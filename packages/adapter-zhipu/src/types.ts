@@ -175,6 +175,13 @@ export type ChatCompletionResponseMessageRoleEnum =
     | 'tool'
 
 export interface ZhipuClientConfig extends ClientConfig {
+    apiKey: string
+    apiEndpoint?: string
+    platform: string
+    chatLimit: ClientConfig['chatLimit']
+    timeout: number
+    maxRetries: number
+    concurrentMaxSize: number
     webSearch?: boolean
     retrieval?: string[]
     knowledgePromptTemplate?: string

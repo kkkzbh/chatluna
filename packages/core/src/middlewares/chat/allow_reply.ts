@@ -19,6 +19,10 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
 
             context.options.reply_status = false
 
+            if (await ctx.chatluna.resolveAllowReply({ session, context })) {
+                return await checkReplyPermission()
+            }
+
             // 黑名单检查
             if ((await session.resolve(config.blackList)) === 1) {
                 context.message = session.text('chatluna.block_message')

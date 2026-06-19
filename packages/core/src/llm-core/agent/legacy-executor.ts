@@ -3,7 +3,8 @@ import {
     AIMessage,
     AIMessageChunk,
     BaseMessage,
-    HumanMessage
+    HumanMessage,
+    SystemMessage
 } from '@langchain/core/messages'
 import { isDirectToolOutput } from '@langchain/core/messages/tool'
 import { OutputParserException } from '@langchain/core/output_parsers'
@@ -161,13 +162,14 @@ async function plan(
     scratchpad: ScratchpadEntry[],
     config: RunnableConfig | undefined
 ) {
+    const planningConfig = buildAgentPlanningConfig(input, config)
     const stream = await agent.stream(
         {
             ...input,
             steps,
             scratchpadEntries: scratchpad
         },
-        config
+        planningConfig
     )
 
     let result: AgentAction[] | AgentAction | AgentFinish | undefined
@@ -191,6 +193,150 @@ async function plan(
     return Array.isArray(result) ? result : [result]
 }
 
+const AGENT_MODEL_CALL_OPTION_KEYS = [
+    'model',
+    'temperature',
+    'maxTokens',
+    'maxTokenLimit',
+    'topP',
+    'frequencyPenalty',
+    'presencePenalty',
+    'n',
+    'logitBias',
+    'id',
+    'variables',
+    'variables_hide',
+    'overrideRequestParams',
+    'stream',
+    'tool_choice',
+    'stop',
+    'timeout'
+] as const
+
+function buildAgentPlanningConfig(
+    input: ChainValues,
+    config: RunnableConfig | undefined
+): RunnableConfig | undefined {
+    const modelCallOptions: Record<string, unknown> = {}
+
+    for (const key of AGENT_MODEL_CALL_OPTION_KEYS) {
+        const value = input[key]
+        if (value !== undefined) {
+            modelCallOptions[key] = value
+        }
+    }
+
+    if (Object.keys(modelCallOptions).length < 1) {
+        return config
+    }
+
+    return {
+        ...(config ?? {}),
+        ...modelCallOptions
+    }
+}
+
+type AgentFinalResponseContract = {
+    schema: Record<string, unknown> | null
+    name?: string
+    instruction?: string
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+    return value != null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function normalizeFinalResponseContract(
+    rawContract: unknown
+): AgentFinalResponseContract | null {
+    if (!isPlainRecord(rawContract)) {
+        return null
+    }
+
+    const rawSchema = rawContract['schema']
+    const schema = isPlainRecord(rawSchema) ? rawSchema : null
+    const instruction =
+        typeof rawContract['instruction'] === 'string' &&
+        rawContract['instruction'].trim().length > 0
+            ? rawContract['instruction'].trim()
+            : undefined
+    const name =
+        typeof rawContract['name'] === 'string' &&
+        rawContract['name'].trim().length > 0
+            ? rawContract['name'].trim()
+            : undefined
+
+    if (schema == null && instruction == null) {
+        return null
+    }
+
+    return {
+        schema,
+        name,
+        instruction
+    }
+}
+
+function buildFinalResponseOverrideRequestParams(
+    contract: AgentFinalResponseContract,
+    rawOverride: unknown
+) {
+    const base = isPlainRecord(rawOverride)
+        ? { ...(rawOverride as Record<string, unknown>) }
+        : {}
+
+    if (!isPlainRecord(contract.schema)) {
+        return base
+    }
+
+    if (base['qqbot_request_mode'] === 'responses') {
+        return {
+            ...base,
+            text: {
+                format: {
+                    type: 'json_schema',
+                    name: contract.name ?? 'qqbot_structured_reply_v1',
+                    strict: true,
+                    schema: contract.schema
+                }
+            }
+        }
+    }
+
+    return {
+        ...base,
+        response_format: {
+            type: 'json_schema',
+            json_schema: {
+                name: contract.name ?? 'qqbot_structured_reply_v1',
+                strict: true,
+                schema: contract.schema
+            }
+        }
+    }
+}
+
+function mergeFinalResponseInstructionAfterUserMessage(
+    existing: unknown,
+    instruction: string | undefined
+): unknown {
+    const normalizedInstruction = instruction?.trim()
+    if (!normalizedInstruction) {
+        return existing
+    }
+
+    const instructionMessage = new SystemMessage(normalizedInstruction)
+    if (existing == null) {
+        return instructionMessage
+    }
+
+    if (Array.isArray(existing)) {
+        return [...existing, instructionMessage]
+    }
+
+    return [existing, instructionMessage]
+}
+
 // eslint-disable-next-line generator-star-spacing
 export async function* runAgent(
     options: RunAgentOptions
@@ -210,6 +356,9 @@ export async function* runAgent(
     )
     const maxIterations = options.maxIterations ?? 105
     const handleParsingErrors = options.handleParsingErrors ?? true
+    const finalResponseContract = normalizeFinalResponseContract(
+        options.input['qqbot_final_response_contract']
+    )
 
     let iterations = 0
 
@@ -237,10 +386,27 @@ export async function* runAgent(
 
         let output: AgentAction[] | AgentFinish
 
+        const planningInput =
+            finalResponseContract != null
+                ? {
+                      ...options.input,
+                      after_user_message:
+                          mergeFinalResponseInstructionAfterUserMessage(
+                              options.input['after_user_message'],
+                              finalResponseContract.instruction
+                          ),
+                      overrideRequestParams:
+                          buildFinalResponseOverrideRequestParams(
+                              finalResponseContract,
+                              options.input['overrideRequestParams']
+                          )
+                  }
+                : options.input
+
         try {
             output = await plan(
                 options.agent,
-                options.input,
+                planningInput,
                 steps,
                 scratchpad,
                 config

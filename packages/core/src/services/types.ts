@@ -26,6 +26,7 @@ import {
 import type { ChatInterface } from '../llm-core/chat/app'
 import { MessageQueue } from '../llm-core/agent/types'
 import type { PostHandler } from '../utils/types'
+import type { ChainMiddlewareContext } from '../chains'
 import type {
     ToolMaskArg,
     ToolMaskResolver
@@ -119,6 +120,15 @@ export interface ChatCallbackProviderInput {
 export type ChatCallbacksProvider = (
     input: ChatCallbackProviderInput
 ) => Awaitable<Callbacks | undefined>
+
+export interface AllowReplyResolverArg {
+    session: Session
+    context: ChainMiddlewareContext
+}
+
+export type AllowReplyResolver = (
+    arg: AllowReplyResolverArg
+) => Awaitable<boolean | void>
 
 export interface RuntimeConversationEntry {
     conversation: ConversationRecord

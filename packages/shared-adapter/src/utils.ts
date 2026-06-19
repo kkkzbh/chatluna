@@ -138,6 +138,7 @@ export async function langchainMessageToResponseInput(
     model?: string,
     supportImageInputType?: boolean
 ): Promise<ResponseInputItem[]> {
+    const toolOutputCallIds = resolveResponseToolOutputCallIds(messages)
     const chatMessages = await langchainMessageToOpenAIMessage(
         messages,
         plugin,
@@ -145,12 +146,16 @@ export async function langchainMessageToResponseInput(
         supportImageInputType
     )
     const result: ResponseInputItem[] = []
+    const emittedToolCallIds = new Set<string>()
+    let toolOutputIndex = 0
 
     for (const msg of chatMessages) {
         if (msg.role === 'tool') {
+            const callId = toolOutputCallIds[toolOutputIndex++]
+            if (callId == null || !emittedToolCallIds.has(callId)) continue
             result.push({
                 type: 'function_call_output',
-                call_id: msg.tool_call_id,
+                call_id: callId,
                 output: responseInputContent(msg.content)
             })
             continue
@@ -191,9 +196,35 @@ export async function langchainMessageToResponseInput(
                 status: 'completed' as const
             }))
         )
+        for (const toolCall of msg.tool_calls) {
+            emittedToolCallIds.add(toolCall.id)
+        }
     }
 
     return result
+}
+
+function resolveResponseToolOutputCallIds(
+    messages: BaseMessage[]
+): Array<string | undefined> {
+    const assistantToolCallIds = messages.flatMap((message) => {
+        if (message.getType() !== 'ai') return []
+        const toolCalls = (message as AIMessage).tool_calls
+        if (!Array.isArray(toolCalls)) return []
+        return toolCalls
+            .map((toolCall) => toolCall.id)
+            .filter((id): id is string => typeof id === 'string' && id.length > 0)
+    })
+
+    return messages
+        .filter((message) => message.getType() === 'tool')
+        .map((message) => {
+            const callId = (message as ToolMessage).tool_call_id
+            if (typeof callId === 'string' && callId.length > 0) return callId
+            return assistantToolCallIds.length === 1
+                ? assistantToolCallIds[0]
+                : undefined
+        })
 }
 
 export function responseInputContent(
@@ -325,7 +356,7 @@ export async function langchainMessageToOpenAIMessage(
         const role = messageTypeToOpenAIRole(rawMessage.getType())
 
         const msg = {
-            content: rawMessage.content === '' ? null : rawMessage.content,
+            content: rawMessage.content == null ? '' : rawMessage.content,
             name:
                 role === 'assistant' || role === 'tool'
                     ? rawMessage.name
@@ -370,8 +401,9 @@ export async function langchainMessageToOpenAIMessage(
             const supportsImage =
                 supportImageInput(normalizedModel ?? '') ||
                 supportImageInputType === true
+            const contentParts = msg.content as MessageContentComplex[]
             const mappedContent = await Promise.all(
-                msg.content.map(async (content) => {
+                contentParts.map(async (content) => {
                     if (isMessageContentImageUrl(content)) {
                         if (!supportsImage) {
                             logger.warn(
@@ -383,7 +415,7 @@ export async function langchainMessageToOpenAIMessage(
                             const url = await fetchImageUrl(plugin, content)
                             return {
                                 type: 'image_url',
-                                image_url: { url, detail: 'low' }
+                                image_url: { url, detail: 'high' }
                             }
                         } catch {
                             return null

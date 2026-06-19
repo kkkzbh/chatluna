@@ -29,12 +29,24 @@ import {
 import {
     BaseMessageChunk,
     MessageContent,
-    MessageContentComplex,
     UsageMetadata
 } from '@langchain/core/messages'
 import { AgentAction } from 'koishi-plugin-chatluna/llm-core/agent'
 
 let logger: Logger
+
+type SessionWithReplyRequestModelHandler = Session & {
+    state?: Record<string, unknown> & {
+        qqReplyTransport?: {
+            handleRequestModelError?: (error: unknown) => Promise<void> | void
+        }
+    }
+}
+
+type InputContentMeta = {
+    hasImageInput?: boolean
+    imageCount?: number
+}
 
 export function apply(ctx: Context, config: Config, chain: ChatChain) {
     logger = createLogger(ctx)
@@ -81,6 +93,15 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             }
 
             const originContent = inputMessage.content
+            const originMeta = resolveInputContentMeta(
+                originContent,
+                inputMessage.additional_kwargs?.qqbot_input_content_meta
+            )
+
+            inputMessage.additional_kwargs = {
+                ...(inputMessage.additional_kwargs ?? {}),
+                qqbot_input_content_meta: originMeta
+            }
 
             if (presetTemplate.formatUserPromptString != null) {
                 inputMessage.content = await processUserPrompt(
@@ -91,6 +112,8 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                     conversation
                 )
             }
+
+            ensureImageContentIntegrity(inputMessage.content, originMeta)
 
             const bufferText = new StreamingBufferText(
                 3,
@@ -179,7 +202,13 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                     streamPromise
                 ])
             } catch (e) {
-                if (e?.message?.includes('output values have 1 keys')) {
+                await maybeHandleReplyRequestModelError(
+                    session as SessionWithReplyRequestModelHandler,
+                    e
+                )
+                if (
+                    (e as Error)?.message?.includes('output values have 1 keys')
+                ) {
                     throw new ChatLunaError(
                         ChatLunaErrorCode.MODEL_RESPONSE_IS_EMPTY
                     )
@@ -204,6 +233,17 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             return ChainMiddlewareRunStatus.CONTINUE
         })
         .after('lifecycle-request_conversation')
+}
+
+async function maybeHandleReplyRequestModelError(
+    session: SessionWithReplyRequestModelHandler,
+    error: unknown
+) {
+    const handler = session.state?.qqReplyTransport?.handleRequestModelError
+    if (typeof handler !== 'function') {
+        return
+    }
+    await handler(error)
 }
 
 function createChatCallbacks(
@@ -271,6 +311,14 @@ function createToolCallHandler(
         logger.debug(`Call tool: ${tool} with ${JSON.stringify(arg)}`)
 
         if (
+            context.options.conversation?.conversation?.chatMode === 'plugin' &&
+            context.options.inputMessage?.additional_kwargs
+                ?.qqbot_reply_mode === 'agent'
+        ) {
+            return
+        }
+
+        if (
             content != null &&
             ((typeof content === 'string' && content.trim().length > 0) ||
                 (Array.isArray(content) && content.length > 0))
@@ -319,9 +367,8 @@ async function processUserPrompt(
         ).then((result) => result.text)
     }
 
-    const sortedContent = sortContentByType(originContent)
     return await Promise.all(
-        sortedContent.map(async (message) =>
+        originContent.map(async (message) =>
             message.type === 'text'
                 ? {
                       type: 'text',
@@ -338,13 +385,51 @@ async function processUserPrompt(
     )
 }
 
-function sortContentByType(content: MessageContentComplex[]) {
-    return [...content].sort((a, b) => {
-        if (a.type === b.type) return 0
-        if (a.type === 'text') return -1
-        if (b.type === 'text') return 1
-        return a.type < b.type ? -1 : 1
-    })
+function countImageParts(content: MessageContent) {
+    return Array.isArray(content)
+        ? content.filter((part) => part?.type === 'image_url').length
+        : 0
+}
+
+function resolveInputContentMeta(
+    content: MessageContent,
+    rawMeta: unknown
+): Required<InputContentMeta> {
+    const meta =
+        rawMeta != null && typeof rawMeta === 'object'
+            ? (rawMeta as InputContentMeta)
+            : {}
+
+    const imageCount = Math.max(
+        Number.isFinite(meta.imageCount) ? Number(meta.imageCount) : 0,
+        countImageParts(content)
+    )
+
+    return {
+        hasImageInput: Boolean(meta.hasImageInput) || imageCount > 0,
+        imageCount
+    }
+}
+
+function ensureImageContentIntegrity(
+    content: MessageContent,
+    meta: Required<InputContentMeta>
+) {
+    if (!meta.hasImageInput && meta.imageCount < 1) {
+        return
+    }
+
+    const currentImageCount = countImageParts(content)
+    if (currentImageCount > 0) {
+        return
+    }
+
+    throw new ChatLunaError(
+        ChatLunaErrorCode.UNKNOWN_ERROR,
+        new Error(
+            `Input image content was lost before model request (expected ${meta.imageCount} image part(s)).`
+        )
+    )
 }
 
 async function setupRegularMessageStream(

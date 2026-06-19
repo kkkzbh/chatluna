@@ -54,7 +54,12 @@ import {
     ChatLunaErrorCode
 } from 'koishi-plugin-chatluna/utils/error'
 import { MessageTransformer } from './message_transform'
-import { ChatCallbackProviderInput, ChatCallbacksProvider } from './types'
+import type {
+    AllowReplyResolver,
+    AllowReplyResolverArg,
+    ChatCallbackProviderInput,
+    ChatCallbacksProvider
+} from './types'
 import { ConversationService } from './conversation'
 import { type ChatOptions, ConversationRuntime } from './conversation_runtime'
 import { chatLunaFetch, ws } from 'koishi-plugin-chatluna/utils/request'
@@ -72,6 +77,10 @@ import { RunnableConfig } from '@langchain/core/runnables'
 import type { Notifier } from '@koishijs/plugin-notifier'
 import { ChatLunaContextManagerService } from 'koishi-plugin-chatluna/llm-core/prompt'
 import { ChatLunaChatPrompt } from 'koishi-plugin-chatluna/llm-core/chain/prompt'
+import {
+    KoishiChatMessageHistory,
+    type ResearchReplyHistoryNormalizationResult
+} from 'koishi-plugin-chatluna/llm-core/memory/message'
 
 export class ChatLunaService extends Service<Config> {
     private _plugins: Record<string, ChatLunaPlugin> = {}
@@ -86,6 +95,10 @@ export class ChatLunaService extends Service<Config> {
     private readonly _conversation: ConversationService
     private readonly _conversationRuntime: ConversationRuntime
     private readonly _callbackProviders = new Set<ChatCallbacksProvider>()
+    private readonly _allowReplyResolvers = new Map<
+        string,
+        AllowReplyResolver
+    >()
     declare public config: Config
 
     declare public currentConfig: Config
@@ -216,6 +229,63 @@ export class ChatLunaService extends Service<Config> {
 
     async resolveToolMask(arg: ToolMaskArg) {
         return this._platformService.resolveToolMask(arg)
+    }
+
+    registerAllowReplyResolver(name: string, resolver: AllowReplyResolver) {
+        this._allowReplyResolvers.set(name, resolver)
+
+        return () => {
+            this._allowReplyResolvers.delete(name)
+        }
+    }
+
+    async resolveAllowReply(arg: AllowReplyResolverArg) {
+        for (const resolver of this._allowReplyResolvers.values()) {
+            if (await resolver(arg)) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    async normalizeResearchReplyHistory(
+        room: { conversationId?: unknown },
+        finalVisibleText: string,
+        updatedAt?: Date
+    ): Promise<ResearchReplyHistoryNormalizationResult> {
+        const conversationId =
+            typeof room?.conversationId === 'string'
+                ? room.conversationId.trim()
+                : ''
+
+        if (conversationId.length < 1) {
+            throw new Error('normalizeResearchReplyHistory requires conversationId.')
+        }
+
+        const history = new KoishiChatMessageHistory(
+            this.ctx,
+            conversationId,
+            10000,
+            this
+        )
+
+        return history.normalizeResearchReplyHistory(
+            finalVisibleText,
+            updatedAt
+        )
+    }
+
+    async normalizeReplyAgentHistory(
+        room: { conversationId?: unknown },
+        finalVisibleText: string,
+        updatedAt?: Date
+    ): Promise<ResearchReplyHistoryNormalizationResult> {
+        return this.normalizeResearchReplyHistory(
+            room,
+            finalVisibleText,
+            updatedAt
+        )
     }
 
     getPlugin(platformName: string) {

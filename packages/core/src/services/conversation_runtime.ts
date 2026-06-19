@@ -17,6 +17,7 @@ import { ConversationRecord, Message } from '../types'
 import type { PostHandler } from '../utils/types'
 import { ActiveRequest, ChatEvents, RuntimeConversationEntry } from './types'
 import { type UsageMetadata } from '@langchain/core/messages'
+import { serializeQqbotHumanMessageContent } from '../utils/qqbot_speaker'
 
 export interface ChatOptions {
     event?: ChatEvents
@@ -531,7 +532,10 @@ function buildHumanMessage(
     conversation: ConversationRecord
 ) {
     const humanMessage = new HumanMessage({
-        content: message.content,
+        content: serializeQqbotHumanMessageContent(
+            message.content,
+            message.additional_kwargs
+        ),
         name: message.name,
         id: session.userId,
         additional_kwargs: {

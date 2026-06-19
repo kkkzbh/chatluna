@@ -21,6 +21,40 @@ function getTargetConversation(context: ChainMiddlewareContext) {
     )
 }
 
+function isCompleteResolution(
+    resolved: ChainMiddlewareContext['options']['conversation']
+): resolved is ConversationResolution {
+    return resolved?.conversation != null && resolved.constraint != null
+}
+
+async function resolveRollbackTarget(
+    ctx: Context,
+    session: Session,
+    context: ChainMiddlewareContext
+) {
+    const targetConversation = getTargetConversation(context)
+    const current = context.options.conversation
+
+    if (targetConversation == null && isCompleteResolution(current)) {
+        return current
+    }
+
+    return ctx.chatluna.conversation.resolveConversation(session, {
+        conversationId:
+            targetConversation == null
+                ? (current?.conversationId ??
+                  current?.conversation?.id ??
+                  undefined)
+                : undefined,
+        targetConversation,
+        presetLane: context.options.presetLane,
+        allPresetLanes: context.options.allPresetLanes,
+        permission: 'manage',
+        useRoutePresetLane: context.options.presetLane == null,
+        mode: 'target'
+    })
+}
+
 export function apply(ctx: Context, config: Config, chain: ChatChain) {
     chain
         .middleware('rollback_chat', async (session, context) => {
@@ -29,22 +63,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             if (command !== 'rollback') return ChainMiddlewareRunStatus.SKIPPED
 
             const rollbackRound = context.options.rollback_round ?? 1
-            const targetConversation = getTargetConversation(context)
-            const resolved =
-                targetConversation == null
-                    ? context.options.conversation
-                    : await ctx.chatluna.conversation.resolveConversation(
-                          session,
-                          {
-                              targetConversation,
-                              presetLane: context.options.presetLane,
-                              allPresetLanes: context.options.allPresetLanes,
-                              permission: 'manage',
-                              useRoutePresetLane:
-                                  context.options.presetLane == null,
-                              mode: 'target'
-                          }
-                      )
+            const resolved = await resolveRollbackTarget(ctx, session, context)
             const conversation = resolved.conversation
 
             if (conversation == null) {

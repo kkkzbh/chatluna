@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
+import './services/types'
 import { Context, Logger, Time, User } from 'koishi'
 import { ChatLunaService } from 'koishi-plugin-chatluna/services/chat'
 import { forkScopeToDisposable } from 'koishi-plugin-chatluna/utils/koishi'

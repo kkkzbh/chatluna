@@ -70,6 +70,28 @@ export interface ResponseToolOptions {
     builtinTools?: ResponseBuiltinTool[]
 }
 
+function sanitizeOverrideRequestParams(
+    overrideRequestParams: ModelRequestParams['overrideRequestParams']
+) {
+    if (
+        overrideRequestParams == null ||
+        typeof overrideRequestParams !== 'object' ||
+        Array.isArray(overrideRequestParams)
+    ) {
+        return undefined
+    }
+
+    const sanitized: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(overrideRequestParams)) {
+        if (key.startsWith('qqbot_')) {
+            continue
+        }
+        sanitized[key] = value
+    }
+
+    return sanitized
+}
+
 export async function buildChatCompletionParams(
     params: ModelRequestParams,
     plugin: ChatLunaPlugin,
@@ -133,7 +155,11 @@ export async function buildChatCompletionParams(
         delete base.n
         delete base.top_p
     }
-    return deepAssign({}, base, params.overrideRequestParams ?? {})
+    return deepAssign(
+        {},
+        base,
+        sanitizeOverrideRequestParams(params.overrideRequestParams) ?? {}
+    )
 }
 
 export async function buildResponseParams(
@@ -182,7 +208,11 @@ export async function buildResponseParams(
         parallel_tool_calls: true
     }
 
-    return deepAssign({}, base, params.overrideRequestParams ?? {})
+    return deepAssign(
+        {},
+        base,
+        sanitizeOverrideRequestParams(params.overrideRequestParams) ?? {}
+    )
 }
 
 // eslint-disable-next-line generator-star-spacing

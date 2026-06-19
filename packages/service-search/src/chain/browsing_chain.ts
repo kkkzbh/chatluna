@@ -36,11 +36,13 @@ import {
     ChatLunaErrorCode
 } from 'koishi-plugin-chatluna/utils/error'
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
-import { ChatLunaPromptRenderService } from 'koishi-plugin-chatluna/services/chat'
+import type { ChatLunaService } from 'koishi-plugin-chatluna/services/chat'
 import { ComputedRef, Ref } from 'koishi-plugin-chatluna'
 import { BrowserManager } from '../tools/browser/manager'
 
 // github.com/langchain-ai/weblangchain/blob/main/nextjs/app/api/chat/stream_log/route.ts#L81
+
+type ChatLunaPromptRenderService = ChatLunaService['promptRenderer']
 
 export interface ChatLunaBrowsingChainInput {
     botName: string

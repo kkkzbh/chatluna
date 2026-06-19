@@ -37,6 +37,28 @@ import {
 } from 'koishi-plugin-chatluna/utils/string'
 import type { ChatLunaContextManagerService } from 'koishi-plugin-chatluna/llm-core/prompt'
 
+function copyQqbotRequestExtensions(
+    requests: ChainValues,
+    message: BaseMessage
+) {
+    const kwargs = message.additional_kwargs
+    if (kwargs == null || typeof kwargs !== 'object' || Array.isArray(kwargs)) {
+        return
+    }
+
+    for (const key of [
+        'qqbot_final_response_contract',
+        'qqbot_final_response_schema',
+        'qqbot_final_response_instruction',
+        'overrideRequestParams'
+    ]) {
+        const value = kwargs[key]
+        if (value !== undefined) {
+            requests[key] = value
+        }
+    }
+}
+
 export interface ChatLunaPluginChainInput {
     prompt: ChatLunaChatPrompt
     historyMemory: BufferMemory
@@ -236,6 +258,7 @@ export class ChatLunaPluginChain
             toolMask,
             agentContext: ctx
         }
+        copyQqbotRequestExtensions(requests, message)
 
         this._toolsRef.update(session, messages.concat(message), toolMask)
 
@@ -305,32 +328,28 @@ export class ChatLunaPluginChain
             )
         }
 
-        for (let i = 0; i < 3; i++) {
-            if (signal?.aborted) {
-                throw (
-                    signal.reason ??
-                    new ChatLunaError(ChatLunaErrorCode.ABORTED)
-                )
+        if (signal?.aborted) {
+            throw (
+                signal.reason ?? new ChatLunaError(ChatLunaErrorCode.ABORTED)
+            )
+        }
+
+        try {
+            response = await request()
+        } catch (e) {
+            if (
+                e instanceof ChatLunaError &&
+                e.errorCode === ChatLunaErrorCode.ABORTED
+            ) {
+                throw e
             }
 
-            try {
-                response = await request()
-                break
-            } catch (e) {
-                if (
-                    e instanceof ChatLunaError &&
-                    e.errorCode === ChatLunaErrorCode.ABORTED
-                ) {
-                    throw e
-                }
-
-                if ((e as Error)?.message?.includes('Aborted')) {
-                    throw new ChatLunaError(ChatLunaErrorCode.ABORTED)
-                }
-
-                logger.error(e)
-                error = e
+            if ((e as Error)?.message?.includes('Aborted')) {
+                throw new ChatLunaError(ChatLunaErrorCode.ABORTED)
             }
+
+            logger.error(e)
+            error = e
         }
 
         await events?.['llm-used-token-count']?.(usedToken)

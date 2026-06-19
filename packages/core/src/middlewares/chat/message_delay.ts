@@ -11,6 +11,7 @@ import {
 import { randomUUID } from 'crypto'
 import { HumanMessage, MessageContentComplex } from '@langchain/core/messages'
 import type { ConversationRecord } from '../../types'
+import { serializeQqbotHumanMessageContent } from '../../utils/qqbot_speaker'
 
 let logger: Logger
 
@@ -339,7 +340,10 @@ function createPendingMessage(
     inputMessage: Message
 ) {
     return new HumanMessage({
-        content: inputMessage.content,
+        content: serializeQqbotHumanMessageContent(
+            inputMessage.content,
+            inputMessage.additional_kwargs
+        ),
         name:
             inputMessage.name ??
             session.author?.name ??
