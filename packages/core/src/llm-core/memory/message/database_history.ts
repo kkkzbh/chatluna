@@ -35,6 +35,17 @@ export interface ResearchReplyHistoryNormalizationResult {
     normalizedText: string
 }
 
+const TRANSIENT_ADDITIONAL_KWARG_KEYS = [
+    'qqbot_final_response_contract',
+    'qqbot_final_response_schema',
+    'qqbot_final_response_instruction',
+    'qqbot_input_content_meta',
+    'qqbot_override_request_params',
+    'qqbot_reply_mode',
+    'qqbot_request_budget_policy',
+    'overrideRequestParams'
+] as const
+
 export class KoishiChatMessageHistory extends BaseChatMessageHistory {
     // eslint-disable-next-line @typescript-eslint/naming-convention
     lc_namespace: string[] = ['llm-core', 'memory', 'message']
@@ -609,6 +620,9 @@ async function serializeMessage(
     delete additionalArgs['preset']
     delete additionalArgs['raw_content']
     delete additionalArgs['type']
+    for (const key of TRANSIENT_ADDITIONAL_KWARG_KEYS) {
+        delete additionalArgs[key]
+    }
 
     if (Object.keys(additionalArgs).length === 0) {
         additionalArgs = null
