@@ -2,6 +2,7 @@
 
 import { createHash } from 'crypto'
 import { assert } from 'chai'
+import { h } from 'koishi'
 import { ChainMiddlewareRunStatus, ChatChain } from '../src/chains/chain'
 import { apply as applyRead } from '../src/middlewares/chat/read_chat_message'
 import { apply as applyMessageDelay } from '../src/middlewares/chat/message_delay'
@@ -511,6 +512,84 @@ it('transform_chat_message continues when conversation resolution stopped earlie
 
         assert.equal(status, ChainMiddlewareRunStatus.CONTINUE)
         assert.equal(calls, 0)
+    } finally {
+        await app.stop()
+    }
+})
+
+it('transform_chat_message preserves self mentions alongside group member mentions', async () => {
+    const { app, ctx } = await createMemoryService()
+
+    try {
+        const session = {
+            ...createSession({
+                platform: 'onebot',
+                selfId: '2219854433',
+                guildId: '1019832161',
+                channelId: '1019832161'
+            }),
+            bot: {
+                selfId: '2219854433'
+            },
+            elements: [
+                h('at', { id: '3623807220', name: '24软工王碧辉' }),
+                h.text(' '),
+                h('at', { id: '2219854433', name: '小祥' }),
+                h.text(' 再评价一下这个')
+            ]
+        } as any
+        let read: any
+        let transform: any
+
+        applyRead(
+            ctx as never,
+            {
+                includeQuoteReply: false,
+                attachForwardMsgIdToContext: false
+            } as never,
+            {
+                middleware: (name, fn) => {
+                    if (name === 'read_chat_message') {
+                        read = fn as never
+                    }
+                    if (name === 'transform_chat_message') {
+                        transform = fn as never
+                    }
+
+                    return {
+                        after() {
+                            return this
+                        },
+                        before() {
+                            return this
+                        }
+                    }
+                }
+            } as never
+        )
+
+        const context: any = {
+            options: {
+                conversation: {
+                    constraint: {},
+                    conversation: createConversation()
+                }
+            }
+        }
+
+        assert.equal(
+            await read(session, context),
+            ChainMiddlewareRunStatus.CONTINUE
+        )
+        assert.equal(
+            await transform(session, context),
+            ChainMiddlewareRunStatus.CONTINUE
+        )
+
+        assert.equal(
+            context.options.inputMessage.content,
+            '<at name="24软工王碧辉" id="3623807220"/> <at name="小祥" id="2219854433"/> 再评价一下这个'
+        )
     } finally {
         await app.stop()
     }

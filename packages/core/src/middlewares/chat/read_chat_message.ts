@@ -200,12 +200,10 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             const name = element.attrs['name']
             const id = element.attrs['id']
 
-            if (id !== session.bot.selfId) {
-                addMessageContent(
-                    message,
-                    `<at ${name != null ? `name="${name}"` : ''} id="${id}"/>`
-                )
-            }
+            addMessageContent(
+                message,
+                `<at ${name != null ? `name="${name}"` : ''} id="${id}"/>`
+            )
         }
     )
 
