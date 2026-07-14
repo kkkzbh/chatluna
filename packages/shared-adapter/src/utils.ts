@@ -179,7 +179,10 @@ export async function langchainMessageToResponseInput(
                     msg.role === 'user'
                         ? msg.role
                         : 'user',
-                content: responseInputContent(msg.content)
+                content: responseInputContent(
+                    msg.content,
+                    msg.role === 'assistant'
+                )
             })
         }
 
@@ -206,14 +209,16 @@ export async function langchainMessageToResponseInput(
 
 function resolveResponseToolOutputCallIds(
     messages: BaseMessage[]
-): Array<string | undefined> {
+): (string | undefined)[] {
     const assistantToolCallIds = messages.flatMap((message) => {
         if (message.getType() !== 'ai') return []
         const toolCalls = (message as AIMessage).tool_calls
         if (!Array.isArray(toolCalls)) return []
         return toolCalls
             .map((toolCall) => toolCall.id)
-            .filter((id): id is string => typeof id === 'string' && id.length > 0)
+            .filter(
+                (id): id is string => typeof id === 'string' && id.length > 0
+            )
     })
 
     return messages
@@ -228,7 +233,8 @@ function resolveResponseToolOutputCallIds(
 }
 
 export function responseInputContent(
-    content: ChatCompletionResponseMessage['content']
+    content: ChatCompletionResponseMessage['content'],
+    assistant = false
 ): string | ResponseInputContent[] {
     if (typeof content === 'string') return content
     if (!Array.isArray(content)) return ''
@@ -238,7 +244,7 @@ export function responseInputContent(
             if (part.type === 'text') {
                 const text = part.text as string
                 return {
-                    type: 'input_text',
+                    type: assistant ? 'output_text' : 'input_text',
                     text
                 } satisfies ResponseInputContent
             }

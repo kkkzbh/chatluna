@@ -54,6 +54,10 @@ export type ResponseInputContent =
           text: string
       }
     | {
+          type: 'output_text'
+          text: string
+      }
+    | {
           type: 'input_image'
           image_url: string
           detail?: 'low' | 'high' | 'auto' | 'original'
