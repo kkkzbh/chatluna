@@ -139,69 +139,115 @@ export async function langchainMessageToResponseInput(
     supportImageInputType?: boolean
 ): Promise<ResponseInputItem[]> {
     const toolOutputCallIds = resolveResponseToolOutputCallIds(messages)
-    const chatMessages = await langchainMessageToOpenAIMessage(
-        messages,
-        plugin,
-        model,
-        supportImageInputType
-    )
     const result: ResponseInputItem[] = []
     const emittedToolCallIds = new Set<string>()
     let toolOutputIndex = 0
+    const normalizedModel = model ? normalizeOpenAIModelName(model) : model
+    const supportsImage =
+        supportImageInput(normalizedModel ?? '') ||
+        supportImageInputType === true
 
-    for (const msg of chatMessages) {
-        if (msg.role === 'tool') {
+    for (const rawMessage of messages) {
+        const messageType = rawMessage.getType()
+
+        if (messageType === 'tool') {
             const callId = toolOutputCallIds[toolOutputIndex++]
             if (callId == null || !emittedToolCallIds.has(callId)) continue
+            const output = await responseInputContent(
+                rawMessage.content,
+                plugin,
+                normalizedModel,
+                supportsImage
+            )
+            if (!hasResponseContent(output)) continue
             result.push({
                 type: 'function_call_output',
                 call_id: callId,
-                output: responseInputContent(msg.content)
+                output
             })
             continue
         }
 
-        if (msg.role === 'function') {
+        if (messageType === 'function') {
+            const content = await responseInputContent(
+                rawMessage.content,
+                plugin,
+                normalizedModel,
+                supportsImage
+            )
+            if (!hasResponseContent(content)) continue
             result.push({
                 type: 'message',
                 role: 'user',
-                content: responseInputContent(msg.content)
+                content
             })
             continue
         }
 
-        if (msg.content != null && msg.content !== '') {
-            result.push({
-                type: 'message',
-                role:
-                    msg.role === 'system' ||
-                    msg.role === 'assistant' ||
-                    msg.role === 'user'
-                        ? msg.role
-                        : 'user',
-                content: responseInputContent(
-                    msg.content,
-                    msg.role === 'assistant'
-                )
-            })
-        }
+        if (messageType === 'ai') {
+            const content =
+                typeof rawMessage.content === 'string'
+                    ? rawMessage.content
+                    : rawMessage.content
+                          .filter(
+                              (
+                                  part
+                              ): part is MessageContentComplex & {
+                                  text: string
+                              } =>
+                                  part.type === 'text' &&
+                                  typeof part.text === 'string'
+                          )
+                          .map((part) => part.text)
+                          .filter((text) => text.length > 0)
+                          .join('\n')
+            if (content.length > 0) {
+                result.push({
+                    type: 'message',
+                    role: 'assistant',
+                    content
+                })
+            }
 
-        if (msg.role !== 'assistant' || !Array.isArray(msg.tool_calls)) {
+            const toolCalls = (rawMessage as AIMessage).tool_calls
+            if (!Array.isArray(toolCalls)) continue
+
+            for (const toolCall of toolCalls) {
+                const callId = toolCall.id?.trim()
+                const name = toolCall.name?.trim()
+                if (!callId || !name) {
+                    throw new Error(
+                        'Responses API tool calls require a call id and name.'
+                    )
+                }
+                result.push({
+                    type: 'function_call',
+                    call_id: callId,
+                    name,
+                    arguments: JSON.stringify(toolCall.args ?? {}),
+                    status: 'completed'
+                })
+                emittedToolCallIds.add(callId)
+            }
             continue
         }
 
-        result.push(
-            ...msg.tool_calls.map((toolCall) => ({
-                type: 'function_call' as const,
-                call_id: toolCall.id,
-                name: toolCall.function.name,
-                arguments: toolCall.function.arguments,
-                status: 'completed' as const
-            }))
+        if (messageType !== 'human' && messageType !== 'system') {
+            throw new Error(`Unknown message type: ${messageType}`)
+        }
+
+        const content = await responseInputContent(
+            rawMessage.content,
+            plugin,
+            normalizedModel,
+            supportsImage
         )
-        for (const toolCall of msg.tool_calls) {
-            emittedToolCallIds.add(toolCall.id)
-        }
+        if (!hasResponseContent(content)) continue
+        result.push({
+            type: 'message',
+            role: messageType === 'system' ? 'system' : 'user',
+            content
+        })
     }
 
     return result
@@ -232,52 +278,74 @@ function resolveResponseToolOutputCallIds(
         })
 }
 
-export function responseInputContent(
-    content: ChatCompletionResponseMessage['content'],
-    assistant = false
-): string | ResponseInputContent[] {
+function hasResponseContent(content: string | ResponseInputContent[]): boolean {
+    return content.length > 0
+}
+
+export async function responseInputContent(
+    content: BaseMessage['content'],
+    plugin: ChatLunaPlugin,
+    model: string | undefined,
+    supportsImage: boolean
+): Promise<string | ResponseInputContent[]> {
     if (typeof content === 'string') return content
     if (!Array.isArray(content)) return ''
 
-    return content
-        .map((part) => {
-            if (part.type === 'text') {
-                const text = part.text as string
-                return {
-                    type: assistant ? 'output_text' : 'input_text',
-                    text
-                } satisfies ResponseInputContent
+    const result: ResponseInputContent[] = []
+    for (const part of content) {
+        if (part.type === 'text' && typeof part.text === 'string') {
+            result.push({
+                type: 'input_text',
+                text: part.text
+            })
+            continue
+        }
+
+        if (isMessageContentImageUrl(part)) {
+            if (!supportsImage) {
+                logger.warn(
+                    `Model ${model} does not accept image input; dropping image content.`
+                )
+                continue
             }
 
-            if (part.type === 'image_url') {
-                const raw = part.image_url as
-                    | string
-                    | { url: string; detail?: 'low' | 'high' }
-                const imageUrl = typeof raw === 'string' ? raw : raw.url
+            try {
+                const imageUrl = await fetchImageUrl(plugin, part)
+                const raw = part.image_url
                 const detail = typeof raw === 'string' ? undefined : raw.detail
-
-                return {
+                result.push({
                     type: 'input_image',
                     image_url: imageUrl,
                     detail: detail ?? 'auto'
-                } satisfies ResponseInputContent
+                })
+            } catch (error) {
+                logger.warn(
+                    `Failed to prepare image input for model ${model}: ${error instanceof Error ? error.message : String(error)}`
+                )
             }
+            continue
+        }
 
-            if (part.type === 'file_url') {
-                const raw = part['file_url'] as
-                    | string
-                    | { url: string; filename?: string }
-                return {
-                    type: 'input_file',
-                    file_url: typeof raw === 'string' ? raw : raw.url,
-                    filename: typeof raw === 'string' ? undefined : raw.filename
-                } satisfies ResponseInputContent
-            }
+        if (part.type === 'file_url') {
+            const raw = part['file_url'] as
+                | string
+                | { url: string; filename?: string }
+            result.push({
+                type: 'input_file',
+                file_url: typeof raw === 'string' ? raw : raw.url,
+                filename: typeof raw === 'string' ? undefined : raw.filename
+            })
+            continue
+        }
 
-            // OpenAI Response API does not accept `input_audio` yet — drop it.
-            return undefined
-        })
-        .filter((part) => part != null)
+        if (isMessageContentAudio(part)) {
+            logger.warn(
+                `Model ${model} Responses request does not accept audio input; dropping audio content.`
+            )
+        }
+    }
+
+    return result
 }
 
 export function formatToolsToResponseTools(

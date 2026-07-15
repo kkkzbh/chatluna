@@ -54,10 +54,6 @@ export type ResponseInputContent =
           text: string
       }
     | {
-          type: 'output_text'
-          text: string
-      }
-    | {
           type: 'input_image'
           image_url: string
           detail?: 'low' | 'high' | 'auto' | 'original'
@@ -73,8 +69,13 @@ export type ResponseInputContent =
 export type ResponseInputItem =
     | {
           type: 'message'
-          role: 'system' | 'developer' | 'user' | 'assistant'
+          role: 'system' | 'developer' | 'user'
           content: string | ResponseInputContent[]
+      }
+    | {
+          type: 'message'
+          role: 'assistant'
+          content: string
       }
     | {
           type: 'function_call'
