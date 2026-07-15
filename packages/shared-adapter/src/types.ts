@@ -180,6 +180,14 @@ export type ResponseTool =
 export interface ResponseObject {
     id: string
     object: 'response'
+    status?:
+        | 'completed'
+        | 'failed'
+        | 'in_progress'
+        | 'cancelled'
+        | 'queued'
+        | 'incomplete'
+    incomplete_details?: { reason?: string } | null
     output_text?: string
     output?: ResponseOutputItem[]
     usage?: ResponseUsage

@@ -491,6 +491,14 @@ export async function responseToChatGeneration(
             new Error(response.error.message ?? JSON.stringify(response.error))
         )
     }
+    if (response.status === 'incomplete') {
+        throw new ChatLunaError(
+            ChatLunaErrorCode.API_REQUEST_FAILED,
+            new Error(
+                `Responses API returned an incomplete response: ${response.incomplete_details?.reason ?? 'unknown reason'}`
+            )
+        )
+    }
 
     const text = responseOutputText(response)
     const toolCalls = responseOutputToolCalls(response)
@@ -656,6 +664,14 @@ export async function* processResponseApiStream<
             }
 
             if (data.type === 'response.completed' && data.response) {
+                if (data.response.status === 'incomplete') {
+                    throw new ChatLunaError(
+                        ChatLunaErrorCode.API_REQUEST_FAILED,
+                        new Error(
+                            `Responses API returned an incomplete response: ${data.response.incomplete_details?.reason ?? 'unknown reason'}`
+                        )
+                    )
+                }
                 const usageMetadata = data.response.usage
                     ? openAIResponseUsageToUsageMetadata(data.response.usage)
                     : undefined
