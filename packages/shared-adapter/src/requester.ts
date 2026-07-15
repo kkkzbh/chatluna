@@ -39,7 +39,7 @@ import {
 } from './utils'
 import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
 import { Context } from 'koishi'
-import { AIMessageChunk } from '@langchain/core/messages'
+import { AIMessageChunk, type BaseMessage } from '@langchain/core/messages'
 import { Response } from 'undici/types/fetch'
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
 import { RunnableConfig } from '@langchain/core/runnables'
@@ -68,6 +68,140 @@ export type ResponseImageProvider = (
 export interface ResponseToolOptions {
     googleSearch?: boolean
     builtinTools?: ResponseBuiltinTool[]
+}
+
+interface RequiredToolWorkflow {
+    sequence: string[]
+    terminal: string
+}
+
+interface RequiredToolWorkflowState {
+    complete: boolean
+    nextTool?: string
+}
+
+function readRequiredToolWorkflow(
+    overrideRequestParams: ModelRequestParams['overrideRequestParams']
+): RequiredToolWorkflow | null {
+    if (
+        overrideRequestParams == null ||
+        typeof overrideRequestParams !== 'object' ||
+        Array.isArray(overrideRequestParams)
+    ) {
+        return null
+    }
+
+    const rawSequence = overrideRequestParams['qqbot_required_tool_sequence']
+    const rawTerminal = overrideRequestParams['qqbot_required_tool_terminal']
+    if (rawSequence === undefined && rawTerminal === undefined) return null
+    if (
+        !Array.isArray(rawSequence) ||
+        rawSequence.length === 0 ||
+        rawSequence.some(
+            (name) => typeof name !== 'string' || name.trim().length === 0
+        ) ||
+        typeof rawTerminal !== 'string' ||
+        rawTerminal.trim().length === 0
+    ) {
+        throw new Error('Required tool workflow metadata is malformed.')
+    }
+
+    const sequence = rawSequence.map((name) => name.trim())
+    const terminal = rawTerminal.trim()
+    if (
+        new Set(sequence).size !== sequence.length ||
+        sequence[sequence.length - 1] !== terminal
+    ) {
+        throw new Error(
+            'Required tool workflow must contain a unique sequence ending with its terminal tool.'
+        )
+    }
+    return { sequence, terminal }
+}
+
+function parseToolResult(content: BaseMessage['content']) {
+    if (typeof content !== 'string') return null
+    try {
+        const parsed = JSON.parse(content) as unknown
+        if (
+            parsed == null ||
+            typeof parsed !== 'object' ||
+            Array.isArray(parsed)
+        ) {
+            return null
+        }
+        const record = parsed as Record<string, unknown>
+        return record['error'] == null ? record : null
+    } catch {
+        return null
+    }
+}
+
+function resolveRequiredToolWorkflowState(
+    input: BaseMessage[],
+    workflow: RequiredToolWorkflow
+): RequiredToolWorkflowState {
+    let currentHumanIndex = -1
+    for (let index = input.length - 1; index >= 0; index -= 1) {
+        const message = input[index]
+        const messageWorkflow = readRequiredToolWorkflow(
+            message?.additional_kwargs?.['overrideRequestParams']
+        )
+        if (
+            message?.getType() === 'human' &&
+            messageWorkflow?.terminal === workflow.terminal &&
+            messageWorkflow.sequence.length === workflow.sequence.length &&
+            messageWorkflow.sequence.every(
+                (name, step) => name === workflow.sequence[step]
+            )
+        ) {
+            currentHumanIndex = index
+            break
+        }
+    }
+    if (currentHumanIndex < 0) {
+        throw new Error(
+            'Required tool workflow cannot locate its marked human message.'
+        )
+    }
+
+    let step = 0
+    for (const message of input.slice(currentHumanIndex + 1)) {
+        if (message.getType() !== 'tool') continue
+        const expectedTool = workflow.sequence[step]
+        if (message.name !== expectedTool) continue
+        const result = parseToolResult(message.content)
+        if (!result) continue
+
+        if (expectedTool === workflow.terminal) {
+            if (result['valid'] === true) return { complete: true }
+            continue
+        }
+        step += 1
+    }
+
+    return { complete: false, nextTool: workflow.sequence[step] }
+}
+
+function resolveRequiredToolWorkflowStateForParams(
+    params: ModelRequestParams
+): RequiredToolWorkflowState | null {
+    const workflow = readRequiredToolWorkflow(params.overrideRequestParams)
+    if (!workflow) return null
+    return resolveRequiredToolWorkflowState(params.input, workflow)
+}
+
+function requireWorkflowTool(
+    params: ModelRequestParams,
+    state: RequiredToolWorkflowState
+): string {
+    const name = state.nextTool
+    if (!name || !(params.tools ?? []).some((tool) => tool.name === name)) {
+        throw new Error(
+            `Required tool workflow tool is unavailable: ${name ?? '<unknown>'}.`
+        )
+    }
+    return name
 }
 
 function sanitizeOverrideRequestParams(
@@ -155,11 +289,21 @@ export async function buildChatCompletionParams(
         delete base.n
         delete base.top_p
     }
-    return deepAssign(
+    const request = deepAssign(
         {},
         base,
         sanitizeOverrideRequestParams(params.overrideRequestParams) ?? {}
     )
+    const workflowState = resolveRequiredToolWorkflowStateForParams(params)
+    if (workflowState?.complete) {
+        request.tool_choice = 'none'
+        request.parallel_tool_calls = false
+    } else if (workflowState) {
+        const name = requireWorkflowTool(params, workflowState)
+        request.tool_choice = { type: 'function', function: { name } }
+        request.parallel_tool_calls = false
+    }
+    return request
 }
 
 export async function buildResponseParams(
@@ -208,11 +352,21 @@ export async function buildResponseParams(
         parallel_tool_calls: true
     }
 
-    return deepAssign(
+    const request = deepAssign(
         {},
         base,
         sanitizeOverrideRequestParams(params.overrideRequestParams) ?? {}
     )
+    const workflowState = resolveRequiredToolWorkflowStateForParams(params)
+    if (workflowState?.complete) {
+        request.tool_choice = 'none'
+        request.parallel_tool_calls = false
+    } else if (workflowState) {
+        const name = requireWorkflowTool(params, workflowState)
+        request.tool_choice = { type: 'function', name }
+        request.parallel_tool_calls = false
+    }
+    return request
 }
 
 // eslint-disable-next-line generator-star-spacing
