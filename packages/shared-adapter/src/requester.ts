@@ -11,7 +11,9 @@ import {
 import { ClientConfig } from 'koishi-plugin-chatluna/llm-core/platform/config'
 import {
     ChatLunaError,
-    ChatLunaErrorCode
+    ChatLunaErrorCode,
+    ChatLunaHttpError,
+    isRetryableHttpStatus
 } from 'koishi-plugin-chatluna/utils/error'
 import { SSEEvent, sseIterable } from 'koishi-plugin-chatluna/utils/sse'
 import {
@@ -64,6 +66,53 @@ interface RequestContext<
 export type ResponseImageProvider = (
     item: Extract<ResponseOutputItem, { type: 'image_generation_call' }>
 ) => Promise<string>
+
+function readProviderErrorFields(responseBody: string): {
+    providerCode?: string
+    providerMessage?: string
+} {
+    try {
+        const parsed = JSON.parse(responseBody) as {
+            error?: {
+                code?: unknown
+                message?: unknown
+            }
+        }
+        const code =
+            typeof parsed.error?.code === 'string'
+                ? parsed.error.code.trim()
+                : ''
+        const message =
+            typeof parsed.error?.message === 'string'
+                ? parsed.error.message.trim()
+                : ''
+        return {
+            ...(code ? { providerCode: code } : {}),
+            ...(message ? { providerMessage: message } : {})
+        }
+    } catch {
+        return {}
+    }
+}
+
+async function createHttpRequestError(
+    operation: string,
+    response: Response
+): Promise<ChatLunaError> {
+    const responseBody = await response.text()
+    return new ChatLunaError(
+        ChatLunaErrorCode.API_REQUEST_FAILED,
+        new ChatLunaHttpError({
+            operation,
+            status: response.status,
+            statusText: response.statusText,
+            responseBody,
+            ...readProviderErrorFields(responseBody)
+        }),
+        false,
+        isRetryableHttpStatus(response.status)
+    )
+}
 
 export interface ResponseToolOptions {
     googleSearch?: boolean
@@ -560,16 +609,9 @@ export async function processResponse<
     R extends ChatLunaPlugin.Config
 >(requestContext: RequestContext<T, R>, response: Response) {
     if (response.status !== 200) {
-        throw new ChatLunaError(
-            ChatLunaErrorCode.API_REQUEST_FAILED,
-            new Error(
-                'Error when calling completion, Status: ' +
-                    response.status +
-                    ' ' +
-                    response.statusText +
-                    ', Response: ' +
-                    (await response.text())
-            )
+        throw await createHttpRequestError(
+            'Error when calling completion',
+            response
         )
     }
 
@@ -708,16 +750,9 @@ export async function processResponseApiResponse(
     imageProvider?: ResponseImageProvider
 ) {
     if (response.status !== 200) {
-        throw new ChatLunaError(
-            ChatLunaErrorCode.API_REQUEST_FAILED,
-            new Error(
-                'Error when calling responses, Status: ' +
-                    response.status +
-                    ' ' +
-                    response.statusText +
-                    ', Response: ' +
-                    (await response.text())
-            )
+        throw await createHttpRequestError(
+            'Error when calling responses',
+            response
         )
     }
 

@@ -36,7 +36,8 @@ import {
 } from 'koishi-plugin-chatluna/llm-core/utils/count_tokens'
 import {
     ChatLunaError,
-    ChatLunaErrorCode
+    ChatLunaErrorCode,
+    isRetryableModelError
 } from 'koishi-plugin-chatluna/utils/error'
 import { chunkArray } from 'koishi-plugin-chatluna/llm-core/utils/chunk'
 import { encodingForModel } from '../utils/tiktoken'
@@ -473,7 +474,10 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
         maxAttempts: number
     ): boolean {
         return (
-            this._isAbortError(error) || hasChunk || attempt === maxAttempts - 1
+            this._isAbortError(error) ||
+            !isRetryableModelError(error) ||
+            hasChunk ||
+            attempt === maxAttempts - 1
         )
     }
 
@@ -675,6 +679,7 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
                     if (
                         options.stream ||
                         this._isAbortError(error) ||
+                        !isRetryableModelError(error) ||
                         attempt === maxAttempts - 1
                     ) {
                         throw error

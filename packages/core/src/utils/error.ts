@@ -11,10 +11,13 @@ export const setErrorFormatTemplate = (template: string | null) => {
 }
 
 export class ChatLunaError extends Error {
+    private userMessage?: string
+
     constructor(
         public errorCode: ChatLunaErrorCode = ChatLunaErrorCode.UNKNOWN_ERROR,
         public originError?: Error,
-        public isTimeout: boolean = false
+        public isTimeout: boolean = false,
+        public retryable?: boolean
     ) {
         super(ERROR_FORMAT_TEMPLATE.replace('%s', errorCode.toString()))
 
@@ -37,6 +40,63 @@ export class ChatLunaError extends Error {
     public toString() {
         return this.message
     }
+
+    public setUserMessage(message: string) {
+        const value = message.trim()
+        if (!value) {
+            throw new Error('ChatLuna user-visible error message cannot be empty.')
+        }
+        this.userMessage = value
+    }
+
+    public getUserMessage() {
+        return this.userMessage ?? this.message
+    }
+}
+
+export interface ChatLunaHttpErrorInput {
+    operation: string
+    status: number
+    statusText: string
+    responseBody: string
+    providerCode?: string
+    providerMessage?: string
+}
+
+export class ChatLunaHttpError extends Error {
+    readonly operation: string
+    readonly status: number
+    readonly statusText: string
+    readonly responseBody: string
+    readonly providerCode?: string
+    readonly providerMessage?: string
+
+    constructor(input: ChatLunaHttpErrorInput) {
+        super(
+            `${input.operation}, Status: ${input.status} ${input.statusText}, Response: ${input.responseBody}`
+        )
+        this.name = 'ChatLunaHttpError'
+        this.operation = input.operation
+        this.status = input.status
+        this.statusText = input.statusText
+        this.responseBody = input.responseBody
+        this.providerCode = input.providerCode
+        this.providerMessage = input.providerMessage
+    }
+}
+
+export function isRetryableHttpStatus(status: number): boolean {
+    return (
+        status === 408 ||
+        status === 409 ||
+        status === 425 ||
+        status === 429 ||
+        status >= 500
+    )
+}
+
+export function isRetryableModelError(error: unknown): boolean {
+    return !(error instanceof ChatLunaError && error.retryable === false)
 }
 
 export enum ChatLunaErrorCode {

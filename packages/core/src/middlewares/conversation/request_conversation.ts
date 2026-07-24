@@ -38,7 +38,9 @@ let logger: Logger
 type SessionWithReplyRequestModelHandler = Session & {
     state?: Record<string, unknown> & {
         qqReplyTransport?: {
-            handleRequestModelError?: (error: unknown) => Promise<void> | void
+            handleRequestModelError?: (
+                error: unknown
+            ) => Promise<string | void> | string | void
         }
     }
 }
@@ -202,10 +204,16 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                     streamPromise
                 ])
             } catch (e) {
-                await maybeHandleReplyRequestModelError(
+                const userMessage = await maybeHandleReplyRequestModelError(
                     session as SessionWithReplyRequestModelHandler,
                     e
                 )
+                if (
+                    typeof userMessage === 'string' &&
+                    e instanceof ChatLunaError
+                ) {
+                    e.setUserMessage(userMessage)
+                }
                 if (
                     (e as Error)?.message?.includes('output values have 1 keys')
                 ) {
@@ -238,12 +246,12 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
 async function maybeHandleReplyRequestModelError(
     session: SessionWithReplyRequestModelHandler,
     error: unknown
-) {
+): Promise<string | void> {
     const handler = session.state?.qqReplyTransport?.handleRequestModelError
     if (typeof handler !== 'function') {
         return
     }
-    await handler(error)
+    return handler(error)
 }
 
 function createChatCallbacks(

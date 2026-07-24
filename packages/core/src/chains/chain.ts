@@ -355,7 +355,7 @@ export class ChatChain {
             const message =
                 error.errorCode === ChatLunaErrorCode.ABORTED
                     ? session.text('chatluna.aborted')
-                    : error.message
+                    : error.getUserMessage()
             await this.sendMessage(session, message, undefined)
             return
         }
