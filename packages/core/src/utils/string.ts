@@ -7,7 +7,7 @@ import type { ConversationRecord } from '../types'
 import { gunzip, gzip } from 'zlib'
 import { promisify } from 'util'
 import { chatLunaFetch } from 'koishi-plugin-chatluna/utils/request'
-import { PresetTemplate } from 'koishi-plugin-chatluna/llm-core/prompt'
+import { CompiledPreset } from 'koishi-plugin-chatluna/llm-core/prompt'
 import crypto from 'node:crypto'
 import { transformMessageContentToElements } from 'koishi-plugin-chatluna/utils/koishi'
 import {
@@ -558,7 +558,7 @@ export function formatToolCall(tool: string, arg: any, log: string) {
 
 export async function formatUserPromptString(
     config: Config,
-    presetTemplate: PresetTemplate,
+    presetTemplate: CompiledPreset,
     session: Session,
     prompt: string,
     conversation: Pick<
@@ -567,7 +567,7 @@ export async function formatUserPromptString(
     >
 ) {
     return await session.app.chatluna.promptRenderer.renderTemplate(
-        presetTemplate.formatUserPromptString,
+        presetTemplate.inputFormat,
         {
             sender_id:
                 session.author?.user?.id ?? session.event?.user?.id ?? '0',

@@ -77,7 +77,16 @@ export function createManualAgent(
             }
         }
 
-        return { ...base, promptContent: preset.rawText }
+        return {
+            ...base,
+            promptContent: preset.messages
+                .map((message) =>
+                    typeof message.content === 'string'
+                        ? message.content
+                        : JSON.stringify(message.content)
+                )
+                .join('\n\n')
+        }
     }
 
     const content = input.promptContent ?? ''

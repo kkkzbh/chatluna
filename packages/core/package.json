@@ -22,6 +22,26 @@
             "import": "./lib/preset.mjs",
             "require": "./lib/preset.cjs"
         },
+        "./preset-schema": {
+            "types": "./lib/preset_schema.d.ts",
+            "import": "./lib/preset_schema.mjs",
+            "require": "./lib/preset_schema.cjs"
+        },
+        "./preset-compiler": {
+            "types": "./lib/preset_compiler.d.ts",
+            "import": "./lib/preset_compiler.mjs",
+            "require": "./lib/preset_compiler.cjs"
+        },
+        "./context-trace": {
+            "types": "./lib/context_trace.d.ts",
+            "import": "./lib/context_trace.mjs",
+            "require": "./lib/context_trace.cjs"
+        },
+        "./migration/preset-v2": {
+            "types": "./lib/migration/preset_v2.d.ts",
+            "import": "./lib/migration/preset_v2.mjs",
+            "require": "./lib/migration/preset_v2.cjs"
+        },
         "./chains": {
             "types": "./lib/chains/index.d.ts",
             "import": "./lib/chains/index.mjs",

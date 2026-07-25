@@ -24,13 +24,13 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
     )
 
     ctx.command(
-        'chatluna.preset.clone <originPreset:string> [newPresetName:string]',
+        'chatluna.preset.clone <originPreset:string> <newPresetId:string>',
         { authority: 3 }
     ).action(async ({ session }, preset, newPreset) => {
         await chain.receiveCommand(session, 'clone_preset', {
             clonePreset: {
                 name: preset,
-                newName: newPreset ?? preset + '(1)'
+                newName: newPreset
             }
         })
     })

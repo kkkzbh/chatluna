@@ -1,4 +1,4 @@
-import { BaseMessage, HumanMessage } from '@langchain/core/messages'
+import { HumanMessage } from '@langchain/core/messages'
 import {
     ChatLunaContextManagerService,
     PromptContextMiddleware
@@ -40,20 +40,15 @@ export function createAuthorsNoteMiddleware(): PromptContextMiddleware {
         runtime.usedTokens += tokenCount
 
         // Determine insertion position
-        const rawPosition = authorsNote.insertPosition ?? 'in_chat'
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const systemPrompts: BaseMessage[] =
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (runtime as any)._systemPrompts ?? []
+        const rawPosition = authorsNote.insertPosition ?? 'inChat'
 
         const insertPosition = findMessageIndex(
             runtime.result,
-            systemPrompts,
+            runtime.systemPrompts,
             rawPosition
         )
 
-        if (rawPosition === 'in_chat') {
+        if (rawPosition === 'inChat') {
             const safeInsertPosition = Math.max(
                 0,
                 insertPosition - (authorsNote.insertDepth ?? 0)

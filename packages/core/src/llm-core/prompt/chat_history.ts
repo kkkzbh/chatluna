@@ -7,6 +7,7 @@ import {
 import { countMessageTokens } from './system_prompts'
 import { logger } from 'koishi-plugin-chatluna'
 import { isChatLunaUserMessage } from 'koishi-plugin-chatluna/utils/langchain'
+import { traceMessage } from './context_trace'
 
 // ---------------------------------------------------------------------------
 // chat_history pipeline middleware
@@ -20,7 +21,9 @@ import { isChatLunaUserMessage } from 'koishi-plugin-chatluna/utils/langchain'
 export function createChatHistoryMiddleware(): PromptPipelineMiddleware {
     return async (runtime: PromptContextRuntime, next) => {
         const chatHistory = runtime.chatHistory ?? []
-        const documents = runtime.documents ?? []
+        const hasDocuments = (runtime.documentCollections ?? []).some(
+            (collection) => collection.documents.length > 0
+        )
 
         // Pre-account input tokens
         if (runtime.input) {
@@ -29,45 +32,81 @@ export function createChatHistoryMiddleware(): PromptPipelineMiddleware {
                 runtime.tokenCounter
             )
             runtime.usedTokens += inputTokens
+            traceMessage(runtime.trace, runtime.input, {
+                stage: 'input',
+                source: {
+                    kind: 'input',
+                    name: 'current user input',
+                    path: 'input'
+                },
+                tokenEstimate: inputTokens,
+                status: 'candidate'
+            })
         }
 
         // Pre-account scratchpad tokens
         if (runtime.agentScratchpad) {
             if (Array.isArray(runtime.agentScratchpad)) {
                 for (const msg of runtime.agentScratchpad) {
-                    runtime.usedTokens += await countMessageTokens(
+                    const tokens = await countMessageTokens(
                         msg,
                         runtime.tokenCounter
                     )
+                    runtime.usedTokens += tokens
+                    traceMessage(runtime.trace, msg, {
+                        stage: 'scratchpad',
+                        source: {
+                            kind: 'scratchpad',
+                            name: 'agent scratchpad',
+                            path: 'agent_scratchpad'
+                        },
+                        tokenEstimate: tokens,
+                        status: 'candidate'
+                    })
                 }
             } else {
-                runtime.usedTokens += await countMessageTokens(
+                const tokens = await countMessageTokens(
                     runtime.agentScratchpad as BaseMessage,
                     runtime.tokenCounter
+                )
+                runtime.usedTokens += tokens
+                traceMessage(
+                    runtime.trace,
+                    runtime.agentScratchpad as BaseMessage,
+                    {
+                        stage: 'scratchpad',
+                        source: {
+                            kind: 'scratchpad',
+                            name: 'agent scratchpad',
+                            path: 'agent_scratchpad'
+                        },
+                        tokenEstimate: tokens,
+                        status: 'candidate'
+                    }
                 )
             }
         }
 
         // Build conversation rounds and truncate
         const rounds = buildConversationRounds([...chatHistory])
+        const tokens = new Map<BaseMessage, number>()
+        for (const msg of chatHistory) {
+            tokens.set(msg, await countMessageTokens(msg, runtime.tokenCounter))
+        }
+        const roundTokens = rounds.map((round) =>
+            round.reduce((total, msg) => total + tokens.get(msg)!, 0)
+        )
         const selectedRounds: BaseMessage[][] = []
         const availableLimit =
-            runtime.sendTokenLimit - (documents.length > 0 ? 480 : 80)
+            runtime.sendTokenLimit - (hasDocuments ? 480 : 80)
         const hasValidLimit = availableLimit > 0
         let truncated = false
         let usedTokens = runtime.usedTokens
 
         for (let i = rounds.length - 1; i >= 0; i--) {
             const round = rounds[i]
-            let roundTokens = 0
-            for (const msg of round) {
-                roundTokens += await countMessageTokens(
-                    msg,
-                    runtime.tokenCounter
-                )
-            }
             const exceedsLimit = hasValidLimit
-                ? usedTokens + roundTokens > availableLimit
+                ? usedTokens + roundTokens[i] > availableLimit
                 : false
 
             if (exceedsLimit && selectedRounds.length > 0) {
@@ -75,7 +114,7 @@ export function createChatHistoryMiddleware(): PromptPipelineMiddleware {
                 break
             }
 
-            usedTokens += roundTokens
+            usedTokens += roundTokens[i]
             selectedRounds.unshift(round)
 
             if (exceedsLimit) {
@@ -87,12 +126,7 @@ export function createChatHistoryMiddleware(): PromptPipelineMiddleware {
         // Ensure at least one round
         if (rounds.length > 0 && selectedRounds.length === 0) {
             const lastRound = rounds[rounds.length - 1]
-            for (const msg of lastRound) {
-                usedTokens += await countMessageTokens(
-                    msg,
-                    runtime.tokenCounter
-                )
-            }
+            usedTokens += roundTokens[rounds.length - 1]
             selectedRounds.unshift(lastRound)
             truncated = hasValidLimit
         }
@@ -104,6 +138,21 @@ export function createChatHistoryMiddleware(): PromptPipelineMiddleware {
         )
         runtime.result.push(...historyMessages)
         runtime.usedTokens = usedTokens
+
+        const included = new Set(historyMessages)
+        for (const [idx, msg] of chatHistory.entries()) {
+            traceMessage(runtime.trace, msg, {
+                stage: 'chat_history',
+                source: {
+                    kind: 'history',
+                    name: 'chat history',
+                    path: `chat_history.${idx}`
+                },
+                tokenEstimate: tokens.get(msg)!,
+                status: included.has(msg) ? 'included' : 'dropped',
+                reason: included.has(msg) ? undefined : 'history_budget'
+            })
+        }
 
         if (truncated && hasValidLimit) {
             logger?.warn(

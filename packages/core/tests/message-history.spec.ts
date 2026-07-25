@@ -4,6 +4,7 @@ import { HumanMessage } from '@langchain/core/messages'
 import { assert } from 'chai'
 import { gzipDecode } from '../src/utils/string'
 import { KoishiChatMessageHistory } from '../src/llm-core/memory/message'
+import { ConversationNotFoundError } from '../src/types'
 import { createConversation, FakeDatabase } from './helpers'
 
 it('KoishiChatMessageHistory does not persist transient qqbot request metadata', async () => {
@@ -65,4 +66,22 @@ it('KoishiChatMessageHistory does not persist transient qqbot request metadata',
         },
         qqbot_attachment_refs: [{ refId: 'att_1', kind: 'image' }]
     })
+})
+
+it('KoishiChatMessageHistory rejects a missing conversation without creating one', async () => {
+    const database = new FakeDatabase()
+    const history = new KoishiChatMessageHistory(
+        { database } as never,
+        'missing-conversation',
+        100,
+        {} as never
+    )
+
+    try {
+        await history.loadConversation()
+        assert.fail('Expected a missing conversation to reject.')
+    } catch (error) {
+        assert.instanceOf(error, ConversationNotFoundError)
+    }
+    assert.deepEqual(database.tables.chatluna_conversation, [])
 })

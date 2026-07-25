@@ -1,3 +1,4 @@
+import { createHash } from 'crypto'
 import {
     AIMessage,
     BaseMessage,
@@ -7,115 +8,166 @@ import {
     SystemMessage
 } from '@langchain/core/messages'
 import { load } from 'js-yaml'
-import { logger } from 'koishi-plugin-chatluna'
 import {
-    isRoleBook,
-    isRoleBookConfig,
-    PresetTemplate,
-    RawPreset,
-    RoleBookConfig
+    CompiledMessageContent,
+    CompiledPreset,
+    PresetContentBlock,
+    PresetDefinitionV2,
+    PresetDefinitionV2Schema,
+    PresetPostHandlerRegistry,
+    PresetSource
 } from './type'
 
-export function loadPreset(rawText: string): PresetTemplate {
-    try {
-        return loadYamlPreset(rawText)
-    } catch (e) {
-        logger.error(e)
-        throw e
-    }
-}
-
-function createMessage(
-    role: string,
-    content: string | MessageContentComplex[],
-    type?: string
-): BaseMessage {
-    if (content == null) {
-        throw new Error('Content is required')
+function compileContent(
+    content: string | PresetContentBlock[]
+): CompiledMessageContent {
+    if (typeof content === 'string') {
+        return content
     }
 
-    const fields: BaseMessageFields = {
-        content: typeof content === 'string' ? content.trim() : content,
-        additional_kwargs: { type }
-    }
-
-    switch (role) {
-        case 'assistant':
-        case 'ai':
-        case 'model':
-            return new AIMessage(fields)
-        case 'user':
-        case 'human':
-            return new HumanMessage(fields)
-        case 'system':
-            return new SystemMessage(fields)
-        default:
-            throw new Error(`Unknown role: ${role}`)
-    }
-}
-
-function loadYamlPreset(rawText: string): PresetTemplate {
-    const rawJson = load(rawText) as RawPreset
-
-    let loreBooks: PresetTemplate['loreBooks'] | undefined = {
-        items: []
-    }
-
-    let authorsNote: PresetTemplate['authorsNote'] | undefined
-
-    if (rawJson.world_lores) {
-        const config = rawJson.world_lores.find(
-            isRoleBookConfig
-        ) as RoleBookConfig
-
-        const items = rawJson.world_lores.filter(isRoleBook).map((item) => ({
-            ...item,
-            keywords: Array.isArray(item.keywords)
-                ? item.keywords
-                : [item.keywords]
-        }))
-
-        loreBooks = {
-            ...config,
-            items
+    return content.map((part): MessageContentComplex => {
+        if (part.type === 'text') {
+            return { type: 'text', text: part.text }
         }
-    } else {
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        loreBooks = undefined
+        if (part.type === 'image') {
+            return {
+                type: 'image_url',
+                image_url: {
+                    url: part.url,
+                    detail: part.detail
+                }
+            }
+        }
+        if (part.type === 'file') {
+            return {
+                type: 'file_url',
+                file_url: {
+                    url: part.url,
+                    mimeType: part.mimeType
+                }
+            }
+        }
+        if (part.type === 'audio') {
+            return {
+                type: 'audio_url',
+                audio_url: {
+                    url: part.url,
+                    mimeType: part.mimeType
+                }
+            }
+        }
+        return {
+            type: 'video_url',
+            video_url: {
+                url: part.url,
+                mimeType: part.mimeType
+            }
+        }
+    })
+}
+
+function compileMessage(
+    role: PresetDefinitionV2['messages'][number]['role'],
+    content: PresetDefinitionV2['messages'][number]['content'],
+    purpose?: PresetDefinitionV2['messages'][number]['purpose']
+): BaseMessage {
+    const fields: BaseMessageFields = {
+        content: compileContent(content),
+        additional_kwargs: purpose == null ? {} : { purpose }
     }
 
-    if (rawJson.authors_note || rawJson['author_notes']) {
-        authorsNote = rawJson.authors_note || rawJson['author_notes']
-        authorsNote.insertFrequency = authorsNote.insertFrequency ?? 1
-        authorsNote.insertPosition = authorsNote.insertPosition ?? 'in_chat'
-        authorsNote.insertDepth = authorsNote.insertDepth ?? 0
+    if (role === 'assistant') {
+        return new AIMessage(fields)
+    }
+    if (role === 'user') {
+        return new HumanMessage(fields)
+    }
+    return new SystemMessage(fields)
+}
+
+export function parsePreset(raw: string): PresetDefinitionV2 {
+    return PresetDefinitionV2Schema.parse(load(raw))
+}
+
+export function compilePreset(
+    definition: PresetDefinitionV2,
+    opts: {
+        source: PresetSource
+        raw: string
+        path?: string
+        handlers?: PresetPostHandlerRegistry
+    }
+): CompiledPreset {
+    const preset = PresetDefinitionV2Schema.parse(definition)
+    const post = preset.promptConfig.postHandler
+    const handler = post == null ? undefined : opts.handlers?.get(post.id)
+
+    if (post != null && handler == null) {
+        throw new Error(`Preset post handler is not registered: ${post.id}`)
     }
 
     return {
-        triggerKeyword: rawJson.keywords,
-        rawText,
-        messages: rawJson.prompts.map((message) =>
-            createMessage(message.role, message.content, message.type)
+        id: preset.id,
+        displayName: preset.displayName,
+        aliases: preset.aliases,
+        definition: preset,
+        messages: preset.messages.map((message) =>
+            compileMessage(message.role, message.content, message.purpose)
         ),
-        formatUserPromptString: rawJson.format_user_prompt,
-        loreBooks,
-        authorsNote,
-        knowledge: rawJson?.knowledge,
-        version: rawJson?.version,
-        config: rawJson.config ?? {}
+        inputFormat: preset.inputFormat,
+        lore: preset.lore,
+        authorsNote: preset.authorsNote,
+        knowledge: preset.knowledge,
+        promptConfig: {
+            ...preset.promptConfig,
+            postHandler:
+                post == null
+                    ? undefined
+                    : {
+                          prefix: post.prefix,
+                          postfix: post.postfix,
+                          censor: post.censor,
+                          variables: post.variables,
+                          handler
+                      }
+        },
+        source: opts.source,
+        revision: createHash('sha256').update(opts.raw).digest('hex'),
+        path: opts.path
     }
 }
 
-export const EMPTY_PRESET: PresetTemplate = {
-    triggerKeyword: [],
-    messages: [],
-    rawText: '',
-    formatUserPromptString: '',
-    loreBooks: undefined,
-    authorsNote: undefined,
-    knowledge: undefined,
-    version: undefined,
-    config: {}
+export function loadPreset(
+    raw: string,
+    opts: {
+        source: PresetSource
+        path?: string
+        handlers?: PresetPostHandlerRegistry
+    }
+): CompiledPreset {
+    return compilePreset(parsePreset(raw), { ...opts, raw })
 }
+
+export const EMPTY_PRESET = compilePreset(
+    {
+        schemaVersion: 2,
+        id: 'empty',
+        displayName: 'Empty',
+        aliases: [],
+        messages: [],
+        inputFormat: null,
+        lore: {
+            defaults: {},
+            entries: []
+        },
+        authorsNote: null,
+        knowledge: null,
+        promptConfig: {}
+    },
+    {
+        source: 'ephemeral',
+        raw: ''
+    }
+)
 
 export * from './type'

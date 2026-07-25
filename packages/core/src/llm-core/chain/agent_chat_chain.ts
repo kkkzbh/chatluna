@@ -26,9 +26,12 @@ import {
     ChatLunaError,
     ChatLunaErrorCode
 } from 'koishi-plugin-chatluna/utils/error'
-import { PresetTemplate } from 'koishi-plugin-chatluna/llm-core/prompt'
+import { CompiledPreset } from 'koishi-plugin-chatluna/llm-core/prompt'
 import { ChatLunaChatPrompt } from 'koishi-plugin-chatluna/llm-core/chain/prompt'
-import type { ChatLunaPromptRenderService } from 'koishi-plugin-chatluna/services/chat'
+import type {
+    ChatLunaPromptRenderService,
+    PresetKnowledgeService
+} from 'koishi-plugin-chatluna/services/chat'
 import { KoishiChatMessageHistory } from 'koishi-plugin-chatluna/llm-core/memory/message'
 import { computed, ComputedRef } from '@vue/reactivity'
 import {
@@ -36,6 +39,7 @@ import {
     sanitizeToolLogValue
 } from 'koishi-plugin-chatluna/utils/string'
 import type { ChatLunaContextManagerService } from 'koishi-plugin-chatluna/llm-core/prompt'
+import { mergeBuiltVariables } from './variables'
 
 function copyQqbotRequestExtensions(
     requests: ChainValues,
@@ -65,8 +69,9 @@ export interface ChatLunaPluginChainInput {
     embeddings: ChatLunaBaseEmbeddings
     agentMode?: 'tool-calling' | 'react'
     variableService: ChatLunaPromptRenderService
-    preset: ComputedRef<PresetTemplate>
+    preset: ComputedRef<CompiledPreset>
     contextManager: ChatLunaContextManagerService
+    knowledgeService: PresetKnowledgeService
     toolMask?: ToolMask
 }
 
@@ -90,9 +95,11 @@ export class ChatLunaPluginChain
 
     prompt: ChatLunaChatPrompt
 
-    preset: ComputedRef<PresetTemplate>
+    preset: ComputedRef<CompiledPreset>
 
     contextManager: ChatLunaContextManagerService
+
+    knowledgeService: PresetKnowledgeService
 
     agentMode?: 'tool-calling' | 'react'
 
@@ -109,6 +116,7 @@ export class ChatLunaPluginChain
         embeddings,
         agentMode,
         contextManager,
+        knowledgeService,
         toolMask
     }: ChatLunaPluginChainInput & {
         tools: ComputedRef<ChatLunaTool[]>
@@ -124,6 +132,7 @@ export class ChatLunaPluginChain
         this.agentMode = agentMode ?? 'react'
         this.preset = preset
         this.contextManager = contextManager
+        this.knowledgeService = knowledgeService
         this.toolMask = toolMask
 
         this._toolsRef = createToolsRef({
@@ -145,6 +154,7 @@ export class ChatLunaPluginChain
             agentMode,
             variableService,
             contextManager,
+            knowledgeService,
             toolMask
         }: Omit<ChatLunaPluginChainInput, 'prompt'>
     ): ChatLunaPluginChain {
@@ -153,6 +163,7 @@ export class ChatLunaPluginChain
             tokenCounter: (text) => llm.getNumTokens(text),
             promptRenderService: variableService,
             contextManager,
+            knowledgeService,
             sendTokenLimit:
                 llm.invocationParams().maxTokenLimit ??
                 llm.getModelMaxContextSize()
@@ -168,6 +179,7 @@ export class ChatLunaPluginChain
             preset,
             variableService,
             contextManager,
+            knowledgeService,
             toolMask
         })
     }
@@ -182,7 +194,7 @@ export class ChatLunaPluginChain
             handleParsingErrors: true,
             instructions: computed(() => {
                 if (this.agentMode === 'react') {
-                    return this.preset.value.config.reActInstruction
+                    return this.preset.value.promptConfig.reActInstruction
                 }
                 return undefined
             })
@@ -195,6 +207,7 @@ export class ChatLunaPluginChain
         session,
         events,
         conversationId,
+        presetResolution,
         variables,
         maxToken,
         messageQueue,
@@ -220,7 +233,7 @@ export class ChatLunaPluginChain
         const ctx = {
             kind: subagentContext ? 'subagent' : 'main',
             agentId: conversationId,
-            agentName: preset.triggerKeyword[0] ?? conversationId,
+            agentName: preset.displayName,
             conversationId,
             parentConversationId: subagentContext?.parentConversationId,
             requestId,
@@ -243,14 +256,15 @@ export class ChatLunaPluginChain
         requests['variables'] = Object.assign(nextVars, {
             prompt: getMessageContent(message.content)
         })
-        requests['variables']['built'] = {
+        mergeBuiltVariables(requests['variables'], {
             conversationId,
             requestId,
+            presetResolution,
             userId: session.userId,
             guildId: session.guildId,
             channelId: session.channelId,
             chatPlatform: session.platform
-        }
+        })
         requests['variables_hide'] = requests['variables']
         requests['configurable'] = {
             session,
@@ -319,7 +333,7 @@ export class ChatLunaPluginChain
                         session,
                         model: this.llm,
                         conversationId,
-                        preset: preset.triggerKeyword[0],
+                        preset: preset.id,
                         userId: session.userId,
                         toolMask,
                         agentContext: ctx
@@ -329,9 +343,7 @@ export class ChatLunaPluginChain
         }
 
         if (signal?.aborted) {
-            throw (
-                signal.reason ?? new ChatLunaError(ChatLunaErrorCode.ABORTED)
-            )
+            throw signal.reason ?? new ChatLunaError(ChatLunaErrorCode.ABORTED)
         }
 
         try {

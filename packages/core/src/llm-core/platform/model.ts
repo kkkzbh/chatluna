@@ -17,11 +17,15 @@ import {
 } from '@langchain/core/outputs'
 import { StructuredTool } from '@langchain/core/tools'
 import { Tiktoken } from 'js-tiktoken'
+import { randomUUID } from 'crypto'
 import { sleep } from 'koishi'
+import { ZodSchema } from 'zod'
+import { zodToJsonSchema } from 'zod-to-json-schema'
 import {
     EmbeddingsRequester,
     EmbeddingsRequestParams,
     ModelRequester,
+    ModelRequestInternalControl,
     ModelRequestParams
 } from 'koishi-plugin-chatluna/llm-core/platform/api'
 import type { FileHandlingConfig } from 'koishi-plugin-chatluna/llm-core/platform/client'
@@ -44,12 +48,86 @@ import { encodingForModel } from '../utils/tiktoken'
 import { formatFunctionDefinitions } from '../utils/function_def'
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
 import { isChatLunaUserMessage } from 'koishi-plugin-chatluna/utils/langchain'
-import { logger } from 'koishi-plugin-chatluna'
+import { logger } from 'koishi-plugin-chatluna/utils/logger'
 import type {
     ModelUsageContext,
     ModelUsageReporter
 } from 'koishi-plugin-chatluna/llm-core/platform/usage'
 import { estimateTextTokens } from 'koishi-plugin-chatluna/llm-core/platform/usage'
+import {
+    applyModelCropTrace,
+    ContextTraceEntry,
+    contextTraceIdFromMessages,
+    ContextTraceSource,
+    createModelCallIdentity,
+    ModelContextMessage,
+    ModelContextTool,
+    redactContextContent,
+    redactContextSchema,
+    redactContextToolCalls,
+    stripContextMetadata,
+    takeContextTrace
+} from '../prompt/context_trace'
+
+function snapshotMessage(
+    msg: BaseMessage,
+    tokens: number,
+    entry?: ContextTraceEntry
+): ModelContextMessage {
+    const qqbot = msg.additional_kwargs.qqbot_context as
+        | {
+              source?: string
+              title?: string
+              authority?: string
+              trust?: string
+              ttl?: string
+              payload_kind?: string
+          }
+        | undefined
+    const ai = msg as AIMessage
+    const tool = msg as BaseMessage & { tool_call_id?: string }
+
+    return {
+        id: msg.id ?? randomUUID(),
+        role: msg.getType(),
+        name: msg.name,
+        content: redactContextContent(msg.content),
+        tokenEstimate: tokens,
+        stage: entry?.stage ?? 'after_scratchpad',
+        source:
+            entry?.source ??
+            ({
+                kind: 'model_input',
+                name: 'direct model input'
+            } satisfies ContextTraceSource),
+        purpose:
+            entry?.purpose ??
+            (msg.additional_kwargs.purpose as string | undefined),
+        qqbotContext: qqbot
+            ? {
+                  source: qqbot.source,
+                  title: qqbot.title,
+                  authority: qqbot.authority,
+                  trust: qqbot.trust,
+                  ttl: qqbot.ttl,
+                  payloadKind: qqbot.payload_kind
+              }
+            : undefined,
+        toolCallId: tool.tool_call_id,
+        toolCalls: redactContextToolCalls(ai.tool_calls)
+    }
+}
+
+function snapshotTools(tools?: StructuredTool[]): ModelContextTool[] {
+    return (tools ?? []).map((tool) => ({
+        name: tool.name,
+        description: tool.description ?? '',
+        schema:
+            tool.schema instanceof ZodSchema
+                ? redactContextSchema(zodToJsonSchema(tool.schema as never))
+                : redactContextSchema(tool.schema)
+    }))
+}
 
 export interface ChatLunaModelCallOptions extends BaseChatModelCallOptions {
     model?: string
@@ -124,6 +202,19 @@ export interface ChatLunaModelInput extends ChatLunaModelCallOptions {
 
     usageReporter?: ModelUsageReporter
 }
+
+export interface ModelCropInfo {
+    truncated: boolean
+    droppedMessageIds: string[]
+}
+
+interface PreparedModelRequest {
+    usageContext: ModelUsageContext
+    promptTokens: number
+    params: ModelRequestParams
+}
+
+type ModelInvocationMode = 'streaming' | 'non-streaming'
 
 export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
     // eslint-disable-next-line @typescript-eslint/naming-convention
@@ -227,26 +318,196 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
         }
     }
 
+    private async _prepareRequest(
+        messages: BaseMessage[],
+        options: this['ParsedCallOptions'],
+        invocationMode: ModelInvocationMode
+    ): Promise<PreparedModelRequest> {
+        const assembled = messages.concat([])
+        for (const msg of assembled) {
+            msg.id ??= randomUUID()
+        }
+
+        const { callId, callOrdinal } = createModelCallIdentity()
+        const traceId = contextTraceIdFromMessages(assembled)
+        const trace = takeContextTrace(traceId)
+
+        try {
+            if (traceId != null && trace == null) {
+                throw new Error(
+                    `Context trace ${traceId} is unavailable or expired`
+                )
+            }
+            const params = this.invocationParams(options)
+            const optionContext = usageContextFromOptions(
+                options,
+                callId,
+                callOrdinal
+            )
+            if (
+                trace != null &&
+                optionContext?.requestId != null &&
+                optionContext.requestId !== trace.requestId
+            ) {
+                throw new Error(
+                    `Context trace requestId ${trace.requestId} does not match model request ${optionContext.requestId}`
+                )
+            }
+            if (
+                trace?.conversationId != null &&
+                optionContext?.conversationId != null &&
+                optionContext.conversationId !== trace.conversationId
+            ) {
+                throw new Error(
+                    `Context trace conversationId ${trace.conversationId} does not match model request ${optionContext.conversationId}`
+                )
+            }
+            const usageContext: ModelUsageContext =
+                trace == null
+                    ? optionContext
+                    : {
+                          ...optionContext,
+                          callId,
+                          callOrdinal,
+                          requestId: trace.requestId,
+                          conversationId:
+                              trace.conversationId ??
+                              optionContext?.conversationId
+                      }
+            const [cropped, promptTokens, crop] = await this.cropMessages(
+                assembled,
+                params.tools,
+                1,
+                params.maxTokenLimit
+            )
+            const internalControl: ModelRequestInternalControl = {
+                canonicalModel:
+                    typeof params.overrideRequestParams?.[
+                        'qqbot_canonical_model'
+                    ] === 'string'
+                        ? params.overrideRequestParams['qqbot_canonical_model']
+                        : undefined,
+                transportModel:
+                    typeof params.overrideRequestParams?.[
+                        'qqbot_transport_model'
+                    ] === 'string'
+                        ? params.overrideRequestParams['qqbot_transport_model']
+                        : undefined,
+                requestMode:
+                    typeof params.overrideRequestParams?.[
+                        'qqbot_request_mode'
+                    ] === 'string'
+                        ? params.overrideRequestParams['qqbot_request_mode']
+                        : undefined,
+                toolProfile:
+                    typeof params.overrideRequestParams?.[
+                        'qqbot_tool_profile'
+                    ] === 'string'
+                        ? params.overrideRequestParams['qqbot_tool_profile']
+                        : undefined
+            }
+            if (trace) {
+                applyModelCropTrace(trace, cropped)
+            }
+
+            const tokens = new Map<BaseMessage, number>()
+            for (const msg of assembled) {
+                tokens.set(msg, await this.countMessageTokens(msg))
+            }
+            const assembledMessages = assembled.map((msg) =>
+                snapshotMessage(
+                    msg,
+                    tokens.get(msg)!,
+                    trace?.entries.find((entry) => entry.messageId === msg.id)
+                )
+            )
+            const finalMessages = cropped.map((msg) =>
+                snapshotMessage(
+                    msg,
+                    tokens.get(msg)!,
+                    trace?.entries.find((entry) => entry.messageId === msg.id)
+                )
+            )
+            const clean = cropped.map((msg) => stripContextMetadata(msg))
+
+            if (
+                this._report &&
+                usageContext.requestId &&
+                usageContext.conversationId
+            ) {
+                await this._report.context({
+                    callId,
+                    callOrdinal,
+                    requestId: usageContext.requestId,
+                    conversationId: usageContext.conversationId,
+                    model: params.model ?? this._modelName,
+                    canonicalModel: internalControl.canonicalModel,
+                    transportModel: internalControl.transportModel,
+                    requestMode: internalControl.requestMode,
+                    stream: invocationMode === 'streaming',
+                    semanticStage: 'before_provider_serialization',
+                    contextLimit:
+                        params.maxTokenLimit ?? this.getModelMaxContextSize(),
+                    modelContextSize: this.getModelMaxContextSize(),
+                    estimatedTokens: promptTokens,
+                    assembledCount: assembled.length,
+                    finalCount: clean.length,
+                    truncated: crop.truncated,
+                    assembledMessages,
+                    finalMessages,
+                    trace: (trace?.entries ?? []).map((entry) => ({
+                        ...entry,
+                        content: redactContextContent(entry.content)
+                    })),
+                    tools: snapshotTools(params.tools),
+                    presetId: trace?.presetId,
+                    presetRevision: trace?.presetRevision,
+                    presetResolution: trace?.presetResolution
+                })
+            }
+
+            trace?.onceInjectionLease?.commit()
+            return {
+                usageContext,
+                promptTokens,
+                params: {
+                    ...params,
+                    input: clean
+                }
+            }
+        } catch (error) {
+            trace?.onceInjectionLease?.release()
+            throw error
+        }
+    }
+
     async *_streamResponseChunks(
         messages: BaseMessage[],
         options: this['ParsedCallOptions'],
-        runManager?: CallbackManagerForLLMRun,
-        reportUsage = true
+        runManager?: CallbackManagerForLLMRun
+    ): AsyncGenerator<ChatGenerationChunk> {
+        const prepared = await this._prepareRequest(
+            messages,
+            options,
+            'streaming'
+        )
+        yield* this._streamPreparedChunks(
+            prepared.params,
+            runManager,
+            prepared.promptTokens,
+            true,
+            prepared.usageContext
+        )
+    }
+
+    private async *_streamPreparedChunks(
+        params: ModelRequestParams,
+        runManager: CallbackManagerForLLMRun | undefined,
+        promptTokens: number,
+        reportUsage: boolean,
+        usageContext: ModelUsageContext
     ): AsyncGenerator<ChatGenerationChunk> {
         const maxAttempts = Math.max(1, (this._options.maxRetries ?? 0) + 1)
-        let promptTokens = 0
-
-        if (reportUsage) {
-            ;[messages, promptTokens] = await this.cropMessages(
-                messages,
-                options['tools']
-            )
-        }
-
-        const streamParams = {
-            ...this.invocationParams(options),
-            input: messages
-        }
 
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             const latestTokenUsage = this._createTokenUsageTracker()
@@ -257,7 +518,7 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
             let response: ChatGenerationChunk | undefined
 
             try {
-                stream = await this._createStream(streamParams)
+                stream = await this._createStream(params)
 
                 for await (const chunk of stream) {
                     const hasTool = this._handleStreamChunk(
@@ -292,7 +553,7 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
                         latestTokenUsage,
                         promptTokens,
                         response,
-                        options
+                        usageContext
                     )
                 }
                 return
@@ -315,7 +576,7 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
                     }
                     if (reportUsage) {
                         await this._reportFailedUsage(
-                            options,
+                            usageContext,
                             promptTokens,
                             latestTokenUsage.output_tokens
                         )
@@ -429,10 +690,10 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
         usage: UsageMetadata,
         promptTokens: number,
         response: ChatGenerationChunk | undefined,
-        options: this['ParsedCallOptions']
+        usageContext: ModelUsageContext
     ) {
         if (usage.total_tokens > 0) {
-            await this._reportUsage(usage, false, options)
+            await this._reportUsage(usage, false, usageContext)
             return
         }
 
@@ -446,7 +707,7 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
                 total_tokens: promptTokens + outputTokens
             },
             true,
-            options
+            usageContext
         )
     }
 
@@ -494,26 +755,28 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
         options: this['ParsedCallOptions'],
         runManager?: CallbackManagerForLLMRun
     ): Promise<ChatResult> {
-        let promptTokens: number
-        ;[messages, promptTokens] = await this.cropMessages(
+        const prepared = await this._prepareRequest(
             messages,
-            options['tools']
+            options,
+            options.stream ? 'streaming' : 'non-streaming'
         )
+        const promptTokens = prepared.promptTokens
 
         let response: ChatGeneration
         try {
             response = await this._generateWithRetry(
-                messages,
                 options,
-                runManager
+                runManager,
+                prepared.params,
+                prepared.usageContext
             )
         } catch (e) {
-            await this._reportFailedUsage(options, promptTokens)
+            await this._reportFailedUsage(prepared.usageContext, promptTokens)
             throw e
         }
 
         if (response == null) {
-            await this._reportFailedUsage(options, promptTokens)
+            await this._reportFailedUsage(prepared.usageContext, promptTokens)
             throw new ChatLunaError(ChatLunaErrorCode.API_REQUEST_FAILED)
         }
 
@@ -577,7 +840,7 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
             usage_metadata: usageMetadata
         }
 
-        await this._reportUsage(usageMetadata, estimated, options)
+        await this._reportUsage(usageMetadata, estimated, prepared.usageContext)
 
         return {
             generations: [response],
@@ -588,7 +851,7 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
     private async _reportUsage(
         usage: UsageMetadata,
         estimated: boolean,
-        options: this['ParsedCallOptions']
+        usageContext: ModelUsageContext
     ) {
         if (this._report == null) return
 
@@ -598,7 +861,7 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
                 usageMetadata: usage,
                 estimated,
                 success: true,
-                context: usageContextFromOptions(options)
+                context: usageContext
             })
         } catch (e) {
             logger.warn('Failed to report LLM usage', e)
@@ -606,7 +869,7 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
     }
 
     private async _reportFailedUsage(
-        options: this['ParsedCallOptions'],
+        usageContext: ModelUsageContext,
         promptTokens = 0,
         outputTokens = 0
     ) {
@@ -622,7 +885,7 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
                 },
                 estimated: promptTokens > 0 || outputTokens > 0,
                 success: false,
-                context: usageContextFromOptions(options)
+                context: usageContext
             })
         } catch (e) {
             logger.warn('Failed to report LLM usage', e)
@@ -630,9 +893,10 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
     }
 
     private _generateWithRetry(
-        messages: BaseMessage[],
         options: this['ParsedCallOptions'],
-        runManager?: CallbackManagerForLLMRun
+        runManager: CallbackManagerForLLMRun | undefined,
+        params: ModelRequestParams,
+        usageContext: ModelUsageContext
     ): Promise<ChatGeneration> {
         const maxAttempts = Math.max(1, (this._options.maxRetries ?? 0) + 1)
 
@@ -642,11 +906,12 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
                     let response: ChatGeneration
 
                     if (options.stream) {
-                        const stream = this._streamResponseChunks(
-                            messages,
-                            options,
+                        const stream = this._streamPreparedChunks(
+                            params,
                             runManager,
-                            false
+                            0,
+                            false,
+                            usageContext
                         )
                         let responseChunk: ChatGenerationChunk
                         for await (const chunk of stream) {
@@ -658,10 +923,7 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
 
                         response = responseChunk
                     } else {
-                        response = await this._completion({
-                            ...this.invocationParams(options),
-                            input: messages
-                        })
+                        response = await this._completion(params)
                     }
 
                     if (
@@ -745,11 +1007,14 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
     async cropMessages(
         messages: BaseMessage[],
         tools?: StructuredTool[],
-        systemMessageLength: number = 1
-    ): Promise<[BaseMessage[], number]> {
-        messages = messages.concat([])
-
-        const maxTokenLimit = this.invocationParams().maxTokenLimit
+        systemMessageLength: number = 1,
+        maxTokenLimit = this.invocationParams().maxTokenLimit
+    ): Promise<[BaseMessage[], number, ModelCropInfo]> {
+        const assembled = messages.concat([])
+        for (const msg of assembled) {
+            msg.id ??= randomUUID()
+        }
+        messages = assembled.concat([])
 
         let totalTokens = 0
 
@@ -912,7 +1177,19 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
         // Add session-level priming token (every reply is primed with <|start|>assistant<|message|>)
         totalTokens += 3
 
-        return [result, totalTokens]
+        const finalIds = new Set(result.map((msg) => msg.id))
+        const droppedMessageIds = assembled
+            .filter((msg) => !finalIds.has(msg.id))
+            .map((msg) => msg.id as string)
+
+        return [
+            result,
+            totalTokens,
+            {
+                truncated: droppedMessageIds.length > 0,
+                droppedMessageIds
+            }
+        ]
     }
 
     public async countMessageTokens(message: BaseMessage) {
@@ -1299,7 +1576,11 @@ type UsageConfig = {
     agentContext?: ModelUsageContext & { channelId?: string }
 }
 
-function usageContextFromOptions(options: ChatLunaModelCallOptions) {
+function usageContextFromOptions(
+    options: ChatLunaModelCallOptions,
+    callId: string,
+    callOrdinal: number
+): ModelUsageContext {
     const cfg = (
         options as ChatLunaModelCallOptions & {
             configurable?: UsageConfig
@@ -1316,6 +1597,8 @@ function usageContextFromOptions(options: ChatLunaModelCallOptions) {
     const built = vars?.built
     const session = cfg?.session ?? built?.session
     const context: ModelUsageContext = {
+        callId,
+        callOrdinal,
         chatPlatform: built?.chatPlatform ?? session?.platform,
         conversationId:
             (typeof options.id === 'string' ? options.id : undefined) ??
@@ -1336,13 +1619,7 @@ function usageContextFromOptions(options: ChatLunaModelCallOptions) {
             session?.guildId
     }
 
-    return context.chatPlatform != null ||
-        context.conversationId != null ||
-        context.requestId != null ||
-        context.userId != null ||
-        context.guildId != null
-        ? context
-        : undefined
+    return context
 }
 
 function formatUsageMetadata(usage: UsageMetadata) {

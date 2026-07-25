@@ -20,7 +20,7 @@ import { BufferMemory } from 'koishi-plugin-chatluna/llm-core/memory/langchain'
 import { logger } from '..'
 import {
     ChatLunaContextManagerService,
-    PresetTemplate
+    CompiledPreset
 } from 'koishi-plugin-chatluna/llm-core/prompt'
 import { ChatLunaChatPrompt } from 'koishi-plugin-chatluna/llm-core/chain/prompt'
 import {
@@ -43,10 +43,11 @@ import { BrowserManager } from '../tools/browser/manager'
 // github.com/langchain-ai/weblangchain/blob/main/nextjs/app/api/chat/stream_log/route.ts#L81
 
 type ChatLunaPromptRenderService = ChatLunaService['promptRenderer']
+type PresetKnowledgeService = ChatLunaService['knowledge']
 
 export interface ChatLunaBrowsingChainInput {
     botName: string
-    preset: ComputedRef<PresetTemplate>
+    preset: ComputedRef<CompiledPreset>
     embeddings: Embeddings
 
     historyMemory: BufferMemory
@@ -61,6 +62,7 @@ export interface ChatLunaBrowsingChainInput {
     contextualCompressionPrompt?: string
     searchFailedPrompt: string
     variableService: ChatLunaPromptRenderService
+    knowledgeService: PresetKnowledgeService
     browserManager: BrowserManager
 }
 
@@ -76,7 +78,7 @@ export class ChatLunaBrowsingChain
 
     historyMemory: BufferMemory
 
-    preset: ComputedRef<PresetTemplate>
+    preset: ComputedRef<CompiledPreset>
 
     formatQuestionChain: ChatLunaLLMChain
 
@@ -95,6 +97,8 @@ export class ChatLunaBrowsingChain
     contextualCompressionPrompt?: string
 
     variableService: ChatLunaPromptRenderService
+
+    knowledgeService: PresetKnowledgeService
 
     thoughtMessage: boolean
 
@@ -120,6 +124,7 @@ export class ChatLunaBrowsingChain
         preset,
         newQuestionPrompt,
         variableService,
+        knowledgeService,
         browserManager,
         summaryModel,
         contextualCompressionPrompt,
@@ -145,6 +150,7 @@ export class ChatLunaBrowsingChain
         this.searchFailedPrompt = searchFailedPrompt
         this.newQuestionPrompt = newQuestionPrompt
         this.variableService = variableService
+        this.knowledgeService = knowledgeService
         this.browserManager = browserManager
         this.searchPrompt = searchPrompt
         this.contextualCompressionPrompt = contextualCompressionPrompt
@@ -172,6 +178,7 @@ export class ChatLunaBrowsingChain
             summaryType,
             searchFailedPrompt,
             variableService,
+            knowledgeService,
             contextManager,
             browserManager,
             contextualCompressionPrompt
@@ -186,6 +193,7 @@ export class ChatLunaBrowsingChain
                 llm.invocationParams().maxTokenLimit ??
                 llm.getModelMaxContextSize(),
             promptRenderService: variableService,
+            knowledgeService,
             contextManager
         })
 
@@ -206,6 +214,7 @@ export class ChatLunaBrowsingChain
 
         return new ChatLunaBrowsingChain({
             variableService,
+            knowledgeService,
             browserManager,
             botName,
             formatQuestionChain,

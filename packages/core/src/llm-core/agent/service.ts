@@ -6,7 +6,7 @@ import type {
     ChatLunaChatModel
 } from '../platform/model'
 import type { ChatLunaTool } from '../platform/types'
-import type { PresetTemplate } from '../prompt'
+import type { CompiledPreset } from '../prompt'
 import { createPromptPreset } from './agent'
 import type { ToolMask } from './types'
 
@@ -24,7 +24,7 @@ export interface CreateChatLunaAgentOptions {
         | ComputedRef<Embeddings | undefined>
     tools?: string[] | ChatLunaTool[] | ComputedRef<ChatLunaTool[]>
     mode?: 'tool-calling' | 'react'
-    preset?: string | ComputedRef<PresetTemplate>
+    preset?: string | ComputedRef<CompiledPreset>
     system?: string
     prompt?: ChatLunaChatPrompt
     maxSteps?: number
@@ -109,9 +109,9 @@ export function resolveAgentTools(
 
 export function resolveAgentPreset(
     options: CreateChatLunaAgentOptions,
-    getPreset: (name: string) => ComputedRef<PresetTemplate>
+    getPreset: (name: string) => ComputedRef<CompiledPreset>
 ) {
-    let presetRef: ComputedRef<PresetTemplate> | undefined
+    let presetRef: ComputedRef<CompiledPreset> | undefined
     if (typeof options.preset === 'string') {
         presetRef = getPreset(options.preset)
     } else {

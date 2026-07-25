@@ -1,4 +1,4 @@
-import { AIMessage, BaseMessage } from '@langchain/core/messages'
+import { BaseMessage } from '@langchain/core/messages'
 import { HumanMessagePromptTemplate } from '@langchain/core/prompts'
 import { ChainValues } from '@langchain/core/utils/types'
 import {
@@ -6,8 +6,9 @@ import {
     PromptContextMiddleware,
     PromptContextRuntime
 } from './context_manager'
-import { PresetTemplate, RoleBook } from './type'
-import { logger } from 'koishi-plugin-chatluna'
+import { LoreInsertPosition, MatchedLoreEntry } from './type'
+import { logger } from 'koishi-plugin-chatluna/utils/logger'
+import { ContextTraceEntry, traceDocument, traceMessage } from './context_trace'
 
 // ---------------------------------------------------------------------------
 // lore_books injection middleware
@@ -21,7 +22,7 @@ import { logger } from 'koishi-plugin-chatluna'
  */
 export function createLoreBooksMiddleware(): PromptContextMiddleware {
     return async (context, next) => {
-        const loreBooks = context.injection.value as RoleBook[]
+        const loreBooks = context.injection.value as MatchedLoreEntry[]
         const runtime = context.runtime
 
         if (!Array.isArray(loreBooks) || loreBooks.length < 1) {
@@ -42,7 +43,7 @@ export function createLoreBooksMiddleware(): PromptContextMiddleware {
 }
 
 async function formatLoreBooks(
-    loreBooks: RoleBook[],
+    loreBooks: MatchedLoreEntry[],
     usedTokens: number,
     result: BaseMessage[],
     variables: ChainValues,
@@ -53,79 +54,116 @@ async function formatLoreBooks(
     let acceptedLoreTokens = 0
 
     let usedToken = await tokenCounter(
-        preset.config.loreBooksPrompt ?? '{input}'
+        preset.promptConfig.loreBooksPrompt ?? '{input}'
     )
 
     const loreBooksPrompt = HumanMessagePromptTemplate.fromTemplate(
-        preset.config.loreBooksPrompt ?? '{input}'
+        preset.promptConfig.loreBooksPrompt ?? '{input}'
     )
 
-    const canUseLoreBooks = {} as Record<
-        RoleBook['insertPosition'] | 'default',
-        string[]
-    >
+    const accepted = new Map<
+        LoreInsertPosition,
+        { contents: string[]; entries: ContextTraceEntry[] }
+    >()
+    const limit = preset.lore.defaults.tokenLimit ?? 300
+    let accepting = true
 
-    const hasLongMemory =
-        result.length > 0 &&
-        result[result.length - 1].content === 'Ok. I will remember.'
-
-    for (const loreBook of loreBooks) {
-        if ((loreBook.content?.length ?? 0) === 0) continue
-
-        const loreBookTokens = await tokenCounter(loreBook.content)
-
-        const tokenLimit =
-            runtime.sendTokenLimit -
-            (usedTokens + acceptedLoreTokens) -
-            (preset.loreBooks?.tokenLimit ?? 300)
-
-        if (loreBookTokens > tokenLimit) {
-            logger?.warn(
-                `Used tokens: ${usedTokens + acceptedLoreTokens + loreBookTokens} exceed limit: ${tokenLimit}. Is too long lore books. Skipping.`
-            )
-            break
+    for (const matchedLore of loreBooks) {
+        const { entry: loreBook, presetEntryIndex } = matchedLore
+        if ((loreBook.content?.length ?? 0) === 0) {
+            traceDocument(runtime.trace, {
+                id: `lore:${presetEntryIndex}`,
+                content: loreBook.content,
+                stage: 'injections',
+                source: {
+                    kind: 'lore',
+                    name: loreBook.keywords.join(', '),
+                    path: `lore.entries.${presetEntryIndex}`
+                },
+                tokenEstimate: 0,
+                status: 'dropped',
+                reason: 'empty'
+            })
+            continue
         }
 
-        const position = loreBook.insertPosition ?? 'default'
-        const array = canUseLoreBooks[position] ?? []
-        array.push(loreBook.content)
-        canUseLoreBooks[position] = array
+        const loreBookTokens = await tokenCounter(loreBook.content)
+        const canAccept =
+            accepting &&
+            acceptedLoreTokens + loreBookTokens <= limit &&
+            usedTokens + usedToken + loreBookTokens <=
+                runtime.sendTokenLimit - 80
+        const traceEntry = traceDocument(runtime.trace, {
+            id: `lore:${presetEntryIndex}`,
+            content: loreBook.content,
+            stage: 'injections',
+            source: {
+                kind: 'lore',
+                name: loreBook.keywords.join(', '),
+                path: `lore.entries.${presetEntryIndex}`
+            },
+            tokenEstimate: loreBookTokens,
+            status: canAccept ? 'included' : 'dropped',
+            reason: canAccept ? undefined : 'lore_budget'
+        })
+
+        if (!canAccept) {
+            accepting = false
+            logger?.warn(
+                `Lore context exceeds its token budget (${acceptedLoreTokens + loreBookTokens} > ${limit}); remaining lore entries were dropped.`
+            )
+            continue
+        }
+
+        const position =
+            loreBook.insertPosition ??
+            preset.lore.defaults.insertPosition ??
+            'afterCharacterDefinitions'
+        const group = accepted.get(position) ?? {
+            contents: [],
+            entries: []
+        }
+        group.contents.push(loreBook.content)
+        group.entries.push(traceEntry)
+        accepted.set(position, group)
 
         acceptedLoreTokens += loreBookTokens
         usedToken += loreBookTokens
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const systemPrompts: BaseMessage[] = (runtime as any)._systemPrompts ?? []
-
-    for (const [position, array] of Object.entries(canUseLoreBooks)) {
+    for (const [position, group] of accepted) {
         const message = await runtime.promptRenderService
             .renderMessages(
-                [await loreBooksPrompt.format({ input: array.join('\n') })],
+                [
+                    await loreBooksPrompt.format({
+                        input: group.contents.join('\n')
+                    })
+                ],
                 variables
             )
             .then((value) => value[0])
-
-        if (position === 'default') {
-            if (hasLongMemory) {
-                const index = result.findIndex(
-                    (msg) =>
-                        msg instanceof AIMessage &&
-                        msg.content === 'Ok. I will remember.'
-                )
-                index !== -1
-                    ? result.splice(index - 1, 0, message)
-                    : result.push(message)
-            } else {
-                result.push(message)
-            }
-            continue
+        const renderedEntry = traceMessage(runtime.trace, message, {
+            stage: 'injections',
+            source: {
+                kind: 'lore',
+                name: 'lore rendered context',
+                path: `lore.${position}`
+            },
+            tokenEstimate: await tokenCounter(
+                typeof message.content === 'string'
+                    ? message.content
+                    : JSON.stringify(message.content)
+            ),
+            status: 'included'
+        })
+        for (const entry of group.entries) {
+            entry.parentMessageId = renderedEntry.messageId
         }
 
         const insertPosition = findMessageIndex(
             result,
-            systemPrompts,
-            position as RoleBook['insertPosition']
+            runtime.systemPrompts,
+            position
         )
         result.splice(insertPosition, 0, message)
     }
@@ -140,56 +178,54 @@ async function formatLoreBooks(
 function findMessageIndex(
     chatHistory: BaseMessage[],
     systemPrompts: BaseMessage[],
-    insertPosition:
-        | PresetTemplate['loreBooks']['insertPosition']
-        | PresetTemplate['authorsNote']['insertPosition']
-        | 'before_char'
-        | 'after_char'
-        | 'in_chat'
+    insertPosition: LoreInsertPosition | 'inChat' | 'afterCharacterDefinitions'
 ): number {
-    if (insertPosition === 'in_chat') {
+    if (insertPosition === 'inChat') {
         return chatHistory.length - 1
     }
 
     const findIndexByType = (type: string) =>
         chatHistory.findIndex(
-            (message) => message?.additional_kwargs?.type === type
+            (message) => message?.additional_kwargs?.purpose === type
         )
 
     const descriptionIndex = findIndexByType('description')
-    const personalityIndex = findIndexByType('description')
+    const personalityIndex = findIndexByType('personality')
     const scenarioIndex = findIndexByType('scenario')
-    const exampleMessageStartIndex = findIndexByType('example_message_first')
-    const exampleMessageEndIndex = findIndexByType('example_message_last')
-    const firstMessageIndex = findIndexByType('first_message')
+    const exampleMessageStartIndex = findIndexByType('exampleStart')
+    const exampleMessageEndIndex = findIndexByType('exampleEnd')
+    const firstMessageIndex = findIndexByType('firstMessage')
 
-    const charDefIndex = Math.max(descriptionIndex, personalityIndex)
+    const charStartIndex = [descriptionIndex, personalityIndex]
+        .filter((idx) => idx >= 0)
+        .sort((a, b) => a - b)[0]
+    const charEndIndex = Math.max(descriptionIndex, personalityIndex)
 
     switch (insertPosition) {
-        case 'before_char_defs':
-        case 'before_char':
-            return charDefIndex !== -1 ? charDefIndex : 1
-
-        case 'after_char_defs':
-        case 'after_char':
+        case 'beforeCharacterDefinitions':
+            return charStartIndex ?? 1
+        case 'afterCharacterDefinitions':
+            return charEndIndex !== -1 ? charEndIndex + 1 : systemPrompts.length
+        case 'beforeScenario':
+            if (scenarioIndex !== -1) return scenarioIndex
+            return charEndIndex !== -1 ? charEndIndex + 1 : systemPrompts.length
+        case 'afterScenario':
             if (scenarioIndex !== -1) return scenarioIndex + 1
-            return charDefIndex !== -1
-                ? charDefIndex + 1
-                : systemPrompts.length + 1
-
-        case 'before_example_messages':
+            return charEndIndex !== -1 ? charEndIndex + 1 : systemPrompts.length
+        case 'beforeExampleMessages':
             if (exampleMessageStartIndex !== -1) return exampleMessageStartIndex
             if (firstMessageIndex !== -1) return firstMessageIndex
-            return charDefIndex !== -1 ? charDefIndex + 1 : 1
-
-        case 'after_example_messages':
+            return scenarioIndex !== -1
+                ? scenarioIndex + 1
+                : charEndIndex !== -1
+                  ? charEndIndex + 1
+                  : systemPrompts.length
+        case 'afterExampleMessages':
             if (exampleMessageEndIndex !== -1) return exampleMessageEndIndex + 1
-            return charDefIndex !== -1
-                ? charDefIndex + 1
-                : systemPrompts.length - 1
-
+            if (firstMessageIndex !== -1) return firstMessageIndex + 1
+            return chatHistory.length
         default:
-            return 1
+            return chatHistory.length
     }
 }
 

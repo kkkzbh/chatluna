@@ -610,7 +610,9 @@ export class ChatLunaAgentService extends Service {
     }
 
     async getPresetNames() {
-        return this.ctx.chatluna.preset.getAllPreset(false).value
+        return this.ctx.chatluna.preset
+            .listPresets()
+            .value.map((preset) => preset.id)
     }
 
     async truncateTextOutput(input: {

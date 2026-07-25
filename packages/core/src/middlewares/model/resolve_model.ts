@@ -27,7 +27,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 const presetName =
                     resolved.effectivePreset ??
                     resolved.conversation?.preset ??
-                    config.defaultPreset
+                    ctx.chatluna.preset.getGlobalDefaultPresetId().value
                 const presetExists =
                     presetName != null &&
                     ctx.chatluna.preset.getPreset(presetName, false).value !=

@@ -15,8 +15,13 @@ import { SummaryType } from './types'
 import { computed } from 'koishi-plugin-chatluna'
 import { BrowserManager } from './tools/browser/manager'
 import { registerBrowserTools } from './tools/browser/tools'
+import { registerWebSearchPresetKnowledgeSource } from './knowledge'
 
 export { Config } from './config'
+export {
+    registerWebSearchPresetKnowledgeSource,
+    WEB_SEARCH_PRESET_KNOWLEDGE_SOURCE
+} from './knowledge'
 
 export let logger: Logger
 
@@ -44,6 +49,12 @@ export function apply(ctx: Context, config: Config) {
 
         if (config.searchEngine.length > 0) {
             await providerPlugin(ctx, config, plugin, searchManager)
+            ctx.effect(() =>
+                registerWebSearchPresetKnowledgeSource(
+                    ctx.chatluna.knowledge,
+                    searchManager
+                )
+            )
 
             plugin.registerTool('web_search', {
                 description: SEARCH_TOOL_DESCRIPTION,
@@ -114,6 +125,7 @@ export function apply(ctx: Context, config: Config) {
                                 : undefined,
                         searchFailedPrompt: config.searchFailedPrompt,
                         variableService: ctx.chatluna.promptRenderer,
+                        knowledgeService: ctx.chatluna.knowledge,
                         contextManager: ctx.chatluna.contextManager,
                         browserManager
                     }

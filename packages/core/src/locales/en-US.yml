@@ -470,6 +470,7 @@ commands:
                     preset: 'Preset name'
                 messages:
                     not_found: 'Preset not found.'
+                    empty_not_support: 'Cannot update preset {0} with this command because it has no messages. Add a message block in the role preset admin page.'
                     not_support: 'Cannot modify preset {0}. This complex preset requires editing via the control panel resource manager.'
                     timeout: 'Operation timed out. Cancelled.'
                     cancelled: 'Operation cancelled.'

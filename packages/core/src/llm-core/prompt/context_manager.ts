@@ -5,13 +5,20 @@ import {
     SystemMessage
 } from '@langchain/core/messages'
 import { Document } from '@langchain/core/documents'
+import { HumanMessagePromptTemplate } from '@langchain/core/prompts'
 import { ChainValues } from '@langchain/core/utils/types'
-import { AuthorsNote, PresetTemplate, RoleBook } from './type'
+import { CompiledPreset } from './type'
 import type {
     ChatLunaPromptRenderService,
     RenderConfigurable
 } from '../../services/chat'
 import { Context } from 'koishi'
+import {
+    ContextTrace,
+    ContextTraceLease,
+    ContextTraceStage,
+    traceMessage
+} from './context_trace'
 
 // ---------------------------------------------------------------------------
 // Pipeline stages – ordered from first to last
@@ -115,7 +122,13 @@ export interface PromptContextRuntime {
     promptRenderService: ChatLunaPromptRenderService
 
     /** The preset in use for this request. */
-    preset: PresetTemplate
+    preset: CompiledPreset
+
+    /** Request-scoped provenance and budget trace. */
+    trace: ContextTrace
+
+    /** Rendered preset messages used by anchored insertion. */
+    systemPrompts: BaseMessage[]
 
     // -- Inputs provided by the caller (ChatLunaChatPrompt.formatMessages) --
 
@@ -125,8 +138,8 @@ export interface PromptContextRuntime {
     /** Raw chat history before truncation. */
     chatHistory?: BaseMessage[]
 
-    /** Document collections (long_memory, knowledge, other docs). */
-    documents?: Document[][]
+    /** Document collections with their explicit rendering contracts. */
+    documentCollections?: PromptDocumentCollection[]
 
     /** Agent scratchpad messages, if any. */
     agentScratchpad?: BaseMessage[] | BaseMessage
@@ -136,6 +149,18 @@ export interface PromptContextRuntime {
 
     /** Message inserted after user message in agent mode. */
     afterUserMessage?: BaseMessage
+}
+
+export interface PromptDocumentCollection {
+    documents: Document[]
+    source: 'long_memory' | 'knowledge' | `documents.${number}`
+    prompt: HumanMessagePromptTemplate
+    promptVariable: 'long_history' | 'knowledge'
+    promptPath:
+        | 'promptConfig.longMemoryPrompt'
+        | 'knowledge.prompt'
+        | 'runtimeDefaults.longMemoryPrompt'
+        | 'runtimeDefaults.knowledgePrompt'
 }
 
 // ---------------------------------------------------------------------------
@@ -238,7 +263,7 @@ export interface PlainPromptMessage {
 // ---------------------------------------------------------------------------
 
 export interface CollectPromptContextOptions {
-    variables?: ChainValues
+    traceId: string
     configurable?: RenderConfigurable
     afterUserMessage?: BaseMessage
     /**
@@ -254,32 +279,10 @@ export interface CollectPromptContextOptions {
     currentMessages: BaseMessage[]
 }
 
-// Backward compat re-exports kept for old code:
-export type PromptInjectionStage = PromptPipelineStage
-export type PromptContextInjection = AnchoredInjection
 export interface PromptContextInjectionCollection {
     beforeScratchpad: AnchoredInjection[]
     afterScratchpad: AnchoredInjection[]
-}
-
-// Keep old helper types for backward compatibility
-export interface PromptContextRuntimeHelpers {
-    formatLoreBooks?: (
-        loreBooks: RoleBook[],
-        usedTokens: number,
-        result: BaseMessage[],
-        variables: ChainValues
-    ) => Promise<number>
-    counterAuthorsNote?: (
-        authorsNote: AuthorsNote,
-        variables?: ChainValues,
-        configurable?: RenderConfigurable
-    ) => Promise<[string, number]>
-    formatAuthorsNote?: (
-        authorsNote: AuthorsNote,
-        result: BaseMessage[],
-        formatResult: [string, number]
-    ) => void | number
+    onceInjectionLease?: ContextTraceLease
 }
 
 // ==========================================================================
@@ -299,6 +302,7 @@ export class ChatLunaContextManagerService {
     // -- storage --
     private _conversationPersistent = new Map<string, AnchoredInjection[]>()
     private _conversationQueue = new Map<string, AnchoredInjection[]>()
+    private _onceInjectionLeases = new Map<string, string>()
 
     private _skillProviders = new Set<unknown>()
 
@@ -312,7 +316,7 @@ export class ChatLunaContextManagerService {
 
     constructor(ctx: Context) {
         const clearQueue = (conversationId: string) => {
-            this._conversationQueue.delete(conversationId)
+            this._clearQueuedInjections(conversationId)
         }
 
         ctx.on('chatluna/after-conversation-clear-history', async (payload) =>
@@ -384,7 +388,7 @@ export class ChatLunaContextManagerService {
     }
 
     // -----------------------------------------------------------------------
-    // Injection middleware registration (per-name, backward-compatible)
+    // Injection middleware registration (per-name)
     // -----------------------------------------------------------------------
 
     intercept(
@@ -473,7 +477,7 @@ export class ChatLunaContextManagerService {
     // -----------------------------------------------------------------------
 
     collectInjections({
-        variables,
+        traceId,
         configurable,
         afterUserMessage,
         currentMessages
@@ -493,6 +497,7 @@ export class ChatLunaContextManagerService {
         )
 
         const collected: AnchoredInjection[] = []
+        let onceInjectionLease: ContextTraceLease | undefined
 
         if (conversationId) {
             const persistent =
@@ -515,34 +520,62 @@ export class ChatLunaContextManagerService {
             collected.push(...alive)
 
             const queued = this._conversationQueue.get(conversationId) ?? []
-            if (queued.length > 0) {
-                this._conversationQueue.delete(conversationId)
+            const leased = queued.filter((injection) => {
+                const owner = this._onceInjectionLeases.get(injection.id)
+                if (owner != null) return owner === traceId
+                this._onceInjectionLeases.set(injection.id, traceId)
+                return true
+            })
+            collected.push(...leased)
+
+            if (leased.length > 0) {
+                const injectionIds = new Set(
+                    leased.map((injection) => injection.id)
+                )
+                let settled = false
+                onceInjectionLease = {
+                    commit: () => {
+                        if (settled) return
+                        settled = true
+                        const current =
+                            this._conversationQueue.get(conversationId) ?? []
+                        const remaining = current.filter(
+                            (injection) =>
+                                !injectionIds.has(injection.id) ||
+                                this._onceInjectionLeases.get(injection.id) !==
+                                    traceId
+                        )
+                        if (remaining.length > 0) {
+                            this._conversationQueue.set(
+                                conversationId,
+                                remaining
+                            )
+                        } else {
+                            this._conversationQueue.delete(conversationId)
+                        }
+                        for (const injectionId of injectionIds) {
+                            if (
+                                this._onceInjectionLeases.get(injectionId) ===
+                                traceId
+                            ) {
+                                this._onceInjectionLeases.delete(injectionId)
+                            }
+                        }
+                    },
+                    release: () => {
+                        if (settled) return
+                        settled = true
+                        for (const injectionId of injectionIds) {
+                            if (
+                                this._onceInjectionLeases.get(injectionId) ===
+                                traceId
+                            ) {
+                                this._onceInjectionLeases.delete(injectionId)
+                            }
+                        }
+                    }
+                }
             }
-            collected.push(...queued)
-        }
-
-        // Inline injections from variables (backward compat)
-        if (
-            Array.isArray(variables?.['lore_books']) &&
-            variables['lore_books'].length > 0
-        ) {
-            collected.push(
-                this._createInjection({
-                    name: 'lore_books',
-                    value: variables['lore_books'],
-                    stage: 'injections'
-                })
-            )
-        }
-
-        if (variables?.['authors_note']) {
-            collected.push(
-                this._createInjection({
-                    name: 'authors_note',
-                    value: variables['authors_note'],
-                    stage: 'injections'
-                })
-            )
         }
 
         if (afterUserMessage) {
@@ -568,7 +601,8 @@ export class ChatLunaContextManagerService {
             ),
             afterScratchpad: collected.filter(
                 (item) => item.stage === 'after_scratchpad'
-            )
+            ),
+            onceInjectionLease
         }
     }
 
@@ -639,12 +673,13 @@ export class ChatLunaContextManagerService {
     // -----------------------------------------------------------------------
 
     clearConversation(conversationId: string): void {
-        this._conversationQueue.delete(conversationId)
+        this._clearQueuedInjections(conversationId)
         this._conversationPersistent.delete(conversationId)
     }
 
     clearAll(): void {
         this._conversationQueue.clear()
+        this._onceInjectionLeases.clear()
         this._conversationPersistent.clear()
     }
 
@@ -699,10 +734,19 @@ export class ChatLunaContextManagerService {
         current.push(injection)
     }
 
+    private _clearQueuedInjections(conversationId: string): void {
+        const queued = this._conversationQueue.get(conversationId) ?? []
+        for (const injection of queued) {
+            this._onceInjectionLeases.delete(injection.id)
+        }
+        this._conversationQueue.delete(conversationId)
+    }
+
     private async _applySingleInjection(
         injection: AnchoredInjection,
         runtime: PromptContextRuntime
     ): Promise<void> {
+        const before = new Set(runtime.result)
         const wrappers = [
             ...(this._middlewares.get('*') ?? []),
             ...(this._middlewares.get(injection.name) ?? [])
@@ -764,6 +808,37 @@ export class ChatLunaContextManagerService {
                 }
             }
         }
+
+        const stage: ContextTraceStage =
+            injection.stage === 'after_scratchpad'
+                ? 'after_scratchpad'
+                : injection.stage === 'scratchpad'
+                  ? 'scratchpad'
+                  : 'injections'
+        const kind =
+            injection.name === 'lore_books'
+                ? ('lore' as const)
+                : injection.name === 'authors_note'
+                  ? ('authors_note' as const)
+                  : ('injection' as const)
+
+        for (const msg of runtime.result) {
+            if (before.has(msg)) continue
+            traceMessage(runtime.trace, msg, {
+                stage,
+                source: {
+                    kind,
+                    name: injection.name,
+                    path: `injections.${injection.id}`
+                },
+                tokenEstimate: await runtime.tokenCounter(
+                    typeof msg.content === 'string'
+                        ? msg.content
+                        : JSON.stringify(msg.content)
+                ),
+                status: 'included'
+            })
+        }
     }
 }
 
@@ -816,7 +891,9 @@ function isPlainPromptMessage(input: unknown): input is PlainPromptMessage {
     )
 }
 
-function createMessageFromPlainObject(input: PlainPromptMessage): BaseMessage[] {
+function createMessageFromPlainObject(
+    input: PlainPromptMessage
+): BaseMessage[] {
     const content =
         typeof input.content === 'string'
             ? input.content

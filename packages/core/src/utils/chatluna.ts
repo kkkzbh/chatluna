@@ -1,9 +1,11 @@
-import { SystemMessage } from '@langchain/core/messages'
 import { computed, type ComputedRef } from '@vue/reactivity'
 import type { Context } from 'koishi'
 import { ChatLunaChatPrompt } from 'koishi-plugin-chatluna/llm-core/chain/prompt'
 import type { ChatLunaChatModel } from 'koishi-plugin-chatluna/llm-core/platform/model'
-import type { PresetTemplate } from 'koishi-plugin-chatluna/llm-core/prompt'
+import {
+    type CompiledPreset,
+    compilePreset
+} from 'koishi-plugin-chatluna/llm-core/prompt'
 
 export interface ComputePresetOptions {
     name: string
@@ -15,26 +17,36 @@ export function computePreset(
     ctx: Context,
     info: ComputePresetOptions,
     rawText: string
-): ComputedRef<PresetTemplate> {
-    return computed(
-        () =>
-            ({
-                triggerKeyword: [info.name],
-                rawText,
-                messages: rawText ? [new SystemMessage(rawText)] : [],
-                config:
-                    info.promptMode === 'preset' && info.preset
-                        ? (ctx.chatluna.preset.getPreset(info.preset).value
-                              ?.config ?? {})
-                        : {}
-            }) satisfies PresetTemplate
-    )
+): ComputedRef<CompiledPreset> {
+    return computed(() => {
+        if (info.promptMode === 'preset' && info.preset) {
+            return ctx.chatluna.preset.getPreset(info.preset).value
+        }
+        return compilePreset(
+            {
+                schemaVersion: 2,
+                id: 'prompt',
+                displayName: info.name,
+                aliases: [],
+                messages:
+                    rawText.length === 0
+                        ? []
+                        : [{ role: 'system', content: rawText }],
+                inputFormat: null,
+                lore: { defaults: {}, entries: [] },
+                authorsNote: null,
+                knowledge: null,
+                promptConfig: {}
+            },
+            { source: 'ephemeral', raw: rawText }
+        )
+    })
 }
 
 export function createChatPrompt(
     ctx: Context,
     llm: ChatLunaChatModel,
-    preset: ComputedRef<PresetTemplate>
+    preset: ComputedRef<CompiledPreset>
 ): ChatLunaChatPrompt {
     return new ChatLunaChatPrompt({
         preset,
@@ -43,6 +55,7 @@ export function createChatPrompt(
             llm.invocationParams().maxTokenLimit ??
             llm.getModelMaxContextSize(),
         contextManager: ctx.chatluna.contextManager,
-        promptRenderService: ctx.chatluna.promptRenderer
+        promptRenderService: ctx.chatluna.promptRenderer,
+        knowledgeService: ctx.chatluna.knowledge
     })
 }

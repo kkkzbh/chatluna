@@ -206,7 +206,7 @@ export class ChatLunaAgentTriggerExecutor {
         const preset =
             constraint.fixedPreset ??
             constraint.defaultPreset ??
-            this.ctx.chatluna.config.defaultPreset
+            this.ctx.chatluna.preset.getGlobalDefaultPresetId().value
         const model = this.ctx.chatluna.conversation.pickModel(constraint)
 
         if (model == null) {

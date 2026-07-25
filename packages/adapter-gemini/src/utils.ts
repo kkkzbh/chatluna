@@ -23,7 +23,8 @@ import { ModelRequestParams } from 'koishi-plugin-chatluna/llm-core/platform/api
 import {
     fetchFileLikeUrl,
     fetchImageUrl,
-    removeAdditionalProperties
+    removeAdditionalProperties,
+    splitModelRequestOverrides
 } from '@chatluna/v1-shared-adapter'
 import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
 import {
@@ -690,7 +691,11 @@ export function createGenerationConfig(
                 : undefined
     }
 
-    return deepAssign({}, base, params.overrideRequestParams ?? {})
+    return deepAssign(
+        {},
+        base,
+        splitModelRequestOverrides(params.overrideRequestParams).providerPayload
+    )
 }
 
 export async function createChatGenerationParams(

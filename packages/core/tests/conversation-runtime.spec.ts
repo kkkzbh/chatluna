@@ -210,6 +210,52 @@ it('ConversationRuntime clears cached interfaces and dispatches compression', as
     assert.deepEqual(compressed, [true])
 })
 
+it('ConversationRuntime rebuilds the cached interface when effective chain identity changes', async () => {
+    const created: string[] = []
+    const disposed: string[] = []
+    const runtime = new ConversationRuntime({
+        createChatInterface: async (
+            conversation: ReturnType<typeof createConversation>
+        ) => {
+            const identity = [
+                conversation.model,
+                conversation.preset,
+                conversation.chatMode
+            ].join('|')
+            created.push(identity)
+            return {
+                dispose: () => disposed.push(identity)
+            }
+        }
+    } as never)
+    const initial = createConversation({
+        id: 'conversation-runtime-identity',
+        model: 'platform/model-a',
+        preset: 'sakiko',
+        chatMode: 'plugin'
+    })
+
+    const first = await runtime.ensureChatInterface(initial)
+    const same = await runtime.ensureChatInterface({
+        ...initial,
+        updatedAt: new Date(initial.updatedAt.getTime() + 1)
+    })
+    const changed = await runtime.ensureChatInterface({
+        ...initial,
+        model: 'platform/model-b',
+        preset: 'catgirl',
+        chatMode: 'chat'
+    })
+
+    assert.equal(same, first)
+    assert.notEqual(changed, first)
+    assert.deepEqual(created, [
+        'platform/model-a|sakiko|plugin',
+        'platform/model-b|catgirl|chat'
+    ])
+    assert.deepEqual(disposed, ['platform/model-a|sakiko|plugin'])
+})
+
 it('ConversationRuntime dispose clears platform-scoped and global state', () => {
     const runtime = new ConversationRuntime({} as never)
     const session = createSession({ sid: 'sid-dispose' })

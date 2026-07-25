@@ -62,7 +62,9 @@ $inner:
               - 成员独立会话
       defaultChatMode: 设置默认的聊天模式。
       defaultModel: 设置默认使用的聊天模型。
-      defaultPreset: 设置默认使用的聊天预设。
+      bundledPresetDir: 内置角色预设目录。
+      runtimePresetDir: 可写的运行时角色预设目录。
+      archiveDir: 可写且持久化的会话归档目录。
 
     - $desc: 杂项
       errorTemplate: 设置错误提示消息的模板（此设置在未来版本中可能会有变更）。

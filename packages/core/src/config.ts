@@ -46,7 +46,9 @@ export interface Config {
 
     defaultChatMode: string
     defaultModel: string
-    defaultPreset: string
+    bundledPresetDir: string
+    runtimePresetDir: string
+    archiveDir: string
 
     voiceSpeakId: number
 
@@ -169,7 +171,9 @@ export const Config: Schema<Config> = Schema.intersect([
         ]).default('shared'),
         defaultChatMode: Schema.dynamic('chat-mode').default('plugin'),
         defaultModel: Schema.dynamic('model').default('无'),
-        defaultPreset: Schema.dynamic('preset').default('sydney')
+        bundledPresetDir: Schema.string().required(),
+        runtimePresetDir: Schema.string().required(),
+        archiveDir: Schema.string().required()
     }),
 
     Schema.object({

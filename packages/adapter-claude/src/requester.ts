@@ -16,7 +16,10 @@ import {
     ChatLunaErrorCode
 } from 'koishi-plugin-chatluna/utils/error'
 import { deepAssign } from 'koishi-plugin-chatluna/utils/object'
-import { createUsageMetadata } from '@chatluna/v1-shared-adapter'
+import {
+    createUsageMetadata,
+    splitModelRequestOverrides
+} from '@chatluna/v1-shared-adapter'
 import { Config, logger } from '.'
 import {
     ClaudeDeltaResponse,
@@ -90,7 +93,8 @@ export class ClaudeRequester extends ModelRequester<ClientConfig> {
                         ? formatToolsToClaudeTools(params.tools)
                         : undefined
             } satisfies ClaudeRequest,
-            params.overrideRequestParams ?? {}
+            splitModelRequestOverrides(params.overrideRequestParams)
+                .providerPayload
         ) as ClaudeRequest
         request.stream = true
 

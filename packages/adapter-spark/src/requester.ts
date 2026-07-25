@@ -2,7 +2,8 @@ import { ChatGenerationChunk } from '@langchain/core/outputs'
 import {
     buildChatCompletionParams,
     createRequestContext,
-    processStreamResponse
+    processStreamResponse,
+    splitModelRequestOverrides
 } from '@chatluna/v1-shared-adapter'
 import { Context, Logger } from 'koishi'
 import {
@@ -97,7 +98,8 @@ export class SparkRequester extends ModelRequester<SparkClientConfig, Config> {
                     max_tokens: baseRequest.max_tokens,
                     tools: baseRequest.tools
                 } satisfies ChatCompletionRequest,
-                params.overrideRequestParams ?? {}
+                splitModelRequestOverrides(params.overrideRequestParams)
+                    .providerPayload
             )
 
             if (

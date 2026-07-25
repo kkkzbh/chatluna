@@ -2,12 +2,14 @@ import { Context } from 'koishi'
 import { Config, logger } from 'koishi-plugin-chatluna'
 import { AIMessage, BaseMessage } from '@langchain/core/messages'
 import {
-    PresetTemplate,
-    RoleBook
+    CompiledPreset,
+    LoreEntry,
+    MatchedLoreEntry
 } from 'koishi-plugin-chatluna/llm-core/prompt'
+import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
 
 export function apply(ctx: Context, config: Config): void {
-    const cache = new Map<PresetTemplate, LoreBookMatcher>()
+    const cache = new Map<CompiledPreset, LoreBookMatcher>()
 
     ctx.before(
         'chatluna/chat',
@@ -20,17 +22,17 @@ export function apply(ctx: Context, config: Config): void {
         ) => {
             const preset = chatInterface.preset.value
 
-            if (!preset.loreBooks || preset.loreBooks.items.length === 0) {
+            if (preset.lore.entries.length === 0) {
                 return
             }
 
             let matcher = cache.get(preset)
             if (!matcher) {
-                const loreBooks = preset.loreBooks.items
+                const loreBooks = preset.lore.entries
                 matcher = new LoreBookMatcher(loreBooks, {
-                    scanDepth: preset.loreBooks?.scanDepth,
-                    recursiveScan: preset.loreBooks?.recursiveScan,
-                    maxRecursionDepth: preset.loreBooks?.maxRecursionDepth
+                    scanDepth: preset.lore.defaults.scanDepth,
+                    recursiveScan: preset.lore.defaults.recursiveScan,
+                    maxRecursionDepth: preset.lore.defaults.maxRecursionDepth
                 })
                 cache.set(preset, matcher)
             }
@@ -46,7 +48,7 @@ export function apply(ctx: Context, config: Config): void {
             if (matchedLores.length > 0) {
                 logger.debug(
                     `Found ${matchedLores.length} matched lore books: ${JSON.stringify(
-                        matchedLores.map((lore) => lore.keywords)
+                        matchedLores.map((lore) => lore.entry.keywords)
                     )}`
                 )
 
@@ -80,15 +82,18 @@ export function apply(ctx: Context, config: Config): void {
 }
 
 export class LoreBookMatcher {
-    private loreBooks: RoleBook[]
+    private loreBooks: MatchedLoreEntry[]
     private defaultConfig: LoreBookConfig
     private regexCache: Map<string, RegExp>
 
     constructor(
-        loreBooks: RoleBook[],
+        loreBooks: LoreEntry[],
         defaultConfig: Partial<LoreBookConfig> = {}
     ) {
-        this.loreBooks = loreBooks
+        this.loreBooks = loreBooks.map((entry, presetEntryIndex) => ({
+            entry,
+            presetEntryIndex
+        }))
         this.defaultConfig = {
             scanDepth: defaultConfig.scanDepth ?? 2,
             recursiveScan: defaultConfig.recursiveScan ?? true,
@@ -99,29 +104,35 @@ export class LoreBookMatcher {
         this.regexCache = new Map()
     }
 
-    matchLoreBooks(messages: BaseMessage[]): RoleBook[] {
-        const matchedLores = new Set<RoleBook>()
+    matchLoreBooks(messages: BaseMessage[]): MatchedLoreEntry[] {
+        const matchedLores = new Map<number, MatchedLoreEntry>()
 
         const recentMessages = messages.slice().reverse()
 
         this.stackMatch(recentMessages, matchedLores)
 
-        return Array.from(matchedLores).sort(
-            (a, b) => (a.order ?? 0) - (b.order ?? 0)
+        return Array.from(matchedLores.values()).sort(
+            (a, b) =>
+                (a.entry.order ?? 0) - (b.entry.order ?? 0) ||
+                a.presetEntryIndex - b.presetEntryIndex
         )
     }
 
     private stackMatch(
         messages: BaseMessage[],
-        matchedLores: Set<RoleBook>
+        matchedLores: Map<number, MatchedLoreEntry>
     ): void {
         const stack: [BaseMessage[], number][] = [[messages, 0]]
 
         while (stack.length > 0) {
             const [currentMessages, depth] = stack.pop()!
 
-            for (const loreBook of this.loreBooks) {
-                if (loreBook.enabled === false || matchedLores.has(loreBook)) {
+            for (const matchedLore of this.loreBooks) {
+                const loreBook = matchedLore.entry
+                if (
+                    loreBook.enabled === false ||
+                    matchedLores.has(matchedLore.presetEntryIndex)
+                ) {
                     continue
                 }
 
@@ -137,7 +148,7 @@ export class LoreBookMatcher {
                 )
 
                 for (const message of relevantMessages) {
-                    const content = message.content as string
+                    const content = getMessageContent(message.content)
 
                     const contentParts = this.splitContent(config, content)
 
@@ -149,7 +160,10 @@ export class LoreBookMatcher {
                             continue
                         }
 
-                        matchedLores.add(loreBook)
+                        matchedLores.set(
+                            matchedLore.presetEntryIndex,
+                            matchedLore
+                        )
 
                         if (config.recursiveScan) {
                             stack.push([
@@ -167,21 +181,14 @@ export class LoreBookMatcher {
         }
     }
 
-    private matchKeywords(content: string, loreBook: RoleBook): boolean {
+    private matchKeywords(content: string, loreBook: LoreEntry): boolean {
         return loreBook.keywords.some((keyword) => {
             const regex = this.getRegexFromKeyword(keyword, loreBook)
             return regex.test(content)
         })
     }
 
-    private getRegexFromKeyword(
-        keyword: string | RegExp,
-        loreBook: RoleBook
-    ): RegExp {
-        if (keyword instanceof RegExp) {
-            return keyword
-        }
-
+    private getRegexFromKeyword(keyword: string, loreBook: LoreEntry): RegExp {
         const cacheKey = `${keyword}:${loreBook.caseSensitive}:${loreBook.matchWholeWord}`
         let regex = this.regexCache.get(cacheKey)
 
@@ -206,9 +213,9 @@ export class LoreBookMatcher {
 
     private createRegexFromKeyword(
         keyword: string,
-        loreBook: RoleBook
+        loreBook: LoreEntry
     ): RegExp {
-        let flags = 'g'
+        let flags = ''
         if (!loreBook.caseSensitive) {
             flags += 'i'
         }
@@ -217,7 +224,7 @@ export class LoreBookMatcher {
         return new RegExp(pattern, flags)
     }
 
-    private getConfig(loreBook: RoleBook): LoreBookConfig {
+    private getConfig(loreBook: LoreEntry): LoreBookConfig {
         return {
             scanDepth: loreBook.scanDepth ?? this.defaultConfig.scanDepth,
             recursiveScan:

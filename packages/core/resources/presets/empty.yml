@@ -1,5 +1,13 @@
-keywords:
-    - empty
+schemaVersion: 2
+id: empty
+displayName: 空预设
+aliases:
     - 空预设
-
-prompts: []
+messages: []
+inputFormat: null
+lore:
+    defaults: {}
+    entries: []
+authorsNote: null
+knowledge: null
+promptConfig: {}

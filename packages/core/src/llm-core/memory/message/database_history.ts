@@ -17,7 +17,11 @@ import {
 import { randomUUID } from 'crypto'
 import { observationToMessageContent } from '../../agent/legacy-executor'
 import type { AgentStep } from '../../agent/types'
-import type { ChatLunaMessageMeta, MessageRecord } from '../../../types'
+import {
+    type ChatLunaMessageMeta,
+    ConversationNotFoundError,
+    type MessageRecord
+} from '../../../types'
 import type { ChatLunaService } from '../../../services/chat'
 
 function isReplyAgentTailRole(role: string | null | undefined): boolean {
@@ -506,32 +510,12 @@ export class KoishiChatMessageHistory extends BaseChatMessageHistory {
                     ? JSON.parse(conversation.additional_kwargs)
                     : {}
         } else {
-            await this._ctx.database.create('chatluna_conversation', {
-                id: this.conversationId,
-                bindingKey: this.conversationId,
-                title: 'Conversation',
-                model: this.chatluna.config.defaultModel,
-                preset: this.chatluna.config.defaultPreset,
-                chatMode: this.chatluna.config.defaultChatMode,
-                createdBy: 'system',
-                createdAt: new Date(),
-                updatedAt: new Date(),
-                lastChatAt: new Date(),
-                status: 'active',
-                latestMessageId: null,
-                additional_kwargs: null,
-                compression: null,
-                archivedAt: null,
-                archiveId: null,
-                legacyRoomId: null,
-                legacyMeta: null,
-                autoTitle: true
-            })
+            throw new ConversationNotFoundError()
         }
 
         if (!this._serializedChatHistory) {
             await this._loadMessages()
-            this._updatedAt = conversation?.updatedAt ?? new Date(0)
+            this._updatedAt = conversation.updatedAt
         }
     }
 

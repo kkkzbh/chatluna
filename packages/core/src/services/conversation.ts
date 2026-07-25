@@ -5,8 +5,10 @@ import type { Context, Session } from 'koishi'
 import type { PlatformService } from 'koishi-plugin-chatluna/llm-core/platform/service'
 import { ModelType } from 'koishi-plugin-chatluna/llm-core/platform/types'
 import { parseRawModelName } from 'koishi-plugin-chatluna/llm-core/utils/count_tokens'
+import { PresetError, PresetService } from 'koishi-plugin-chatluna/preset'
 import type { Config } from '../config'
 import {
+    assertArchivePath,
     deserializeConversation,
     deserializeMessage,
     readArchivePayload,
@@ -70,6 +72,21 @@ import type { ConversationRuntime } from './conversation_runtime'
 
 const EMPTY_MODEL_NAMES = new Set(['', '无', 'empty'])
 
+function checkPresetId(preset: PresetService, id?: string | null) {
+    if (id == null) {
+        return
+    }
+    if (preset.getPreset(id, false).value == null) {
+        throw new PresetError(
+            'not_found',
+            'load',
+            'reference',
+            `Unknown canonical preset id: ${id}`,
+            id
+        )
+    }
+}
+
 const FIXED_FIELDS: readonly {
     key: 'model' | 'preset' | 'chatMode'
     constraintKey: keyof Pick<
@@ -91,7 +108,8 @@ export class ConversationService {
         private readonly ctx: Context,
         private readonly config: Config,
         private readonly runtime: ConversationRuntime,
-        private readonly platform: PlatformService
+        private readonly platform: PlatformService,
+        private readonly preset: PresetService
     ) {}
 
     async getConversation(id: string) {
@@ -195,7 +213,7 @@ export class ConversationService {
             defaultPreset:
                 lane ??
                 firstDefined(constraints, 'defaultPreset') ??
-                this.config.defaultPreset,
+                this.preset.getGlobalDefaultPresetId().value,
             defaultChatMode:
                 firstDefined(constraints, 'defaultChatMode') ??
                 this.config.defaultChatMode,
@@ -495,27 +513,57 @@ export class ConversationService {
         conversation: ConversationRecord | null
     ): ResolvedConversationContext {
         const effectiveModel = this.pickModel(constraint, conversation)
-        const withModel =
-            conversation != null && effectiveModel != null
-                ? { ...conversation, model: effectiveModel }
-                : conversation
+        const presetLane = getPresetLane(bindingKey)
+        const constraintDefaultPreset = firstDefined(
+            constraint.constraints,
+            'defaultPreset'
+        )
+        const globalDefaultPreset = this.preset.getGlobalDefaultPresetId().value
+        const effectivePreset =
+            constraint.fixedPreset ??
+            conversation?.preset ??
+            presetLane ??
+            constraintDefaultPreset ??
+            globalDefaultPreset
+        const presetResolution = {
+            source:
+                constraint.fixedPreset != null
+                    ? ('fixed' as const)
+                    : conversation?.preset != null
+                      ? ('conversation' as const)
+                      : presetLane != null
+                        ? ('presetLane' as const)
+                        : constraintDefaultPreset != null
+                          ? ('constraintDefault' as const)
+                          : ('globalDefault' as const),
+            presetId: effectivePreset,
+            bindingKey
+        }
+        const effectiveChatMode =
+            constraint.fixedChatMode ??
+            conversation?.chatMode ??
+            constraint.defaultChatMode ??
+            this.config.defaultChatMode
+        const effectiveConversation =
+            conversation == null
+                ? conversation
+                : {
+                      ...conversation,
+                      ...(effectiveModel == null
+                          ? {}
+                          : { model: effectiveModel }),
+                      preset: effectivePreset,
+                      chatMode: effectiveChatMode
+                  }
         return {
             bindingKey,
-            presetLane: getPresetLane(bindingKey),
+            presetLane,
             binding,
-            conversation: withModel,
+            conversation: effectiveConversation,
             effectiveModel,
-            effectivePreset:
-                constraint.fixedPreset ??
-                conversation?.preset ??
-                getPresetLane(bindingKey) ??
-                constraint.defaultPreset ??
-                this.config.defaultPreset,
-            effectiveChatMode:
-                constraint.fixedChatMode ??
-                conversation?.chatMode ??
-                constraint.defaultChatMode ??
-                this.config.defaultChatMode,
+            effectivePreset,
+            presetResolution,
+            effectiveChatMode,
             constraint
         }
     }
@@ -561,6 +609,8 @@ export class ConversationService {
         }
     ) {
         this.checkChatMode(options.chatMode)
+        checkPresetId(this.preset, options.preset)
+        checkPresetId(this.preset, getPresetLane(options.bindingKey))
 
         return runLock(this._bindingLocks, options.bindingKey, async () => {
             const now = new Date()
@@ -594,15 +644,33 @@ export class ConversationService {
                     bindingKey: options.bindingKey
                 }
             )
-            await this.ctx.database.create(
-                'chatluna_conversation',
-                conversation
-            )
-            if (options.setActive !== false) {
-                await this.setActiveConversation(
-                    options.bindingKey,
-                    conversation.id
+
+            let bindingUpdate:
+                | Awaited<
+                      ReturnType<
+                          ConversationService['writeActiveConversationLocked']
+                      >
+                  >
+                | undefined
+            await this.preset.runReferenceMutation(async () => {
+                checkPresetId(this.preset, conversation.preset)
+                checkPresetId(
+                    this.preset,
+                    getPresetLane(conversation.bindingKey)
                 )
+                await this.ctx.database.create(
+                    'chatluna_conversation',
+                    conversation
+                )
+                if (options.setActive !== false) {
+                    bindingUpdate = await this.writeActiveConversationLocked(
+                        options.bindingKey,
+                        conversation.id
+                    )
+                }
+            })
+            if (bindingUpdate != null) {
+                await this.emitBindingUpdate(bindingUpdate)
             }
             await this.ctx.root.parallel('chatluna/after-conversation-create', {
                 conversation,
@@ -613,6 +681,21 @@ export class ConversationService {
     }
 
     async setActiveConversation(bindingKey: string, conversationId: string) {
+        const update = await this.preset.runReferenceMutation(async () => {
+            checkPresetId(this.preset, getPresetLane(bindingKey))
+            return this.writeActiveConversationLocked(
+                bindingKey,
+                conversationId
+            )
+        })
+        await this.emitBindingUpdate(update)
+        return update.payload
+    }
+
+    private async writeActiveConversationLocked(
+        bindingKey: string,
+        conversationId: string
+    ) {
         const current = await this.getBinding(bindingKey)
         const prev = current?.activeConversationId
         const payload: BindingRecord = {
@@ -626,16 +709,42 @@ export class ConversationService {
         }
 
         await this.ctx.database.upsert('chatluna_binding', [payload])
+        return { payload, previousConversationId: prev ?? null }
+    }
+
+    private async emitBindingUpdate(
+        update: Awaited<
+            ReturnType<ConversationService['writeActiveConversationLocked']>
+        >
+    ) {
         await this.ctx.root.parallel('chatluna/after-binding-update', {
-            binding: payload,
-            previousConversationId: prev ?? null
+            binding: update.payload,
+            previousConversationId: update.previousConversationId
         })
-        return payload
     }
 
     async touchConversation(
         conversationId: string,
         patch: Partial<ConversationRecord> = {}
+    ) {
+        if (patch.preset !== undefined || patch.bindingKey !== undefined) {
+            return this.preset.runReferenceMutation(async () => {
+                checkPresetId(this.preset, patch.preset)
+                checkPresetId(
+                    this.preset,
+                    patch.bindingKey == null
+                        ? undefined
+                        : getPresetLane(patch.bindingKey)
+                )
+                return this.touchConversationLocked(conversationId, patch)
+            })
+        }
+        return this.touchConversationLocked(conversationId, patch)
+    }
+
+    private async touchConversationLocked(
+        conversationId: string,
+        patch: Partial<ConversationRecord>
     ) {
         const update: Partial<ConversationRecord> = {
             updatedAt: patch.updatedAt ?? new Date()
@@ -1056,9 +1165,7 @@ export class ConversationService {
                 { conversation: current }
             )
 
-            const archiveDir = await this.ensureDataDir(
-                path.join('archive', current.id)
-            )
+            const archiveDir = await this.ensureArchiveDir(current.id)
             const messages = await this.listMessages(current.id)
             const payload: ConversationArchivePayload = {
                 formatVersion: 1,
@@ -1186,7 +1293,10 @@ export class ConversationService {
             ])
 
             try {
-                const payload = await readArchivePayload(archive.path)
+                const payload = await readArchivePayload(
+                    path.resolve(this.ctx.baseDir, this.config.archiveDir),
+                    archive.path
+                )
                 const restored = deserializeConversation(payload.conversation)
                 const restoredMessages = payload.messages.map((message) => ({
                     ...deserializeMessage(message),
@@ -1202,17 +1312,24 @@ export class ConversationService {
                         restoredMessages
                     )
                 }
-                await this.ctx.database.upsert('chatluna_conversation', [
-                    {
-                        ...current,
-                        ...restored,
-                        id: current.id,
-                        status: 'active',
-                        archivedAt: null,
-                        archiveId: null,
-                        updatedAt: new Date()
-                    }
-                ])
+                await this.preset.runReferenceMutation(async () => {
+                    checkPresetId(this.preset, restored.preset)
+                    checkPresetId(
+                        this.preset,
+                        getPresetLane(restored.bindingKey)
+                    )
+                    await this.ctx.database.upsert('chatluna_conversation', [
+                        {
+                            ...current,
+                            ...restored,
+                            id: current.id,
+                            status: 'active',
+                            archivedAt: null,
+                            archiveId: null,
+                            updatedAt: new Date()
+                        }
+                    ])
+                })
                 await this.ctx.database.upsert('chatluna_archive', [
                     { ...archive, state: 'ready', restoredAt: new Date() }
                 ])
@@ -1294,7 +1411,10 @@ export class ConversationService {
             return this.listMessages(conversation.id)
         }
 
-        const payload = await readArchivePayload(archive.path)
+        const payload = await readArchivePayload(
+            path.resolve(this.ctx.baseDir, this.config.archiveDir),
+            archive.path
+        )
         return payload.messages.map((message) => ({
             ...deserializeMessage(message),
             conversationId: conversation.id
@@ -1348,7 +1468,11 @@ export class ConversationService {
                 { conversation: current }
             )
 
-            await removeArchive(this.ctx, current.archiveId)
+            await removeArchive(
+                this.ctx,
+                path.resolve(this.ctx.baseDir, this.config.archiveDir),
+                current.archiveId
+            )
 
             const updated = await this.touchConversation(current.id, {
                 status: 'deleted',
@@ -1413,6 +1537,7 @@ export class ConversationService {
         }
 
         this.checkChatMode(options.chatMode)
+        checkPresetId(this.preset, options.preset)
 
         const updated = await this.touchConversation(conversation.id, {
             model: options.model,
@@ -1509,8 +1634,24 @@ export class ConversationService {
         session: Session,
         patch: Partial<ConstraintRecord>
     ) {
+        const record = await this.preset.runReferenceMutation(() =>
+            this.updateManagedConstraintLocked(session, patch)
+        )
+        await this.ctx.root.parallel('chatluna/after-constraint-update', {
+            constraint: record
+        })
+        return record
+    }
+
+    private async updateManagedConstraintLocked(
+        session: Session,
+        patch: Partial<ConstraintRecord>
+    ) {
         this.checkChatMode(patch.defaultChatMode)
         this.checkChatMode(patch.fixedChatMode)
+        checkPresetId(this.preset, patch.activePresetLane)
+        checkPresetId(this.preset, patch.defaultPreset)
+        checkPresetId(this.preset, patch.fixedPreset)
 
         const current = await this.getManagedConstraint(session)
         const now = new Date()
@@ -1552,9 +1693,6 @@ export class ConversationService {
         }
 
         await this.ctx.database.upsert('chatluna_constraint', [record])
-        await this.ctx.root.parallel('chatluna/after-constraint-update', {
-            constraint: record
-        })
         return (await this.getManagedConstraint(session)) ?? record
     }
 
@@ -1779,6 +1917,29 @@ export class ConversationService {
         const target = path.resolve(this.ctx.baseDir, 'data/chatluna', name)
         await fs.mkdir(target, { recursive: true })
         return target
+    }
+
+    private async ensureArchiveDir(conversationId: string) {
+        const root = path.resolve(this.ctx.baseDir, this.config.archiveDir)
+        const target = path.resolve(root, conversationId)
+        if (path.dirname(target) !== root) {
+            throw new Error(
+                `Conversation id escapes the configured archive directory: ${conversationId}`
+            )
+        }
+        await fs.mkdir(root, { recursive: true })
+        const rootStat = await fs.lstat(root)
+        if (
+            rootStat.isSymbolicLink() ||
+            !rootStat.isDirectory() ||
+            (await fs.realpath(root)) !== root
+        ) {
+            throw new Error(
+                `Configured archive root must be a real directory: ${root}`
+            )
+        }
+        await fs.mkdir(target, { recursive: true })
+        return assertArchivePath(root, target)
     }
 }
 

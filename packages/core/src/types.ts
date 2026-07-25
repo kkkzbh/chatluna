@@ -42,6 +42,18 @@ export type ConstraintManageMode = 'anyone' | 'admin'
 export type ConstraintPrincipalType = 'user' | 'guild'
 export type ConstraintPermission = 'view' | 'manage'
 export type ArchiveState = 'ready' | 'restoring' | 'broken'
+export type PresetResolutionSource =
+    | 'fixed'
+    | 'conversation'
+    | 'presetLane'
+    | 'constraintDefault'
+    | 'globalDefault'
+
+export interface PresetResolution {
+    source: PresetResolutionSource
+    presetId: string
+    bindingKey: string
+}
 
 export interface ConversationCompressionRecord {
     count?: number
@@ -199,6 +211,7 @@ export interface ResolvedConversationContext {
     binding?: BindingRecord | null
     effectiveModel?: string | null
     effectivePreset?: string | null
+    presetResolution: PresetResolution
     effectiveChatMode?: string | null
     constraint: ResolvedConstraint
 }

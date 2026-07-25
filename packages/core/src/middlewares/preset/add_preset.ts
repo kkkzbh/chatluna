@@ -1,8 +1,6 @@
 import { Context } from 'koishi'
 import { Config } from '../../config'
 import { ChainMiddlewareRunStatus, ChatChain } from '../../chains/chain'
-import { dump } from 'js-yaml'
-import fs from 'fs/promises'
 
 export function apply(ctx: Context, _: Config, chain: ChatChain) {
     chain
@@ -16,7 +14,7 @@ export function apply(ctx: Context, _: Config, chain: ChatChain) {
 
             const preset = ctx.chatluna.preset
 
-            const existsPreset = preset.getPreset(presetName)
+            const existsPreset = preset.getPreset(presetName, false)
 
             if (existsPreset.value != null) {
                 await context.send(session.text('.conflict'))
@@ -33,22 +31,23 @@ export function apply(ctx: Context, _: Config, chain: ChatChain) {
                 return ChainMiddlewareRunStatus.STOP
             }
 
-            const presetObject = {
-                keywords: [presetName],
-                prompts: [
+            await preset.createPreset({
+                schemaVersion: 2,
+                id: presetName,
+                displayName: presetName,
+                aliases: [],
+                messages: [
                     {
                         role: 'system',
                         content: result
                     }
-                ]
-            }
-
-            const yamlText = dump(presetObject)
-
-            await fs.writeFile(
-                preset.resolvePresetDir() + `/${presetName}.yml`,
-                yamlText
-            )
+                ],
+                inputFormat: null,
+                lore: { defaults: {}, entries: [] },
+                authorsNote: null,
+                knowledge: null,
+                promptConfig: {}
+            })
 
             context.message = session.text('.success', [presetName])
 

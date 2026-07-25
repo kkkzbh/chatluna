@@ -34,7 +34,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 formatPreset(ctx, session, value)
             )
 
-            const presets = preset.getAllPreset(false).value
+            const presets = preset.listPresets().value.map((item) => item.id)
 
             await pagination.push(presets)
 
@@ -62,7 +62,9 @@ async function formatPreset(
         .concat('......')
 
     buffer.push(
-        session.text('.preset_keyword', [preset.triggerKeyword.join(', ')])
+        session.text('.preset_keyword', [
+            [preset.id, ...preset.aliases].join(', ')
+        ])
     )
     buffer.push(session.text('.preset_content', [previewContent]))
 

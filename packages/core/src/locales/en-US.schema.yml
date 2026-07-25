@@ -61,7 +61,9 @@ $inner:
               - Personal conversation per member
       defaultChatMode: Set default chat mode.
       defaultModel: Set default chat model.
-      defaultPreset: Set default chat preset.
+      bundledPresetDir: Bundled role preset directory.
+      runtimePresetDir: Writable runtime role preset directory.
+      archiveDir: Writable persistent conversation archive directory.
 
     - $desc: Miscellaneous
       errorTemplate: Set error prompt message template (subject to change).

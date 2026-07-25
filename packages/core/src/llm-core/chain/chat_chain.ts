@@ -9,8 +9,11 @@ import {
 import { ChatLunaChatModel } from 'koishi-plugin-chatluna/llm-core/platform/model'
 import { BufferMemory } from 'koishi-plugin-chatluna/llm-core/memory/langchain'
 import { ChatLunaChatPrompt } from 'koishi-plugin-chatluna/llm-core/chain/prompt'
-import { PresetTemplate } from 'koishi-plugin-chatluna/llm-core/prompt'
-import type { ChatLunaPromptRenderService } from 'koishi-plugin-chatluna/services/chat'
+import { CompiledPreset } from 'koishi-plugin-chatluna/llm-core/prompt'
+import type {
+    ChatLunaPromptRenderService,
+    PresetKnowledgeService
+} from 'koishi-plugin-chatluna/services/chat'
 import type { ChatLunaContextManagerService } from 'koishi-plugin-chatluna/llm-core/prompt'
 import {
     ChatLunaError,
@@ -18,14 +21,16 @@ import {
 } from 'koishi-plugin-chatluna/utils/error'
 import { ComputedRef } from '@vue/reactivity'
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
+import { mergeBuiltVariables } from './variables'
 
 export interface ChatLunaChatChainInput {
     botName: string
-    preset: ComputedRef<PresetTemplate>
+    preset: ComputedRef<CompiledPreset>
     humanMessagePrompt?: string
     historyMemory: BufferMemory
     variableService: ChatLunaPromptRenderService
     contextManager: ChatLunaContextManagerService
+    knowledgeService: PresetKnowledgeService
 }
 
 export class ChatLunaChatChain
@@ -38,11 +43,13 @@ export class ChatLunaChatChain
 
     historyMemory: BufferMemory
 
-    preset: ComputedRef<PresetTemplate>
+    preset: ComputedRef<CompiledPreset>
 
     variableService: ChatLunaPromptRenderService
 
     contextManager: ChatLunaContextManagerService
+
+    knowledgeService: PresetKnowledgeService
 
     constructor({
         botName,
@@ -50,7 +57,8 @@ export class ChatLunaChatChain
         preset,
         chain,
         variableService,
-        contextManager
+        contextManager,
+        knowledgeService
     }: ChatLunaChatChainInput & {
         chain: ChatLunaLLMChain
     }) {
@@ -61,6 +69,7 @@ export class ChatLunaChatChain
         this.preset = preset
         this.variableService = variableService
         this.contextManager = contextManager
+        this.knowledgeService = knowledgeService
         this.chain = chain
     }
 
@@ -71,7 +80,8 @@ export class ChatLunaChatChain
             historyMemory,
             preset,
             variableService,
-            contextManager
+            contextManager,
+            knowledgeService
         }: ChatLunaChatChainInput
     ): ChatLunaLLMChainWrapper {
         const prompt = new ChatLunaChatPrompt({
@@ -81,7 +91,8 @@ export class ChatLunaChatChain
                 llm.invocationParams().maxTokenLimit ??
                 llm.getModelMaxContextSize(),
             promptRenderService: variableService,
-            contextManager
+            contextManager,
+            knowledgeService
         })
 
         const chain = new ChatLunaLLMChain({ llm, prompt })
@@ -91,6 +102,7 @@ export class ChatLunaChatChain
             historyMemory,
             variableService,
             contextManager,
+            knowledgeService,
             preset,
             chain
         })
@@ -103,6 +115,7 @@ export class ChatLunaChatChain
         session,
         conversationId,
         requestId,
+        presetResolution,
         variables,
         signal,
         maxToken,
@@ -118,14 +131,15 @@ export class ChatLunaChatChain
         requests['variables'] = Object.assign(variables ?? {}, {
             prompt: getMessageContent(message.content)
         })
-        requests['variables']['built'] = {
+        mergeBuiltVariables(requests['variables'], {
             conversationId,
             requestId,
+            presetResolution,
             userId: session.userId,
             guildId: session.guildId,
             channelId: session.channelId,
             chatPlatform: session.platform
-        }
+        })
         requests['variables_hide'] = requests['variables']
         requests['configurable'] = {
             session,

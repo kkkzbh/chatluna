@@ -3,6 +3,7 @@ import {
     PromptContextRuntime,
     PromptPipelineMiddleware
 } from './context_manager'
+import { traceMessage } from './context_trace'
 
 // ---------------------------------------------------------------------------
 // injections pipeline middleware
@@ -10,7 +11,7 @@ import {
 
 /**
  * The `injections` pipeline stage collects all pending injections
- * (persistent + queued + inline from variables) and applies them
+ * (persistent + queued) and applies them
  * through the injection middleware chain.
  *
  * This replaces the manual `collectInjections` + `applyInjections`
@@ -23,13 +24,14 @@ export function createInjectionsMiddleware(
         // Pass runtime.result so collectInjections can stamp ids and prune
         // stale anchor-based persistent injections in place.
         const injections = contextManager.collectInjections({
-            variables: runtime.variables,
+            traceId: runtime.trace.traceId,
             configurable: runtime.configurable,
             afterUserMessage: runtime.agentScratchpad
                 ? runtime.afterUserMessage
                 : undefined,
             currentMessages: runtime.result
         })
+        runtime.trace.onceInjectionLease = injections.onceInjectionLease
 
         // Apply before-scratchpad injections (lore_books, authors_note, etc.)
         await contextManager.applyInjections(
@@ -40,14 +42,56 @@ export function createInjectionsMiddleware(
         // Push user input
         if (runtime.input) {
             runtime.result.push(runtime.input)
+            const entry = runtime.trace.entries.find(
+                (item) => item.messageId === runtime.input?.id
+            )
+            traceMessage(runtime.trace, runtime.input, {
+                stage: 'input',
+                source: {
+                    kind: 'input',
+                    name: 'current user input',
+                    path: 'input'
+                },
+                tokenEstimate: entry?.tokenEstimate ?? 0,
+                status: 'included'
+            })
         }
 
         // Push agent scratchpad
-        if (runtime.agentScratchpad) {
-            if (Array.isArray(runtime.agentScratchpad)) {
-                runtime.result.push(...runtime.agentScratchpad)
+        const scratchpad = runtime.agentScratchpad
+        if (scratchpad) {
+            if (Array.isArray(scratchpad)) {
+                runtime.result.push(...scratchpad)
+                for (const msg of scratchpad) {
+                    const entry = runtime.trace.entries.find(
+                        (item) => item.messageId === msg.id
+                    )
+                    traceMessage(runtime.trace, msg, {
+                        stage: 'scratchpad',
+                        source: {
+                            kind: 'scratchpad',
+                            name: 'agent scratchpad',
+                            path: 'agent_scratchpad'
+                        },
+                        tokenEstimate: entry?.tokenEstimate ?? 0,
+                        status: 'included'
+                    })
+                }
             } else {
-                runtime.result.push(runtime.agentScratchpad)
+                runtime.result.push(scratchpad)
+                const entry = runtime.trace.entries.find(
+                    (item) => item.messageId === scratchpad.id
+                )
+                traceMessage(runtime.trace, scratchpad, {
+                    stage: 'scratchpad',
+                    source: {
+                        kind: 'scratchpad',
+                        name: 'agent scratchpad',
+                        path: 'agent_scratchpad'
+                    },
+                    tokenEstimate: entry?.tokenEstimate ?? 0,
+                    status: 'included'
+                })
             }
         } else if (runtime.input) {
             // No scratchpad – input already pushed above

@@ -6,7 +6,7 @@ import {
 import { logger } from 'koishi-plugin-chatluna'
 import { KoishiChatMessageHistory } from 'koishi-plugin-chatluna/llm-core/memory/message'
 import { ChatLunaChatModel } from 'koishi-plugin-chatluna/llm-core/platform/model'
-import { PresetTemplate } from 'koishi-plugin-chatluna/llm-core/prompt'
+import { CompiledPreset } from 'koishi-plugin-chatluna/llm-core/prompt'
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
 import { isChatLunaUserMessage } from 'koishi-plugin-chatluna/utils/langchain'
 import { countMessagesTokens } from 'koishi-plugin-chatluna/llm-core/utils/count_tokens'
@@ -29,7 +29,7 @@ export interface CompressContextOptions {
     chatHistory: KoishiChatMessageHistory
     model: ChatLunaChatModel
     conversationId: string
-    preset?: ComputedRef<PresetTemplate>
+    preset?: ComputedRef<CompiledPreset>
     threshold?: number
     force?: boolean
     signal?: AbortSignal

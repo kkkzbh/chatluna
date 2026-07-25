@@ -284,9 +284,11 @@ export function createSession(overrides: Partial<BindingSessionShape> = {}) {
 export function createConfig(overrides: Record<string, unknown> = {}) {
     return {
         defaultModel: 'test-platform/test-model',
-        defaultPreset: 'default-preset',
         defaultChatMode: 'plugin',
         defaultGroupRouteMode: 'shared',
+        bundledPresetDir: 'presets/bundled',
+        runtimePresetDir: 'presets/runtime',
+        archiveDir: 'data/chatluna/archive',
         ...overrides
     } as never
 }
@@ -313,6 +315,54 @@ export async function createService(
         await options.clearCache?.(conversation)
         return true
     }
+    const chatluna = {
+        preset: {
+            getPreset: (id: string) => ({
+                value: { id }
+            }),
+            getGlobalDefaultPresetId: () => ({
+                value: 'default-preset'
+            }),
+            runReferenceMutation: <T>(mutation: () => Promise<T>) => mutation()
+        },
+        platform: {
+            chatChains: {
+                value: [{ name: 'plugin' }]
+            },
+            listPlatformModels: (platform: string) => ({
+                value:
+                    platform === 'test-platform'
+                        ? [
+                              {
+                                  name: 'test-model',
+                                  type: ModelType.llm,
+                                  maxTokens: 4096,
+                                  capabilities: []
+                              }
+                          ]
+                        : []
+            })
+        },
+        conversation: {
+            getArchive: async (id: string) =>
+                database.tables.chatluna_archive.find(
+                    (item) => item.id === id
+                ) as ArchiveRecord | undefined
+        },
+        conversationRuntime: {
+            withConversationSync: async (
+                conversation: ConversationRecord,
+                callback: () => Promise<unknown>
+            ) => {
+                syncCalls.push(conversation.id)
+                return callback()
+            },
+            clearConversationInterfaceLocked: clearConversation,
+            clearConversationInterface: async (
+                conversation: ConversationRecord
+            ) => clearConversation(conversation)
+        }
+    }
     const ctx = {
         database,
         logger: {
@@ -330,52 +380,15 @@ export async function createService(
                 events.push({ name, args })
             }
         },
-        chatluna: {
-            platform: {
-                chatChains: {
-                    value: [{ name: 'plugin' }]
-                },
-                listPlatformModels: (platform: string) => ({
-                    value:
-                        platform === 'test-platform'
-                            ? [
-                                  {
-                                      name: 'test-model',
-                                      type: ModelType.llm,
-                                      maxTokens: 4096,
-                                      capabilities: []
-                                  }
-                              ]
-                            : []
-                })
-            },
-            conversation: {
-                getArchive: async (id: string) =>
-                    database.tables.chatluna_archive.find(
-                        (item) => item.id === id
-                    ) as ArchiveRecord | undefined
-            },
-            conversationRuntime: {
-                withConversationSync: async (
-                    conversation: ConversationRecord,
-                    callback: () => Promise<unknown>
-                ) => {
-                    syncCalls.push(conversation.id)
-                    return callback()
-                },
-                clearConversationInterfaceLocked: clearConversation,
-                clearConversationInterface: async (
-                    conversation: ConversationRecord
-                ) => clearConversation(conversation)
-            }
-        }
+        chatluna
     } as never
 
     const service = new ConversationService(
         ctx,
         createConfig(options.config),
-        ctx.chatluna.conversationRuntime,
-        ctx.chatluna.platform
+        chatluna.conversationRuntime as never,
+        chatluna.platform as never,
+        chatluna.preset as never
     )
 
     return {
@@ -399,9 +412,40 @@ export async function createMemoryService(
     app.baseDir =
         options.baseDir ??
         (await fs.mkdtemp(path.join(os.tmpdir(), 'chatluna-core-test-')))
+    await fs.mkdir(path.join(app.baseDir, 'presets/bundled'), {
+        recursive: true
+    })
+    await fs.mkdir(path.join(app.baseDir, 'presets/runtime'), {
+        recursive: true
+    })
+    for (const id of ['default-preset', 'helper', 'writer']) {
+        await fs.writeFile(
+            path.join(app.baseDir, `presets/bundled/${id}.yml`),
+            JSON.stringify({
+                schemaVersion: 2,
+                id,
+                displayName: id,
+                aliases: [],
+                messages: [],
+                inputFormat: null,
+                lore: { defaults: {}, entries: [] },
+                authorsNote: null,
+                knowledge: null,
+                promptConfig: {}
+            })
+        )
+    }
     app.plugin(memory)
     app.plugin(ChatLunaService, createConfig(options.config))
     await app.start()
+    await app.database.upsert('chatluna_meta', [
+        {
+            key: 'globalDefaultPresetId',
+            value: JSON.stringify('default-preset'),
+            updatedAt: new Date()
+        }
+    ])
+    await app.chatluna.preset.init()
     app.chatluna.platform.registerChatChain('plugin', {}, () => ({}) as never)
     ;(
         app.chatluna.platform as unknown as {

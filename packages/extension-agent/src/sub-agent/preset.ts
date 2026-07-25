@@ -52,7 +52,13 @@ export function getPresetAgents(
             return {
                 ...base,
                 state: 'ready' as const,
-                promptContent: preset.rawText,
+                promptContent: preset.messages
+                    .map((message) =>
+                        typeof message.content === 'string'
+                            ? message.content
+                            : JSON.stringify(message.content)
+                    )
+                    .join('\n\n'),
                 diagnostics: []
             }
         } catch (err) {

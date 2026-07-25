@@ -2,11 +2,13 @@ import {
     AIMessage,
     BaseMessage,
     HumanMessage,
+    MessageContent,
+    MessageContentComplex,
     SystemMessage
 } from '@langchain/core/messages'
 import { Time } from 'koishi'
 import { logger } from 'koishi-plugin-chatluna'
-import { PresetTemplate } from 'koishi-plugin-chatluna/llm-core/prompt'
+import { CompiledPreset } from 'koishi-plugin-chatluna/llm-core/prompt'
 import {
     ChatLunaPromptRenderer,
     FunctionProvider,
@@ -16,7 +18,6 @@ import {
 } from '@chatluna/shared-prompt-renderer'
 import {
     fetchUrl,
-    getMessageContent,
     getTimeDiff,
     rollDice,
     selectFromList
@@ -156,29 +157,16 @@ export class ChatLunaPromptRenderService {
         options?: RenderOptions
     ): Promise<BaseMessage[]> {
         return await Promise.all(
-            messages.map(async (message) => {
-                const content = await this.renderTemplate(
-                    getMessageContent(message.content),
-                    variables,
-                    options
-                )
-
-                const messageInstance = new {
-                    human: HumanMessage,
-                    ai: AIMessage,
-                    system: SystemMessage
-                }[message.getType()]({
-                    content: content.text,
-                    additional_kwargs: message.additional_kwargs
-                })
-
-                return messageInstance
-            })
+            messages.map(
+                async (message) =>
+                    (await this._renderMessage(message, variables, options))
+                        .message
+            )
         )
     }
 
-    async renderPresetTemplate(
-        presetTemplate: PresetTemplate,
+    async renderCompiledPreset(
+        presetTemplate: CompiledPreset,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         variables: Record<string, any> = {},
         options?: RenderOptions
@@ -187,31 +175,112 @@ export class ChatLunaPromptRenderService {
 
         const formattedMessages = await Promise.all(
             presetTemplate.messages.map(async (message) => {
-                const content = await this.renderTemplate(
-                    getMessageContent(message.content),
+                const rendered = await this._renderMessage(
+                    message,
                     variables,
                     options
                 )
 
-                const messageInstance = new {
-                    human: HumanMessage,
-                    ai: AIMessage,
-                    system: SystemMessage
-                }[message.getType()]({
-                    content: content.text,
-                    additional_kwargs: message.additional_kwargs
-                })
-
-                for (const variable of content.variables) {
+                for (const variable of rendered.variables) {
                     collectedVariables.add(variable)
                 }
 
-                return messageInstance
+                return rendered.message
             })
         )
 
         return {
             messages: formattedMessages,
+            variables: Array.from(collectedVariables)
+        }
+    }
+
+    private async _renderMessage(
+        message: BaseMessage,
+        variables: Record<string, unknown>,
+        options?: RenderOptions
+    ): Promise<{ message: BaseMessage; variables: string[] }> {
+        const rendered = await this._renderContent(
+            message.content,
+            variables,
+            options
+        )
+        const fields = {
+            content: rendered.content,
+            name: message.name,
+            id: message.id,
+            additional_kwargs: message.additional_kwargs,
+            response_metadata: message.response_metadata
+        }
+
+        let result: BaseMessage
+        switch (message.getType()) {
+            case 'human':
+                result = new HumanMessage(fields)
+                break
+            case 'ai': {
+                const ai = message as AIMessage
+                result = new AIMessage({
+                    ...fields,
+                    tool_calls: ai.tool_calls,
+                    invalid_tool_calls: ai.invalid_tool_calls,
+                    usage_metadata: ai.usage_metadata
+                })
+                break
+            }
+            case 'system':
+                result = new SystemMessage(fields)
+                break
+            default:
+                throw new Error(
+                    `Prompt renderer does not support message type: ${message.getType()}`
+                )
+        }
+
+        return { message: result, variables: rendered.variables }
+    }
+
+    private async _renderContent(
+        content: MessageContent,
+        variables: Record<string, unknown>,
+        options?: RenderOptions
+    ): Promise<{ content: MessageContent; variables: string[] }> {
+        if (typeof content === 'string') {
+            const rendered = await this.renderTemplate(
+                content,
+                variables,
+                options
+            )
+            return {
+                content: rendered.text,
+                variables: rendered.variables
+            }
+        }
+
+        const collectedVariables = new Set<string>()
+        const parts = await Promise.all(
+            content.map(async (part): Promise<MessageContentComplex> => {
+                if (part.type !== 'text' || typeof part.text !== 'string') {
+                    return part
+                }
+
+                const rendered = await this.renderTemplate(
+                    part.text,
+                    variables,
+                    options
+                )
+                for (const variable of rendered.variables) {
+                    collectedVariables.add(variable)
+                }
+                return {
+                    ...part,
+                    text: rendered.text
+                }
+            })
+        )
+
+        return {
+            content: parts,
             variables: Array.from(collectedVariables)
         }
     }

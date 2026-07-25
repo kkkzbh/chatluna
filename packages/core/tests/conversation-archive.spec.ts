@@ -162,7 +162,11 @@ it('ConversationService rejects restoring a foreign conversation by exact id', a
         archiveId: 'archive-foreign-restore',
         archivedAt: new Date('2026-03-22T00:00:00.000Z')
     })
-    const archivePath = path.join(dir, 'archive-foreign-restore.json.gz')
+    const archivePath = path.join(
+        dir,
+        'data/chatluna/archive/archive-foreign-restore.json.gz'
+    )
+    await fs.mkdir(path.dirname(archivePath), { recursive: true })
 
     await fs.writeFile(
         archivePath,
@@ -226,11 +230,197 @@ it('ConversationService rejects restoring a foreign conversation by exact id', a
     )
 })
 
+it('ConversationService rejects restoring an archive path outside the configured root', async () => {
+    const dir = await fs.mkdtemp(
+        path.join(os.tmpdir(), 'chatluna-restore-path-')
+    )
+    const root = path.join(dir, 'data/chatluna/archive')
+    const archivePath = path.join(dir, 'legacy-app-archive/archive.json.gz')
+    await fs.mkdir(root, { recursive: true })
+    await fs.mkdir(path.dirname(archivePath), { recursive: true })
+    const conversation = createConversation({
+        id: 'conversation-restore-path',
+        status: 'archived',
+        archiveId: 'archive-restore-path',
+        archivedAt: new Date('2026-03-22T00:00:00.000Z')
+    })
+    await fs.writeFile(
+        archivePath,
+        await gzipEncode(
+            JSON.stringify({
+                formatVersion: 1,
+                exportedAt: '2026-03-22T00:00:00.000Z',
+                conversation: {
+                    ...conversation,
+                    status: 'active',
+                    archiveId: null,
+                    archivedAt: null,
+                    createdAt: conversation.createdAt.toISOString(),
+                    updatedAt: conversation.updatedAt.toISOString(),
+                    lastChatAt: conversation.lastChatAt?.toISOString() ?? null
+                },
+                messages: []
+            })
+        )
+    )
+
+    const { service, database } = await createService({
+        baseDir: dir,
+        tables: {
+            chatluna_conversation: [conversation as unknown as TableRow],
+            chatluna_binding: [
+                {
+                    bindingKey: conversation.bindingKey,
+                    activeConversationId: conversation.id,
+                    lastConversationId: null,
+                    updatedAt: new Date()
+                } as unknown as TableRow
+            ],
+            chatluna_archive: [
+                {
+                    id: conversation.archiveId,
+                    conversationId: conversation.id,
+                    path: archivePath,
+                    formatVersion: 1,
+                    messageCount: 0,
+                    checksum: null,
+                    size: 1,
+                    state: 'ready',
+                    createdAt: new Date(),
+                    restoredAt: null
+                } as unknown as TableRow
+            ]
+        }
+    })
+
+    await expectRejected(
+        service.restoreConversation(createSession(), {
+            conversationId: conversation.id
+        }),
+        /Archive path escapes configured archive root/
+    )
+    await fs.access(archivePath)
+    assert.equal(database.tables.chatluna_archive[0].state, 'broken')
+    assert.equal(database.tables.chatluna_conversation[0].status, 'archived')
+})
+
+it('ConversationService rejects deleting an archive path outside the configured root', async () => {
+    const dir = await fs.mkdtemp(
+        path.join(os.tmpdir(), 'chatluna-delete-path-')
+    )
+    const root = path.join(dir, 'data/chatluna/archive')
+    const archiveDir = path.join(dir, 'legacy-app-archive/archive-delete')
+    await fs.mkdir(root, { recursive: true })
+    await fs.mkdir(archiveDir, { recursive: true })
+    await fs.writeFile(path.join(archiveDir, 'keep.txt'), 'keep', 'utf8')
+    const conversation = createConversation({
+        id: 'conversation-delete-path',
+        status: 'archived',
+        archiveId: 'archive-delete-path',
+        archivedAt: new Date('2026-03-22T00:00:00.000Z')
+    })
+    const { service, database } = await createService({
+        baseDir: dir,
+        tables: {
+            chatluna_conversation: [conversation as unknown as TableRow],
+            chatluna_binding: [
+                {
+                    bindingKey: conversation.bindingKey,
+                    activeConversationId: conversation.id,
+                    lastConversationId: null,
+                    updatedAt: new Date()
+                } as unknown as TableRow
+            ],
+            chatluna_archive: [
+                {
+                    id: conversation.archiveId,
+                    conversationId: conversation.id,
+                    path: archiveDir,
+                    formatVersion: 1,
+                    messageCount: 0,
+                    checksum: null,
+                    size: 1,
+                    state: 'ready',
+                    createdAt: new Date(),
+                    restoredAt: null
+                } as unknown as TableRow
+            ]
+        }
+    })
+
+    await expectRejected(
+        service.deleteConversation(createSession(), {
+            conversationId: conversation.id
+        }),
+        /Archive path escapes configured archive root/
+    )
+    assert.equal(
+        await fs.readFile(path.join(archiveDir, 'keep.txt'), 'utf8'),
+        'keep'
+    )
+    assert.equal(database.tables.chatluna_archive.length, 1)
+    assert.equal(database.tables.chatluna_conversation[0].status, 'archived')
+    assert.equal(
+        database.tables.chatluna_binding[0].activeConversationId,
+        conversation.id
+    )
+})
+
+it('purgeArchivedConversation rejects an archive symlink inside the configured root', async () => {
+    const dir = await fs.mkdtemp(
+        path.join(os.tmpdir(), 'chatluna-purge-symlink-')
+    )
+    const root = path.join(dir, 'data/chatluna/archive')
+    const outside = path.join(dir, 'outside-archive')
+    const archivePath = path.join(root, 'archive-link')
+    await fs.mkdir(root, { recursive: true })
+    await fs.mkdir(outside, { recursive: true })
+    await fs.writeFile(path.join(outside, 'keep.txt'), 'keep', 'utf8')
+    await fs.symlink(outside, archivePath)
+    const conversation = createConversation({
+        id: 'conversation-purge-symlink',
+        status: 'archived',
+        archiveId: 'archive-purge-symlink'
+    })
+    const { ctx, database } = await createService({
+        baseDir: dir,
+        tables: {
+            chatluna_conversation: [conversation as unknown as TableRow],
+            chatluna_archive: [
+                {
+                    id: conversation.archiveId,
+                    conversationId: conversation.id,
+                    path: archivePath,
+                    formatVersion: 1,
+                    messageCount: 0,
+                    checksum: null,
+                    size: 1,
+                    state: 'ready',
+                    createdAt: new Date(),
+                    restoredAt: null
+                } as unknown as TableRow
+            ]
+        }
+    })
+
+    await expectRejected(
+        purgeArchivedConversation(ctx, root, conversation),
+        /Archive path must not contain symlinks/
+    )
+    assert.equal(
+        await fs.readFile(path.join(outside, 'keep.txt'), 'utf8'),
+        'keep'
+    )
+    assert.equal(database.tables.chatluna_archive.length, 1)
+    assert.equal(database.tables.chatluna_conversation.length, 1)
+})
+
 it('purgeArchivedConversation removes archive directory and clears both binding pointers', async () => {
     const dir = await fs.mkdtemp(
         path.join(os.tmpdir(), 'chatluna-purge-archive-')
     )
-    const archiveDir = path.join(dir, 'archive-dir')
+    const root = path.join(dir, 'data/chatluna/archive')
+    const archiveDir = path.join(root, 'archive-dir')
     await fs.mkdir(archiveDir, { recursive: true })
     await fs.writeFile(path.join(archiveDir, 'manifest.json'), '{}', 'utf8')
 
@@ -281,7 +471,7 @@ it('purgeArchivedConversation removes archive directory and clears both binding 
         }
     })
 
-    await purgeArchivedConversation(ctx, conversation)
+    await purgeArchivedConversation(ctx, root, conversation)
 
     await expectRejected(fs.access(archiveDir))
     assert.equal(database.tables.chatluna_conversation.length, 0)

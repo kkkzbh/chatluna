@@ -3,8 +3,7 @@ import { CallbackManager } from '@langchain/core/callbacks/manager'
 import {
     BaseMessage,
     BaseMessageChunk,
-    HumanMessage,
-    SystemMessage
+    HumanMessage
 } from '@langchain/core/messages'
 import { StructuredTool } from '@langchain/core/tools'
 import { computed, type ComputedRef } from '@vue/reactivity'
@@ -20,7 +19,8 @@ import type {
     ChatLunaTool,
     ChatLunaToolRunnable
 } from 'koishi-plugin-chatluna/llm-core/platform/types'
-import type { PresetTemplate } from '../prompt'
+import { compilePreset } from '../prompt/preset_prompt_parse'
+import type { CompiledPreset } from '../prompt/type'
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
 import { createAgentRunner, createToolsRef } from './creator'
 import type { AgentRunnerOutput } from './executor'
@@ -277,20 +277,29 @@ export function createAgentTool(
 export function createPromptPreset(
     name: string,
     system?: string,
-    preset?: ComputedRef<PresetTemplate>
-): ComputedRef<PresetTemplate> {
+    preset?: ComputedRef<CompiledPreset>
+): ComputedRef<CompiledPreset> {
     if (preset) {
         return preset
     }
 
-    return computed(
-        () =>
-            ({
-                triggerKeyword: [name],
-                rawText: system ?? '',
-                messages: system ? [new SystemMessage(system)] : [],
-                config: {}
-            }) satisfies PresetTemplate
+    return computed(() =>
+        compilePreset(
+            {
+                schemaVersion: 2,
+                id: 'agent',
+                displayName: name,
+                aliases: [],
+                messages:
+                    system == null ? [] : [{ role: 'system', content: system }],
+                inputFormat: null,
+                lore: { defaults: {}, entries: [] },
+                authorsNote: null,
+                knowledge: null,
+                promptConfig: {}
+            },
+            { source: 'ephemeral', raw: system ?? '' }
+        )
     )
 }
 

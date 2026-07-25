@@ -49,13 +49,28 @@ function createSecureLogMessage(
 export async function generateNewQuestion(
     model: ComputedRef<ChatLunaChatModel>,
     chatHistory: string,
-    question: string
+    question: string,
+    promptTemplate?: string
 ): Promise<string> {
     const result = await model.value.invoke(
-        GENERATE_QUESTION_PROMPT(chatHistory, question)
+        renderLongMemoryNewQuestionPrompt(
+            promptTemplate ?? LONG_MEMORY_NEW_QUESTION_PROMPT,
+            chatHistory,
+            question
+        )
     )
 
     return getMessageContent(result.content)
+}
+
+export function renderLongMemoryNewQuestionPrompt(
+    template: string,
+    chatHistory: string,
+    question: string
+): string {
+    return template
+        .replaceAll('{history}', chatHistory)
+        .replaceAll('{question}', question)
 }
 
 export async function selectChatHistory(
@@ -103,7 +118,7 @@ export async function extractMemoriesFromChat(
 ): Promise<EnhancedMemory[]> {
     const preset = chatInterface.preset.value
     const input = (
-        preset.config?.longMemoryExtractPrompt ?? ENHANCED_MEMORY_PROMPT
+        preset.promptConfig.longMemoryExtractPrompt ?? ENHANCED_MEMORY_PROMPT
     ).replaceAll('{user_input}', chatHistory)
 
     const extractMemory = async () => {
@@ -326,21 +341,18 @@ memories:
 # Your Output
 `
 
-const GENERATE_QUESTION_PROMPT = (
-    chatHistory: string,
-    question: string
-) => `You are an expert in query optimization. Your task is to generate a concise search query based on a conversation history and a new user question. This query will be used to retrieve relevant information from a long-term memory database.
+export const LONG_MEMORY_NEW_QUESTION_PROMPT = `You are an expert in query optimization. Your task is to generate a concise search query based on a conversation history and a new user question. This query will be used to retrieve relevant information from a long-term memory database.
 
 **Input:**
 
 1.  **Conversation History:**
     """
-    ${chatHistory}
+    {history}
     """
 
 2.  **User Question:**
     """
-    ${question}
+    {question}
     """
 
 **Instructions:**

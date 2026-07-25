@@ -12,12 +12,13 @@ import { bufferToArrayBuffer, gzipDecode } from './compression'
 
 export async function purgeArchivedConversation(
     ctx: Context,
+    root: string,
     conversation: {
         id: string
         archiveId?: string | null
     }
 ) {
-    await removeArchive(ctx, conversation.archiveId)
+    await removeArchive(ctx, root, conversation.archiveId)
 
     await unbindConversation(ctx, conversation.id)
     await ctx.database.remove('chatluna_message', {
@@ -31,7 +32,11 @@ export async function purgeArchivedConversation(
     })
 }
 
-export async function removeArchive(ctx: Context, archiveId?: string | null) {
+export async function removeArchive(
+    ctx: Context,
+    root: string,
+    archiveId?: string | null
+) {
     if (archiveId == null) {
         return
     }
@@ -39,7 +44,7 @@ export async function removeArchive(ctx: Context, archiveId?: string | null) {
     const archive = await ctx.chatluna.conversation.getArchive(archiveId)
 
     if (archive?.path) {
-        await fs.rm(archive.path, {
+        await fs.rm(await assertArchivePath(root, archive.path), {
             recursive: true,
             force: true
         })
@@ -85,22 +90,62 @@ export async function unbindConversation(ctx: Context, conversationId: string) {
     }
 }
 
-export async function readArchivePayload(archivePath: string) {
-    const stat = await fs.stat(archivePath)
+export async function assertArchivePath(root: string, target: string) {
+    const base = path.resolve(root)
+    const file = path.resolve(target)
+    const relative = path.relative(base, file)
+    if (
+        relative.length === 0 ||
+        relative === '..' ||
+        relative.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relative)
+    ) {
+        throw new Error(`Archive path escapes configured archive root: ${file}`)
+    }
+
+    const rootStat = await fs.lstat(base)
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+        throw new Error(
+            `Configured archive root must be a real directory: ${base}`
+        )
+    }
+    const fileStat = await fs.lstat(file)
+    if (fileStat.isSymbolicLink()) {
+        throw new Error(`Archive path must not contain symlinks: ${file}`)
+    }
+    if (
+        (await fs.realpath(base)) !== base ||
+        (await fs.realpath(file)) !== file
+    ) {
+        throw new Error(`Archive path must not contain symlinks: ${file}`)
+    }
+    return file
+}
+
+export async function readArchivePayload(root: string, archivePath: string) {
+    const file = await assertArchivePath(root, archivePath)
+    const stat = await fs.lstat(file)
 
     if (stat.isDirectory()) {
+        const manifestPath = await assertArchivePath(
+            root,
+            path.join(file, 'manifest.json')
+        )
+        const conversationPath = await assertArchivePath(
+            root,
+            path.join(file, 'conversation.json')
+        )
+        const messagesPath = await assertArchivePath(
+            root,
+            path.join(file, 'messages.jsonl.gz')
+        )
         const manifest = JSON.parse(
-            await fs.readFile(path.join(archivePath, 'manifest.json'), 'utf8')
+            await fs.readFile(manifestPath, 'utf8')
         ) as ArchiveManifest
         const conversation = JSON.parse(
-            await fs.readFile(
-                path.join(archivePath, 'conversation.json'),
-                'utf8'
-            )
+            await fs.readFile(conversationPath, 'utf8')
         ) as ConversationArchivePayload['conversation']
-        const messageBuffer = await fs.readFile(
-            path.join(archivePath, 'messages.jsonl.gz')
-        )
+        const messageBuffer = await fs.readFile(messagesPath)
 
         if (manifest.size !== messageBuffer.byteLength) {
             throw new Error('Archive payload size mismatch.')
@@ -130,7 +175,7 @@ export async function readArchivePayload(archivePath: string) {
     }
 
     return JSON.parse(
-        await gzipDecode(await fs.readFile(archivePath))
+        await gzipDecode(await fs.readFile(file))
     ) as ConversationArchivePayload
 }
 

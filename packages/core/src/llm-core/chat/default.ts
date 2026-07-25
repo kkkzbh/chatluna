@@ -70,6 +70,7 @@ export async function defaultFactory(ctx: Context, service: PlatformService) {
             ChatLunaChatChain.fromLLM(params.model, {
                 variableService: ctx.chatluna.promptRenderer,
                 contextManager: ctx.chatluna.contextManager,
+                knowledgeService: ctx.chatluna.knowledge,
                 botName: params.botName,
                 preset: params.preset,
                 historyMemory: params.historyMemory
@@ -89,6 +90,7 @@ export async function defaultFactory(ctx: Context, service: PlatformService) {
                 {
                     variableService: ctx.chatluna.promptRenderer,
                     contextManager: ctx.chatluna.contextManager,
+                    knowledgeService: ctx.chatluna.knowledge,
                     preset: params.preset,
                     historyMemory: params.historyMemory,
                     embeddings: params.embeddings,

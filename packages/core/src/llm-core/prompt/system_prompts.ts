@@ -1,10 +1,10 @@
 import { SystemMessage } from '@langchain/core/messages'
-import { HumanMessagePromptTemplate } from '@langchain/core/prompts'
 import {
     ChatLunaContextManagerService,
     PromptContextRuntime,
     PromptPipelineMiddleware
 } from './context_manager'
+import { traceMessage } from './context_trace'
 import { logger } from 'koishi-plugin-chatluna'
 import {
     countMessagesTokens,
@@ -21,14 +21,8 @@ export { countMessageTokens, countMessagesTokens }
  * Renders the preset template into system messages and pushes them onto
  * the result list.  Also handles the optional `instructions` partial.
  *
- * Populates `runtime._conversationSummaryPrompt` for later use by the
- * long_history middleware.
  */
 export function createSystemPromptsMiddleware(): PromptPipelineMiddleware {
-    // Cache to avoid re-computing when preset hasn't changed
-    let _cachedPreset: unknown = null
-    let _cachedSummaryPrompt: HumanMessagePromptTemplate | null = null
-
     return async (runtime: PromptContextRuntime, next) => {
         const preset = runtime.preset
         const variables = runtime.variables
@@ -40,49 +34,45 @@ export function createSystemPromptsMiddleware(): PromptPipelineMiddleware {
             const tokens = await countMessageTokens(msg, runtime.tokenCounter)
             runtime.result.push(msg)
             runtime.usedTokens += tokens
+            traceMessage(runtime.trace, msg, {
+                stage: 'system_prompts',
+                source: {
+                    kind: 'instructions',
+                    name: 'runtime instructions',
+                    path: 'instructions'
+                },
+                tokenEstimate: tokens,
+                status: 'included'
+            })
         }
 
         // -- render preset system prompts --
-        const rendered = await runtime.promptRenderService.renderPresetTemplate(
+        const rendered = await runtime.promptRenderService.renderCompiledPreset(
             preset,
             variables,
             { configurable: configurable ?? {} }
         )
 
-        for (const message of rendered.messages ?? []) {
+        for (const [idx, message] of (rendered.messages ?? []).entries()) {
             const tokens = await countMessageTokens(
                 message,
                 runtime.tokenCounter
             )
             runtime.result.push(message)
             runtime.usedTokens += tokens
+            traceMessage(runtime.trace, message, {
+                stage: 'system_prompts',
+                source: {
+                    kind: 'preset',
+                    name: 'preset message',
+                    path: `messages.${idx}`
+                },
+                tokenEstimate: tokens,
+                status: 'included'
+            })
         }
 
-        // -- prepare conversation summary prompt for long_history middleware --
-        if (_cachedPreset !== preset) {
-            _cachedSummaryPrompt = HumanMessagePromptTemplate.fromTemplate(
-                preset.config.longMemoryPrompt ??
-                    // eslint-disable-next-line max-len
-                    `<system>As you answer the user's questions, you can use the following context: <context>{long_history}</context>
-
-Guidelines for response:
-1. The context above may contain documents, memories, or knowledge to help you better assist the user.
-2. Determine whether the content is documents, memories, or knowledge, and respond accordingly.
-3. If the user's question or chat is unrelated to the provided context, ignore the documents, memories, and knowledge.
-4. Use the system prompt as your primary guide and incorporate the context only when relevant.
-
-Your goal is to provide better assistance based on these materials while maintaining natural and coherent responses.
-</system>`
-            )
-            _cachedPreset = preset
-        }
-
-        // Stash summary prompt on runtime for long_history middleware
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ;(runtime as any)._conversationSummaryPrompt = _cachedSummaryPrompt
-        // Stash rendered system prompts for position lookup
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ;(runtime as any)._systemPrompts = rendered.messages ?? []
+        runtime.systemPrompts = rendered.messages ?? []
 
         if (runtime.usedTokens > runtime.sendTokenLimit) {
             logger?.warn(

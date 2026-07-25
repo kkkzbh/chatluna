@@ -1,5 +1,5 @@
 import { Context, Element, Fragment, Logger, Session } from 'koishi'
-import { PresetTemplate } from 'koishi-plugin-chatluna/llm-core/prompt'
+import { CompiledPreset } from 'koishi-plugin-chatluna/llm-core/prompt'
 import {
     ChatLunaError,
     ChatLunaErrorCode
@@ -105,7 +105,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 qqbot_input_content_meta: originMeta
             }
 
-            if (presetTemplate.formatUserPromptString != null) {
+            if (presetTemplate.inputFormat != null) {
                 inputMessage.content = await processUserPrompt(
                     config,
                     presetTemplate,
@@ -119,15 +119,15 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
 
             const bufferText = new StreamingBufferText(
                 3,
-                presetTemplate.config?.postHandler?.prefix,
-                presetTemplate.config?.postHandler?.postfix
+                presetTemplate.promptConfig.postHandler?.prefix,
+                presetTemplate.promptConfig.postHandler?.postfix
             )
 
-            const postHandler = presetTemplate.config?.postHandler
+            const postHandler = presetTemplate.promptConfig.postHandler
                 ? new PresetPostHandler(
                       ctx,
                       config,
-                      presetTemplate.config?.postHandler
+                      presetTemplate.promptConfig.postHandler
                   )
                 : undefined
 
@@ -197,6 +197,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                             },
                             postHandler,
                             requestId,
+                            presetResolution: resolved.presetResolution,
                             toolMask: wakeup?.toolMask,
                             signal: wakeup?.signal
                         }
@@ -357,7 +358,7 @@ function createToolCallHandler(
 
 async function processUserPrompt(
     config: Config,
-    presetTemplate: PresetTemplate,
+    presetTemplate: CompiledPreset,
     session: Session,
     originContent: MessageContent,
     conversation: Pick<

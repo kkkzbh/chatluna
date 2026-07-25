@@ -1,11 +1,14 @@
 import { BaseMessage } from '@langchain/core/messages'
 import { Document } from '@langchain/core/documents'
-import { HumanMessagePromptTemplate } from '@langchain/core/prompts'
 import {
     ChatLunaContextManagerService,
     PromptContextRuntime,
+    PromptDocumentCollection,
     PromptPipelineMiddleware
 } from './context_manager'
+import { ContextTraceEntry, traceDocument, traceMessage } from './context_trace'
+import { countMessageTokens } from './system_prompts'
+import { getPresetKnowledgeMetadata } from '../../services/knowledge'
 
 // ---------------------------------------------------------------------------
 // long_history pipeline middleware
@@ -13,20 +16,16 @@ import {
 
 /**
  * Formats document collections (long memory, knowledge, other documents)
- * into the conversation context using the preset's `longMemoryPrompt`
- * template.  Each document collection is rendered and appended after the
- * history messages.
- *
- * The conversation summary prompt template is expected on
- * `runtime._conversationSummaryPrompt` (set by system_prompts middleware).
+ * into the conversation context using each collection's explicit prompt
+ * contract. Each collection is rendered and appended after history.
  */
 export function createLongHistoryMiddleware(): PromptPipelineMiddleware {
     return async (runtime: PromptContextRuntime, next) => {
-        const documents = runtime.documents ?? []
+        const collections = runtime.documentCollections ?? []
 
-        for (const docSet of documents) {
+        for (const collection of collections) {
             runtime.usedTokens = await formatLongHistory(
-                docSet,
+                collection,
                 runtime.chatHistory ?? [],
                 runtime.usedTokens,
                 runtime.result,
@@ -39,53 +38,119 @@ export function createLongHistoryMiddleware(): PromptPipelineMiddleware {
 }
 
 async function formatLongHistory(
-    longHistory: Document[],
+    collection: PromptDocumentCollection,
     chatHistory: BaseMessage[] | string,
     usedTokens: number,
     result: BaseMessage[],
     runtime: PromptContextRuntime
 ): Promise<number> {
     const formatDocuments: Document[] = []
+    const acceptedEntries: ContextTraceEntry[] = []
+    let accepting = true
 
-    for (const document of longHistory) {
-        if (document.pageContent.length === 0) continue
+    for (const [idx, document] of collection.documents.entries()) {
+        const source = resolveDocumentSource(collection, document, idx)
+        if (document.pageContent.length === 0) {
+            traceDocument(runtime.trace, {
+                id: `${collection.source}:${document.id ?? idx}`,
+                content: document.pageContent,
+                source,
+                tokenEstimate: 0,
+                status: 'dropped',
+                reason: 'empty'
+            })
+            continue
+        }
         const documentTokens = await runtime.tokenCounter(document.pageContent)
 
-        if (usedTokens + documentTokens > runtime.sendTokenLimit - 80) {
-            break
-        }
+        const accepted =
+            accepting &&
+            usedTokens + documentTokens <= runtime.sendTokenLimit - 80
+        const entry = traceDocument(runtime.trace, {
+            id: `${collection.source}:${document.id ?? idx}`,
+            content: document.pageContent,
+            source,
+            tokenEstimate: documentTokens,
+            status: accepted ? 'included' : 'dropped',
+            reason: accepted ? undefined : 'document_budget'
+        })
 
+        if (!accepted) {
+            accepting = false
+            continue
+        }
         usedTokens += documentTokens
         formatDocuments.push(document)
+        acceptedEntries.push(entry)
     }
 
     if (formatDocuments.length < 1) {
         return usedTokens
     }
 
-    const summaryPrompt =
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (runtime as any)._conversationSummaryPrompt as
-            | HumanMessagePromptTemplate
-            | undefined
-
-    if (!summaryPrompt) return usedTokens
-
-    const formatted = await summaryPrompt.format({
-        long_history: formatDocuments
-            .map(
-                (document) =>
-                    `<doc metadata="${JSON.stringify(document.metadata)}" id="${document.id}">${document.pageContent}</doc>`
-            )
-            .join(' '),
+    const documentText = formatDocuments
+        .map(
+            (document) =>
+                `<doc metadata="${JSON.stringify(document.metadata)}" id="${document.id}">${document.pageContent}</doc>`
+        )
+        .join(' ')
+    const formatted = await collection.prompt.format({
+        [collection.promptVariable]: documentText,
         chat_history: chatHistory
     })
 
     if (formatted) {
         result.push(formatted)
+        const renderedEntry = traceMessage(runtime.trace, formatted, {
+            stage: 'long_history',
+            source: {
+                kind: sourceKind(collection.source),
+                name: `${collection.source} rendered context`,
+                path: collection.promptPath
+            },
+            tokenEstimate: await countMessageTokens(
+                formatted,
+                runtime.tokenCounter
+            ),
+            status: 'included'
+        })
+        for (const entry of acceptedEntries) {
+            entry.parentMessageId = renderedEntry.messageId
+        }
     }
 
     return usedTokens
+}
+
+function sourceKind(source: PromptDocumentCollection['source']) {
+    return source === 'long_memory'
+        ? ('long_memory' as const)
+        : source === 'knowledge'
+          ? ('knowledge' as const)
+          : ('document' as const)
+}
+
+function resolveDocumentSource(
+    collection: PromptDocumentCollection,
+    document: Document,
+    index: number
+) {
+    if (collection.source === 'knowledge') {
+        const metadata = getPresetKnowledgeMetadata(document)
+        if (metadata != null) {
+            return {
+                kind: 'knowledge' as const,
+                name: metadata.source,
+                path: metadata.fieldPath
+            }
+        }
+    }
+
+    return {
+        kind: sourceKind(collection.source),
+        name: collection.source,
+        path: `${collection.source}.${index}`
+    }
 }
 
 /**

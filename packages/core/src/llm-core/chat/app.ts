@@ -10,7 +10,7 @@ import { logger } from 'koishi-plugin-chatluna'
 import { KoishiChatMessageHistory } from 'koishi-plugin-chatluna/llm-core/memory/message'
 import { ChatLunaChatModel } from 'koishi-plugin-chatluna/llm-core/platform/model'
 import { ModelInfo } from 'koishi-plugin-chatluna/llm-core/platform/types'
-import { PresetTemplate } from 'koishi-plugin-chatluna/llm-core/prompt'
+import { CompiledPreset } from 'koishi-plugin-chatluna/llm-core/prompt'
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
 import type { HandlerResult } from '../../utils/types'
 import {
@@ -185,7 +185,7 @@ export class ChatInterface {
 
         const response = (await wrapper.call({
             ...arg,
-            maxToken: this.preset?.value?.config?.maxOutputToken,
+            maxToken: this.preset?.value?.promptConfig.maxOutputToken,
             messageQueue: arg.messageQueue,
             onAgentEvent: async (event) => {
                 if (event.type === 'tool-result') {
@@ -379,7 +379,7 @@ export class ChatInterface {
         return this._embeddings
     }
 
-    get preset(): ComputedRef<PresetTemplate> {
+    get preset(): ComputedRef<CompiledPreset> {
         return this._input.preset
     }
 
@@ -516,7 +516,7 @@ export interface ChatInterfaceInput {
     chatMode: string
     autoTitle?: boolean
     botName?: string
-    preset?: ComputedRef<PresetTemplate>
+    preset?: ComputedRef<CompiledPreset>
     model: string
     embeddings?: string
     vectorStoreName?: string

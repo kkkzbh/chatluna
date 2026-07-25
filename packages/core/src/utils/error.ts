@@ -1,4 +1,4 @@
-import { logger } from 'koishi-plugin-chatluna'
+import { logger } from 'koishi-plugin-chatluna/utils/logger'
 
 // eslint-disable-next-line prefer-const
 export let ERROR_FORMAT_TEMPLATE =
@@ -44,7 +44,9 @@ export class ChatLunaError extends Error {
     public setUserMessage(message: string) {
         const value = message.trim()
         if (!value) {
-            throw new Error('ChatLuna user-visible error message cannot be empty.')
+            throw new Error(
+                'ChatLuna user-visible error message cannot be empty.'
+            )
         }
         this.userMessage = value
     }

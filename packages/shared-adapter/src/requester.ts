@@ -26,6 +26,7 @@ import {
     ResponseOutputItem,
     ResponseStreamEvent
 } from './types'
+import { splitModelRequestOverrides } from './internal_control'
 import {
     convertDeltaToMessageChunk,
     convertMessageToMessageChunk,
@@ -253,28 +254,6 @@ function requireWorkflowTool(
     return name
 }
 
-function sanitizeOverrideRequestParams(
-    overrideRequestParams: ModelRequestParams['overrideRequestParams']
-) {
-    if (
-        overrideRequestParams == null ||
-        typeof overrideRequestParams !== 'object' ||
-        Array.isArray(overrideRequestParams)
-    ) {
-        return undefined
-    }
-
-    const sanitized: Record<string, unknown> = {}
-    for (const [key, value] of Object.entries(overrideRequestParams)) {
-        if (key.startsWith('qqbot_')) {
-            continue
-        }
-        sanitized[key] = value
-    }
-
-    return sanitized
-}
-
 export async function buildChatCompletionParams(
     params: ModelRequestParams,
     plugin: ChatLunaPlugin,
@@ -341,7 +320,7 @@ export async function buildChatCompletionParams(
     const request = deepAssign(
         {},
         base,
-        sanitizeOverrideRequestParams(params.overrideRequestParams) ?? {}
+        splitModelRequestOverrides(params.overrideRequestParams).providerPayload
     )
     const workflowState = resolveRequiredToolWorkflowStateForParams(params)
     if (workflowState?.complete) {
@@ -404,7 +383,7 @@ export async function buildResponseParams(
     const request = deepAssign(
         {},
         base,
-        sanitizeOverrideRequestParams(params.overrideRequestParams) ?? {}
+        splitModelRequestOverrides(params.overrideRequestParams).providerPayload
     )
     const workflowState = resolveRequiredToolWorkflowStateForParams(params)
     if (workflowState?.complete) {

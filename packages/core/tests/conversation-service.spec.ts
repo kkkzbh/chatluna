@@ -86,6 +86,10 @@ it('ConversationService resolves routed constraints and preset lanes', async () 
 })
 
 it('ConversationService gives fixed preset precedence over preset lane', async () => {
+    const conversation = createConversation({
+        bindingKey: 'shared:discord:bot:guild:preset:helper',
+        preset: 'writer'
+    })
     const constraint: ConstraintRecord = {
         id: 1,
         name: 'fixed-preset',
@@ -101,7 +105,16 @@ it('ConversationService gives fixed preset precedence over preset lane', async (
 
     const { service } = await createService({
         tables: {
-            chatluna_constraint: [constraint as unknown as TableRow]
+            chatluna_constraint: [constraint as unknown as TableRow],
+            chatluna_conversation: [conversation as unknown as TableRow],
+            chatluna_binding: [
+                {
+                    bindingKey: conversation.bindingKey,
+                    activeConversationId: conversation.id,
+                    lastConversationId: null,
+                    updatedAt: new Date()
+                }
+            ]
         }
     })
 
@@ -111,6 +124,102 @@ it('ConversationService gives fixed preset precedence over preset lane', async (
     })
 
     assert.equal(resolved.effectivePreset, 'fixed-preset')
+    assert.equal(resolved.conversation?.preset, 'fixed-preset')
+    assert.deepEqual(resolved.presetResolution, {
+        source: 'fixed',
+        presetId: 'fixed-preset',
+        bindingKey: 'shared:discord:bot:guild:preset:helper'
+    })
+})
+
+it('ConversationService gives conversation preset precedence over lane and constraint default', async () => {
+    const conversation = createConversation({
+        bindingKey: 'shared:discord:bot:guild:preset:helper',
+        preset: 'writer'
+    })
+    const constraint: ConstraintRecord = {
+        id: 1,
+        name: 'preset-default',
+        enabled: true,
+        priority: 10,
+        createdBy: 'admin',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        users: null,
+        excludeUsers: null,
+        defaultPreset: 'constraint-default-preset'
+    }
+    const { service } = await createService({
+        tables: {
+            chatluna_constraint: [constraint as unknown as TableRow],
+            chatluna_conversation: [conversation as unknown as TableRow],
+            chatluna_binding: [
+                {
+                    bindingKey: conversation.bindingKey,
+                    activeConversationId: conversation.id,
+                    lastConversationId: null,
+                    updatedAt: new Date()
+                }
+            ]
+        }
+    })
+
+    const resolved = await service.resolveConversation(createSession(), {
+        presetLane: 'helper',
+        mode: 'context'
+    })
+
+    assert.equal(resolved.effectivePreset, 'writer')
+    assert.equal(resolved.conversation?.preset, 'writer')
+    assert.equal(resolved.presetResolution.source, 'conversation')
+    assert.equal(resolved.presetResolution.presetId, 'writer')
+})
+
+it('ConversationService gives preset lane precedence over constraint and global defaults', async () => {
+    const constraint: ConstraintRecord = {
+        id: 1,
+        name: 'preset-default',
+        enabled: true,
+        priority: 10,
+        createdBy: 'admin',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        users: null,
+        excludeUsers: null,
+        defaultPreset: 'constraint-default-preset'
+    }
+    const { service } = await createService({
+        tables: {
+            chatluna_constraint: [constraint as unknown as TableRow]
+        }
+    })
+
+    const lane = await service.resolveConversation(createSession(), {
+        presetLane: 'helper',
+        mode: 'context'
+    })
+    const constraintDefault = await service.resolveConversation(
+        createSession(),
+        {
+            mode: 'context'
+        }
+    )
+
+    assert.equal(lane.effectivePreset, 'helper')
+    assert.equal(lane.presetResolution.source, 'presetLane')
+    assert.equal(constraintDefault.effectivePreset, 'constraint-default-preset')
+    assert.equal(constraintDefault.presetResolution.source, 'constraintDefault')
+})
+
+it('ConversationService uses the live global default as the final preset source', async () => {
+    const { service } = await createService()
+
+    const resolved = await service.resolveConversation(createSession(), {
+        mode: 'context'
+    })
+
+    assert.equal(resolved.effectivePreset, 'default-preset')
+    assert.equal(resolved.presetResolution.source, 'globalDefault')
 })
 
 it('ConversationService defaults resolveConversation mode to context and sets null conversationId', async () => {
@@ -310,7 +419,11 @@ it('ConversationService restores archived current conversation automatically', a
     const archiveDir = await fs.mkdtemp(
         path.join(os.tmpdir(), 'chatluna-restore-test-')
     )
-    const archivePath = path.join(archiveDir, 'archive.json.gz')
+    const archivePath = path.join(
+        archiveDir,
+        'data/chatluna/archive/archive.json.gz'
+    )
+    await fs.mkdir(path.dirname(archivePath), { recursive: true })
     await fs.writeFile(
         archivePath,
         await gzipEncode(JSON.stringify(archivedPayload))
@@ -365,7 +478,11 @@ it('ConversationService does not auto-restore archived conversation without mana
     const archiveDir = await fs.mkdtemp(
         path.join(os.tmpdir(), 'chatluna-restore-blocked-test-')
     )
-    const archivePath = path.join(archiveDir, 'archive.json.gz')
+    const archivePath = path.join(
+        archiveDir,
+        'data/chatluna/archive/archive.json.gz'
+    )
+    await fs.mkdir(path.dirname(archivePath), { recursive: true })
     await fs.writeFile(
         archivePath,
         await gzipEncode(
@@ -428,7 +545,7 @@ it('ConversationService clears archive data when deleting archived conversation'
     const dir = await fs.mkdtemp(
         path.join(os.tmpdir(), 'chatluna-delete-archive-test-')
     )
-    const archiveDir = path.join(dir, 'archive-dir')
+    const archiveDir = path.join(dir, 'data/chatluna/archive/archive-delete')
     await fs.mkdir(archiveDir, { recursive: true })
     await fs.writeFile(path.join(archiveDir, 'manifest.json'), '{}', 'utf8')
 
@@ -856,7 +973,11 @@ it('ConversationService syncs managed preset lane when reopening archived route-
     const dir = await fs.mkdtemp(
         path.join(os.tmpdir(), 'chatluna-reopen-lane-')
     )
-    const archivePath = path.join(dir, 'archive.json.gz')
+    const archivePath = path.join(
+        dir,
+        'data/chatluna/archive/archive-lane.json.gz'
+    )
+    await fs.mkdir(path.dirname(archivePath), { recursive: true })
     const session = createSession({
         platform: 'onebot',
         selfId: '1016049163',

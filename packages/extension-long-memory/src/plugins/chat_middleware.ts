@@ -11,6 +11,7 @@ import {
     selectChatHistory
 } from '../utils/chat-history'
 import { enhancedMemoryToDocument, isMemoryExpired } from '../utils/memory'
+import { attachLongMemoryQueryTrace } from 'koishi-plugin-chatluna/llm-core/prompt'
 
 export async function apply(ctx: Context, config: Config) {
     const modelName = config.longMemoryExtractModel
@@ -63,6 +64,9 @@ export async function apply(ctx: Context, config: Config) {
                 )
 
                 if (model?.value) {
+                    const promptTemplate =
+                        chatInterface.preset.value.promptConfig
+                            .longMemoryNewQuestionPrompt
                     logger?.debug(
                         `Long memory search content: ${searchContent}, Chat history: ${JSON.stringify(
                             chatHistory
@@ -72,8 +76,16 @@ export async function apply(ctx: Context, config: Config) {
                     searchContent = await generateNewQuestion(
                         model,
                         chatHistory,
-                        searchContent
+                        searchContent,
+                        promptTemplate
                     )
+                    attachLongMemoryQueryTrace(promptVariables, {
+                        query: searchContent,
+                        promptPath:
+                            promptTemplate == null
+                                ? 'runtimeDefaults.longMemoryNewQuestionPrompt'
+                                : 'promptConfig.longMemoryNewQuestionPrompt'
+                    })
                 } else {
                     logger?.warn(
                         'LongMemoryExtractModel not configured or invalid, skip query rewrite.'
@@ -159,7 +171,7 @@ export async function apply(ctx: Context, config: Config) {
             if (memories.length === 0) return
 
             const memoryInfo = {
-                presetId: chatInterface.preset.value.triggerKeyword[0],
+                presetId: chatInterface.preset.value.id,
                 userId: session.userId,
                 guildId: session.guildId || session.channelId
             }

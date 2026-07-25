@@ -66,20 +66,20 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 const parsed = parsePresetLaneInput(
                     text,
                     ctx.chatluna.preset
-                        .getAllPreset(true)
-                        .value.flatMap((entry) =>
-                            entry.split(',').map((item) => item.trim())
-                        )
+                        .listPresets()
+                        .value.flatMap((preset) => [
+                            preset.id,
+                            ...preset.aliases
+                        ])
                 )
 
                 if (parsed?.preset != null) {
-                    const preset = ctx.chatluna.preset.getPreset(
-                        parsed.preset,
-                        false
+                    const preset = ctx.chatluna.preset.findPresetInput(
+                        parsed.preset
                     ).value
 
                     if (preset != null) {
-                        context.options.presetLane = parsed.preset
+                        context.options.presetLane = preset.id
 
                         if (
                             parsed.queryOnly &&
@@ -90,7 +90,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                             context.command = 'conversation_current'
                             context.options.conversation_manage = {
                                 ...context.options.conversation_manage,
-                                presetLane: parsed.preset
+                                presetLane: preset.id
                             }
                             context.message = null
                             return ChainMiddlewareRunStatus.CONTINUE

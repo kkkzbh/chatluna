@@ -1,5 +1,5 @@
 import { HttpsProxyAgent } from 'https-proxy-agent'
-import { logger } from 'koishi-plugin-chatluna'
+import { logger } from 'koishi-plugin-chatluna/utils/logger'
 import { lookup } from 'node:dns/promises'
 import {
     ChatLunaError,

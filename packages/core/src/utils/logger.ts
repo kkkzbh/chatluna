@@ -6,6 +6,12 @@ let loggers: Record<string, Logger> = {}
 
 let logLevel = -1
 
+export let logger: Logger
+
+export function setRootLogger(value: Logger) {
+    logger = value
+}
+
 export function createLogger(ctx: Context, name: string = 'chatluna') {
     const result = loggers[name] || ctx.logger(name)
 

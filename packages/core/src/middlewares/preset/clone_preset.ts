@@ -1,9 +1,6 @@
 import { Context } from 'koishi'
 import { Config } from '../../config'
 import { ChainMiddlewareRunStatus, ChatChain } from '../../chains/chain'
-import fs from 'fs/promises'
-import { dump, load } from 'js-yaml'
-import { RawPreset } from '../../llm-core/prompt'
 
 export function apply(ctx: Context, config: Config, chain: ChatChain) {
     chain
@@ -18,8 +15,8 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
 
             const presetService = ctx.chatluna.preset
 
-            const oldPreset = presetService.getPreset(name)
-            const newPreset = presetService.getPreset(newName)
+            const oldPreset = presetService.findPresetInput(name)
+            const newPreset = presetService.getPreset(newName, false)
 
             if (newPreset.value != null) {
                 await context.send(session.text('.conflict'))
@@ -39,19 +36,18 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             if (result == null) {
                 context.message = session.text('.timeout')
                 return ChainMiddlewareRunStatus.STOP
-            } else if (result !== 'Y') {
+            }
+            if (result !== 'Y') {
                 context.message = session.text('.cancelled')
                 return ChainMiddlewareRunStatus.STOP
             }
 
-            const loaded = load(newPreset.value.rawText) as RawPreset
-
-            loaded.keywords.push(newName)
-
-            await fs.writeFile(
-                presetService.resolvePresetDir() + `/${newName}_clone.yml`,
-                dump(loaded)
-            )
+            await presetService.createPreset({
+                ...presetService.getDefinition(oldPreset.value.id),
+                id: newName,
+                displayName: newName,
+                aliases: []
+            })
 
             context.message = session.text('.success', [newName])
 

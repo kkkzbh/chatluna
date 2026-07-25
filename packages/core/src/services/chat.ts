@@ -81,6 +81,7 @@ import {
     KoishiChatMessageHistory,
     type ResearchReplyHistoryNormalizationResult
 } from 'koishi-plugin-chatluna/llm-core/memory/message'
+import { PresetKnowledgeService } from './knowledge'
 
 export class ChatLunaService extends Service<Config> {
     private _plugins: Record<string, ChatLunaPlugin> = {}
@@ -91,6 +92,7 @@ export class ChatLunaService extends Service<Config> {
     private readonly _messageTransformer: MessageTransformer
     private readonly _renderer: DefaultRenderer
     private readonly _promptRenderer: ChatLunaPromptRenderService
+    private readonly _knowledge: PresetKnowledgeService
     private readonly _contextManager: ChatLunaContextManagerService
     private readonly _conversation: ConversationService
     private readonly _conversationRuntime: ConversationRuntime
@@ -99,6 +101,7 @@ export class ChatLunaService extends Service<Config> {
         string,
         AllowReplyResolver
     >()
+
     declare public config: Config
 
     declare public currentConfig: Config
@@ -117,13 +120,15 @@ export class ChatLunaService extends Service<Config> {
         this._messageTransformer = new MessageTransformer(config)
         this._renderer = new DefaultRenderer(ctx, config)
         this._promptRenderer = new ChatLunaPromptRenderService()
+        this._knowledge = new PresetKnowledgeService()
         this._contextManager = new ChatLunaContextManagerService(ctx)
         this._conversationRuntime = new ConversationRuntime(this)
         this._conversation = new ConversationService(
             ctx,
             config,
             this._conversationRuntime,
-            this._platformService
+            this._platformService,
+            this._preset
         )
 
         this._createTempDir()
@@ -260,7 +265,9 @@ export class ChatLunaService extends Service<Config> {
                 : ''
 
         if (conversationId.length < 1) {
-            throw new Error('normalizeResearchReplyHistory requires conversationId.')
+            throw new Error(
+                'normalizeResearchReplyHistory requires conversationId.'
+            )
         }
 
         const history = new KoishiChatMessageHistory(
@@ -529,7 +536,8 @@ export class ChatLunaService extends Service<Config> {
                     model.invocationParams().maxTokenLimit ??
                     model.getModelMaxContextSize(),
                 contextManager: this._contextManager,
-                promptRenderService: this._promptRenderer
+                promptRenderService: this._promptRenderer,
+                knowledgeService: this._knowledge
             })
 
         return createAgent({
@@ -577,6 +585,10 @@ export class ChatLunaService extends Service<Config> {
         return this._promptRenderer
     }
 
+    get knowledge() {
+        return this._knowledge
+    }
+
     get contextManager() {
         return this._contextManager
     }
@@ -592,6 +604,7 @@ export class ChatLunaService extends Service<Config> {
     protected async stop(): Promise<void> {
         this._conversationRuntime.dispose()
         this._platformService.dispose()
+        this._knowledge.clear()
         this._contextManager.clearAll()
     }
 
@@ -1393,6 +1406,7 @@ export namespace ChatLunaPlugin {
 }
 
 export * from './prompt_renderer'
+export * from './knowledge'
 export * from './types'
 export * from './message_transform'
 export * from '../llm-core/prompt/context_manager'

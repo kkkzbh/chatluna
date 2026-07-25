@@ -14,6 +14,7 @@ import type { ClientConfig } from '../llm-core/platform/config'
 import { markChatLunaUserMessage } from 'koishi-plugin-chatluna/utils/langchain'
 import { parseRawModelName } from '../utils/model'
 import { ConversationRecord, Message } from '../types'
+import type { PresetResolution } from '../types'
 import type { PostHandler } from '../utils/types'
 import { ActiveRequest, ChatEvents, RuntimeConversationEntry } from './types'
 import { type UsageMetadata } from '@langchain/core/messages'
@@ -25,6 +26,7 @@ export interface ChatOptions {
     variables?: Record<string, unknown>
     postHandler?: PostHandler
     requestId?: string
+    presetResolution?: PresetResolution
     toolMask?: ToolMask
     callbacks?: Callbacks
     signal?: AbortSignal
@@ -50,9 +52,15 @@ export class ConversationRuntime {
 
     async ensureChatInterface(conversation: ConversationRecord) {
         const cached = this.interfaces.get(conversation.id)
-        if (cached != null) {
+        if (
+            cached != null &&
+            hasSameInterfaceConfiguration(cached.conversation, conversation)
+        ) {
             cached.conversation = conversation
             return cached.chatInterface
+        }
+        if (cached != null) {
+            this.interfaces.delete(conversation.id)
         }
 
         const chatInterface =
@@ -151,6 +159,7 @@ export class ConversationRuntime {
                 stream,
                 conversationId: conversation.id,
                 requestId,
+                presetResolution: options.presetResolution,
                 session,
                 variables,
                 signal: abortController.signal,
@@ -490,6 +499,18 @@ export class ConversationRuntime {
             }
         }
     }
+}
+
+function hasSameInterfaceConfiguration(
+    left: ConversationRecord,
+    right: ConversationRecord
+): boolean {
+    return (
+        left.model === right.model &&
+        left.preset === right.preset &&
+        left.chatMode === right.chatMode &&
+        left.autoTitle === right.autoTitle
+    )
 }
 
 const EVENT_KEYS: readonly (keyof ChatEvents)[] = [

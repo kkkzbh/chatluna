@@ -1,4 +1,5 @@
 export * from './client'
 export * from './requester'
+export * from './internal_control'
 export * from './utils'
 export * from './types'

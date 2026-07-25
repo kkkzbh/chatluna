@@ -74,8 +74,21 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             return ChainMiddlewareRunStatus.STOP
         }
 
+        const requestedPreset =
+            create?.preset == null
+                ? undefined
+                : ctx.chatluna.preset.findPresetInput(create.preset).value
+        if (create?.preset != null && requestedPreset == null) {
+            context.message = session.text(
+                'chatluna.conversation.messages.preset_unavailable',
+                [create.preset]
+            )
+            return ChainMiddlewareRunStatus.STOP
+        }
+
         for (const field of ['model', 'preset', 'chatMode'] as const) {
-            const value = create?.[field]
+            const value =
+                field === 'preset' ? requestedPreset?.id : create?.[field]
             const fixed = resolved.constraint[FIXED_FIELD_KEY[field]]
             if (value != null && fixed != null && value !== fixed) {
                 context.message = session.text(
@@ -107,9 +120,9 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                     ) ??
                     config.defaultModel,
                 preset:
-                    create?.preset ??
+                    requestedPreset?.id ??
                     resolved.effectivePreset ??
-                    config.defaultPreset,
+                    ctx.chatluna.preset.getGlobalDefaultPresetId().value,
                 chatMode:
                     create?.chatMode ??
                     resolved.effectiveChatMode ??
@@ -348,6 +361,14 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
     for (const { cmd, field, successKey, failKey } of USE_FIELDS) {
         middleware(cmd, async (session, context) => {
             try {
+                const input = context.options.conversation_use?.[field]
+                const value =
+                    field === 'preset' && input != null
+                        ? ctx.chatluna.preset.findPresetInput(input).value?.id
+                        : input
+                if (input != null && value == null) {
+                    throw new Error(`Unknown preset: ${input}`)
+                }
                 const conversation =
                     await ctx.chatluna.conversation.updateConversationUsage(
                         session,
@@ -355,7 +376,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                             conversationId: resolvedConversationId(context),
                             presetLane:
                                 context.options.conversation_manage?.presetLane,
-                            [field]: context.options.conversation_use?.[field]
+                            [field]: value
                         }
                     )
 
@@ -535,13 +556,20 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
     }
 
     middleware('conversation_rule_preset', async (session, context) => {
-        const value = context.options.conversation_rule?.preset
+        const input = context.options.conversation_rule?.preset
+        const value =
+            input == null || input === 'reset'
+                ? input
+                : ctx.chatluna.preset.findPresetInput(input).value?.id
         const clear =
             context.options.conversation_rule?.clear === true ||
             value === 'reset'
         const newOnly = context.options.conversation_rule?.newOnly === true
 
         try {
+            if (input != null && input !== 'reset' && value == null) {
+                throw new Error(`Unknown preset: ${input}`)
+            }
             const patch = clear
                 ? {
                       activePresetLane: null,

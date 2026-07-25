@@ -27,7 +27,8 @@ import {
     responseApiCompletion,
     responseApiCompletionStream,
     type ResponseBuiltinTool,
-    ResponseImageProvider
+    ResponseImageProvider,
+    splitModelRequestOverrides
 } from '@chatluna/v1-shared-adapter'
 import { BaseMessageChunk } from '@langchain/core/messages'
 import { RunnableConfig } from '@langchain/core/runnables'
@@ -35,13 +36,10 @@ import { hashString } from 'koishi-plugin-chatluna/utils/string'
 import type {} from 'koishi-plugin-chatluna-storage-service'
 
 function isResponsesRequestMode(params: ModelRequestParams) {
-    const override = params.overrideRequestParams
-    return (
-        override != null &&
-        typeof override === 'object' &&
-        !Array.isArray(override) &&
-        override['qqbot_request_mode'] === 'responses'
+    const { internalControl } = splitModelRequestOverrides(
+        params.overrideRequestParams
     )
+    return internalControl.requestMode === 'responses'
 }
 
 export class OpenAIRequester

@@ -1,9 +1,13 @@
 import type { UsageMetadata } from '@langchain/core/messages'
 import type { Tiktoken } from 'js-tiktoken/lite'
 import type { Context } from 'koishi'
-import { logger } from 'koishi-plugin-chatluna'
+import { logger } from 'koishi-plugin-chatluna/utils/logger'
 import { usageSourceFromStack } from 'koishi-plugin-chatluna/utils/usage_source'
 import { getEncoding } from '../utils/tiktoken'
+import type {
+    ModelContextInput,
+    ModelContextReporter
+} from '../prompt/context_trace'
 
 export function createModelUsageReporter(
     ctx: Context,
@@ -11,7 +15,7 @@ export function createModelUsageReporter(
     model: string,
     stack?: string
 ): ModelUsageReporter {
-    const report: ModelUsageReporter = async (usage) => {
+    const report = (async (usage) => {
         const limit = Error.stackTraceLimit
         Error.stackTraceLimit = Math.max(limit, 50)
         const currentStack = new Error().stack
@@ -38,6 +42,18 @@ export function createModelUsageReporter(
         }
         try {
             await ctx.root.parallel('chatluna/model-usage', payload)
+        } catch (e) {
+            ctx.logger.error(e)
+        }
+    }) as ModelUsageReporter
+    report.context = async (payload) => {
+        try {
+            await ctx.root.parallel('chatluna/model-context', {
+                ...payload,
+                platform: payload.platform ?? platform,
+                model: payload.model ?? model,
+                createdAt: new Date()
+            })
         } catch (e) {
             ctx.logger.error(e)
         }
@@ -92,6 +108,8 @@ declare module 'koishi' {
 export type ModelUsageCallType = 'llm' | 'embeddings' | 'reranker'
 
 export interface ModelUsageContext {
+    callId?: string
+    callOrdinal?: number
     chatPlatform?: string
     conversationId?: string
     requestId?: string
@@ -131,7 +149,10 @@ export type ModelUsageInput = Omit<
 
 export interface ModelUsageReporter {
     (usage: ModelUsageInput): Promise<void> | void
+    context: ModelContextReporter
 }
+
+export type { ModelContextInput, ModelContextReporter }
 
 export interface EmbeddingsUsageResult {
     data: number[] | number[][]

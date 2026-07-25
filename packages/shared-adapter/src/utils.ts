@@ -487,9 +487,16 @@ export async function langchainMessageToOpenAIMessage(
                         }
                         try {
                             const url = await fetchImageUrl(plugin, content)
+                            const raw = content.image_url
                             return {
                                 type: 'image_url',
-                                image_url: { url, detail: 'high' }
+                                image_url: {
+                                    url,
+                                    detail:
+                                        typeof raw === 'string'
+                                            ? undefined
+                                            : raw.detail
+                                }
                             }
                         } catch {
                             return null

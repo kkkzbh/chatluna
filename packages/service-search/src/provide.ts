@@ -1,13 +1,31 @@
-import { Context, Schema } from 'koishi'
+import { Context, Logger, Schema } from 'koishi'
 import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
 import { SearchResult } from './types'
-import { Config, logger } from '.'
+import { Config } from './config'
 import { Document } from '@langchain/core/documents'
 import { MemoryVectorStore } from 'koishi-plugin-chatluna/llm-core/vectorstores'
 import { parseRawModelName } from 'koishi-plugin-chatluna/llm-core/utils/count_tokens'
 import { ChatLunaBaseEmbeddings } from 'koishi-plugin-chatluna/llm-core/platform/model'
 import { ComputedRef } from 'koishi-plugin-chatluna'
 import { EmptyEmbeddings } from 'koishi-plugin-chatluna/llm-core/model/in_memory'
+import { createLogger } from 'koishi-plugin-chatluna/utils/logger'
+
+export class SearchManagerError extends Error {
+    readonly operation = 'search'
+
+    constructor(
+        public readonly stage:
+            | 'provider_lookup'
+            | 'provider_request'
+            | 'provider_result',
+        message: string,
+        public readonly provider?: string,
+        options?: ErrorOptions
+    ) {
+        super(message, options)
+        this.name = 'SearchManagerError'
+    }
+}
 
 export abstract class SearchProvider {
     constructor(
@@ -25,11 +43,14 @@ export class SearchManager {
     private providers: Map<string, SearchProvider> = new Map()
     private schemas: Schema[] = []
     private _embeddings: ComputedRef<ChatLunaBaseEmbeddings>
+    private readonly logger: Logger
 
     constructor(
         private ctx: Context,
         public config: Config
-    ) {}
+    ) {
+        this.logger = createLogger(ctx, 'chatluna-search-service')
+    }
 
     addProvider(provider: SearchProvider) {
         this.providers.set(provider.name, provider)
@@ -72,7 +93,7 @@ export class SearchManager {
             try {
                 return await providers[0].search(query, limit)
             } catch (error) {
-                logger.error(
+                this.logger.error(
                     `Error searching with provider ${providers[0].name}:`,
                     error
                 )
@@ -92,7 +113,7 @@ export class SearchManager {
                 const results = await provider.search(query, signalLimit)
                 searchResults.push(...results)
             } catch (error) {
-                logger.error(
+                this.logger.error(
                     `Error searching with provider ${provider.name}:`,
                     error
                 )
@@ -108,6 +129,72 @@ export class SearchManager {
         return searchResults
     }
 
+    async searchOrThrow(
+        query: string,
+        limit: number = this.config.topK,
+        providerNames: readonly string[] = this.config.searchEngine
+    ): Promise<SearchResult[]> {
+        const names = [...new Set(providerNames)]
+        if (names.length === 0) {
+            throw new SearchManagerError(
+                'provider_lookup',
+                'Strict search requires at least one configured provider.'
+            )
+        }
+
+        const providers = names.map((name) => {
+            const provider = this.providers.get(name)
+            if (provider == null) {
+                throw new SearchManagerError(
+                    'provider_lookup',
+                    `Search provider is not registered: ${name}`,
+                    name
+                )
+            }
+            return provider
+        })
+        const resultLimit = Math.max(1, Math.trunc(limit))
+        const providerLimit =
+            this.config.multiSourceMode === 'average'
+                ? Math.max(1, Math.ceil(resultLimit / providers.length))
+                : resultLimit
+        const batches = await Promise.all(
+            providers.map(async (provider) => {
+                let results: SearchResult[]
+                try {
+                    results = await provider.search(query, providerLimit)
+                } catch (error) {
+                    throw new SearchManagerError(
+                        'provider_request',
+                        `Search provider request failed: ${provider.name}`,
+                        provider.name,
+                        { cause: error }
+                    )
+                }
+                if (!Array.isArray(results)) {
+                    throw new SearchManagerError(
+                        'provider_result',
+                        `Search provider returned an invalid result collection: ${provider.name}`,
+                        provider.name
+                    )
+                }
+                return results
+            })
+        )
+
+        const merged: SearchResult[] = []
+        const maxBatchLength = Math.max(...batches.map((batch) => batch.length))
+        for (let index = 0; index < maxBatchLength; index += 1) {
+            for (const batch of batches) {
+                const result = batch[index]
+                if (result != null) {
+                    merged.push(result)
+                }
+            }
+        }
+        return merged.slice(0, resultLimit)
+    }
+
     private async _getEmbeddings() {
         if (this._embeddings) return this._embeddings
 
@@ -120,7 +207,7 @@ export class SearchManager {
                 model
             )
         } catch (e) {
-            logger.warn(
+            this.logger.warn(
                 `Get embeddings failed: ${e}. Try check your defaultEmbeddings`
             )
             return null
@@ -139,7 +226,7 @@ export class SearchManager {
         const embeddings = await this._getEmbeddings()
 
         if (!embeddings || embeddings.value instanceof EmptyEmbeddings) {
-            logger.warn('Embeddings is null. Return original results.')
+            this.logger.warn('Embeddings is null. Return original results.')
             return results
         }
 

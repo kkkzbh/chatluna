@@ -4,7 +4,7 @@ import { ChatLunaLLMChainWrapper } from '../chain/base'
 import { StructuredTool, ToolRunnableConfig } from '@langchain/core/tools'
 import { BaseMessage, type UsageMetadata } from '@langchain/core/messages'
 import { Dict, Session } from 'koishi'
-import { PresetTemplate } from 'koishi-plugin-chatluna/llm-core/prompt'
+import { CompiledPreset } from 'koishi-plugin-chatluna/llm-core/prompt'
 import { ChatLunaSaveableVectorStore } from 'koishi-plugin-chatluna/llm-core/vectorstores'
 import { BasePlatformClient } from 'koishi-plugin-chatluna/llm-core/platform/client'
 import { ComputedRef } from '@vue/reactivity'
@@ -55,7 +55,7 @@ export interface CreateChatLunaLLMChainParams {
     model: ChatLunaChatModel
     embeddings?: ChatLunaBaseEmbeddings
     historyMemory: BufferMemory
-    preset: ComputedRef<PresetTemplate>
+    preset: ComputedRef<CompiledPreset>
     supportChatChain?: boolean
     vectorStoreName?: string
 }

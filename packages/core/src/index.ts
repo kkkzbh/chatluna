@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
+import path from 'path'
 import './services/types'
 import { Context, Logger, Time, User } from 'koishi'
 import { ChatLunaService } from 'koishi-plugin-chatluna/services/chat'
@@ -6,7 +7,9 @@ import { forkScopeToDisposable } from 'koishi-plugin-chatluna/utils/koishi'
 import {
     clearLogger,
     createLogger,
-    setLoggerLevel
+    logger,
+    setLoggerLevel,
+    setRootLogger
 } from 'koishi-plugin-chatluna/utils/logger'
 import * as request from 'koishi-plugin-chatluna/utils/request'
 import { PromiseLikeDisposable } from 'koishi-plugin-chatluna/utils/types'
@@ -37,7 +40,7 @@ export const inject2 = {
     chatluna_storage: { required: false }
 }
 
-export let logger: Logger
+export { logger } from 'koishi-plugin-chatluna/utils/logger'
 
 export const usage = `
 ## chatluna v1.3
@@ -51,7 +54,7 @@ ChatLuna 插件交流 QQ 群：282381753 （有问题或出现 Bug 先加群问�
 `
 
 export function apply(ctx: Context, config: Config) {
-    logger = createLogger(ctx)
+    setRootLogger(createLogger(ctx))
     setupLogger(config)
     setupI18n(ctx)
 
@@ -303,7 +306,14 @@ async function setupAutoPurgeArchive(ctx: Context, config: Config) {
                                     return false
                                 }
 
-                                await purgeArchivedConversation(ctx, current)
+                                await purgeArchivedConversation(
+                                    ctx,
+                                    path.resolve(
+                                        ctx.baseDir,
+                                        config.archiveDir
+                                    ),
+                                    current
+                                )
                                 return true
                             }
                         )

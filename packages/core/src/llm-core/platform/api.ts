@@ -33,6 +33,13 @@ export interface BaseRequestParams {
     model?: string
 }
 
+export interface ModelRequestInternalControl {
+    canonicalModel?: string
+    transportModel?: string
+    requestMode?: string
+    toolProfile?: string
+}
+
 export interface ModelRequestParams extends BaseRequestParams {
     /** Sampling temperature to use */
     temperature?: number
@@ -77,7 +84,9 @@ export interface ModelRequestParams extends BaseRequestParams {
     variables?: Record<string, any>
 
     /**
-     * Override request params for this request only.
+     * Mixed request controls and provider overrides supplied by callers.
+     * Adapters must separate typed internal control before serializing the
+     * provider payload.
      */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     overrideRequestParams?: Record<string, any>

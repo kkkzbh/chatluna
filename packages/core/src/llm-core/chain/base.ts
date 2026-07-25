@@ -25,6 +25,7 @@ import { ChatGeneration, RUN_KEY } from '@langchain/core/outputs'
 import { BaseMemory } from '@langchain/core/memory'
 import type { PostHandler } from '../../utils/types'
 import type { AgentEvent, MessageQueue } from '../agent/types'
+import type { PresetResolution } from '../../types'
 
 export type SystemPrompts = BaseMessage[]
 
@@ -42,6 +43,7 @@ export interface ChatLunaLLMCallArg {
     stream: boolean
     conversationId: string
     requestId: string
+    presetResolution?: PresetResolution
     session: Session
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     variables?: Record<string, any>
