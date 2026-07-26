@@ -108,21 +108,16 @@
                 <div class="section-title">高级配置</div>
                 <div class="field-grid option-grid">
                     <div class="field-card flat-card option-card">
-                        <div class="field-label">模型覆盖</div>
-                        <el-select
-                            v-model="draft.model"
-                            clearable
-                            filterable
-                            placeholder="留空则继承父会话模型"
+                        <div class="field-label">模型绑定</div>
+                        <div class="field-help">
+                            当前 Agent 的模型继承与专用绑定统一在模型接口中管理。
+                        </div>
+                        <a
+                            class="model-config-link"
+                            href="/intelligence/models"
                         >
-                            <el-option label="继承当前会话模型" value="" />
-                            <el-option
-                                v-for="item in modelOptions"
-                                :key="item"
-                                :label="item"
-                                :value="item"
-                            />
-                        </el-select>
+                            打开模型接口
+                        </a>
                     </div>
                     <div class="field-card flat-card option-card">
                         <div class="field-label">最大轮次</div>
@@ -373,7 +368,6 @@ interface AgentDraft {
     characterGroupIds: string[]
     characterPrivateIds: string[]
     authority: number
-    model: string
     maxTurns: number
     hidden: boolean
     allowKoishiMessageTransform: boolean
@@ -391,7 +385,6 @@ interface RuleOption {
 const props = defineProps<{
     agent: SubAgentInfo
     draft: AgentDraft
-    modelNames: string[]
     skillOptions: RuleOption[]
     mcpOptions: RuleOption[]
     computerOptions: RuleOption[]
@@ -424,14 +417,6 @@ const scopeOptions = [
     { label: '白名单', value: 'allow' },
     { label: '黑名单', value: 'deny' }
 ]
-
-const modelOptions = computed(() => {
-    const items = new Set(props.modelNames)
-    if (props.draft.model.trim()) {
-        items.add(props.draft.model.trim())
-    }
-    return [...items]
-})
 
 const toolOptions = computed(() => {
     return Object.values(props.tools ?? {})
@@ -840,6 +825,19 @@ function clearIds() {
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
+}
+
+.model-config-link {
+    display: inline-flex;
+    margin-top: 10px;
+    color: var(--k-color-primary);
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.model-config-link:hover {
+    text-decoration: underline;
 }
 
 .editor-actions :deep(.danger-soft.el-button) {

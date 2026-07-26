@@ -34,7 +34,9 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 formatPreset(ctx, session, value)
             )
 
-            const presets = preset.listPresets().value.map((item) => item.id)
+            const presets = preset
+                .listContextPresets()
+                .value.map((item) => item.id)
 
             await pagination.push(presets)
 
@@ -53,7 +55,7 @@ async function formatPreset(
 ) {
     const buffer = []
 
-    const preset = ctx.chatluna.preset.getPreset(presetName).value
+    const preset = ctx.chatluna.preset.getContextPreset(presetName).value
 
     const previewContent = preset.messages
         .map((value) => value.content)

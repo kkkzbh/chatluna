@@ -10,6 +10,7 @@ export interface PresetKnowledgeResolveContext {
 }
 
 export interface PresetKnowledgeSourceRequest extends PresetKnowledgeResolveContext {
+    blockId: string
     source: string
     sourceIndex: number
     presetId: string
@@ -21,6 +22,7 @@ export type PresetKnowledgeSourceResolver = (
 ) => Promise<readonly Document[]>
 
 export interface PresetKnowledgeMetadata {
+    blockId: string
     source: string
     sourceIndex: number
     fieldPath: string
@@ -96,72 +98,78 @@ export class PresetKnowledgeService {
         preset: CompiledPreset,
         context: PresetKnowledgeResolveContext
     ): Promise<Document[]> {
-        const config = preset.knowledge
-        if (config == null || config.sources.length === 0) {
+        const configs = preset.knowledgeBlocks.filter(
+            (block) => block.enabled && block.sources.length > 0
+        )
+        if (configs.length === 0) {
             return []
         }
 
         const resolved = await Promise.all(
-            config.sources.map(async (source, sourceIndex) => {
-                const resolver = this._resolvers.get(source)
-                if (resolver == null) {
-                    throw new PresetKnowledgeError(
-                        'source_lookup',
-                        `Preset knowledge source is not registered: ${source}`,
-                        preset.id,
-                        source
-                    )
-                }
+            configs.flatMap((block, blockIndex) =>
+                block.sources.map(async (source, sourceIndex) => {
+                    const resolver = this._resolvers.get(source)
+                    if (resolver == null) {
+                        throw new PresetKnowledgeError(
+                            'source_lookup',
+                            `Preset knowledge source is not registered: ${source}`,
+                            preset.id,
+                            source
+                        )
+                    }
 
-                let documents: readonly Document[]
-                try {
-                    documents = await resolver({
-                        ...context,
+                    let documents: readonly Document[]
+                    try {
+                        documents = await resolver({
+                            ...context,
+                            blockId: block.id,
+                            source,
+                            sourceIndex,
+                            presetId: preset.id,
+                            presetRevision: preset.revision
+                        })
+                    } catch (error) {
+                        throw new PresetKnowledgeError(
+                            'source_resolve',
+                            `Failed to resolve preset knowledge source: ${source}`,
+                            preset.id,
+                            source,
+                            { cause: error }
+                        )
+                    }
+
+                    if (
+                        !Array.isArray(documents) ||
+                        documents.some(
+                            (document) => !(document instanceof Document)
+                        )
+                    ) {
+                        throw new PresetKnowledgeError(
+                            'source_result',
+                            `Knowledge source returned an invalid document collection: ${source}`,
+                            preset.id,
+                            source
+                        )
+                    }
+
+                    const metadata = {
+                        blockId: block.id,
                         source,
                         sourceIndex,
-                        presetId: preset.id,
-                        presetRevision: preset.revision
+                        fieldPath: `knowledgeBlocks.${blockIndex}.sources.${sourceIndex}`
+                    } satisfies PresetKnowledgeMetadata
+
+                    return documents.map((document) => {
+                        const result = new Document({
+                            id: document.id,
+                            pageContent: document.pageContent,
+                            metadata: document.metadata
+                        })
+                        presetKnowledgeMetadata.set(result, metadata)
+                        return result
                     })
-                } catch (error) {
-                    throw new PresetKnowledgeError(
-                        'source_resolve',
-                        `Failed to resolve preset knowledge source: ${source}`,
-                        preset.id,
-                        source,
-                        { cause: error }
-                    )
-                }
-
-                if (
-                    !Array.isArray(documents) ||
-                    documents.some(
-                        (document) => !(document instanceof Document)
-                    )
-                ) {
-                    throw new PresetKnowledgeError(
-                        'source_result',
-                        `Knowledge source returned an invalid document collection: ${source}`,
-                        preset.id,
-                        source
-                    )
-                }
-
-                const metadata = {
-                    source,
-                    sourceIndex,
-                    fieldPath: `knowledge.sources.${sourceIndex}`
-                } satisfies PresetKnowledgeMetadata
-
-                return documents.map((document) => {
-                    const result = new Document({
-                        id: document.id,
-                        pageContent: document.pageContent,
-                        metadata: document.metadata
-                    })
-                    presetKnowledgeMetadata.set(result, metadata)
-                    return result
                 })
-            })
+            )
         )
 
         return resolved.flat()

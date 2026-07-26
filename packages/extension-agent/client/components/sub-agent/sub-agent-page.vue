@@ -119,7 +119,6 @@
                     ].join(':')"
                     :agent="selectedAgent"
                     :draft="draft"
-                    :model-names="modelNames"
                     :skill-options="skillOptions"
                     :mcp-options="mcpOptions"
                     :computer-options="computerOptions"
@@ -135,7 +134,6 @@
         <preset-dialog
             v-model:visible="showPresetDialog"
             :preset-names="presetNames"
-            :model-names="modelNames"
             @create="createPresetAgent"
         />
 
@@ -370,7 +368,6 @@ const agents = ref<SubAgentInfo[]>([])
 const runs = ref<SubAgentRunInfo[]>([])
 const toolAvailability = ref<ToolAvailabilityInfo[]>([])
 const presetNames = ref<string[]>([])
-const modelNames = ref<string[]>([])
 const selectedId = ref('')
 const showPresetDialog = ref(false)
 const showMarkdownDialog = ref(false)
@@ -400,7 +397,6 @@ const draft = reactive({
     characterGroupIds: [] as string[],
     characterPrivateIds: [] as string[],
     authority: 0,
-    model: '',
     maxTurns: 100,
     hidden: false,
     allowKoishiMessageTransform: false,
@@ -455,7 +451,6 @@ watch(
         draft.characterGroupIds = [...value.characterGroupIds]
         draft.characterPrivateIds = [...value.characterPrivateIds]
         draft.authority = value.authority
-        draft.model = value.model ?? ''
         draft.maxTurns = value.maxTurns ?? 100
         draft.hidden = value.hidden
         draft.allowKoishiMessageTransform = value.allowKoishiMessageTransform
@@ -589,13 +584,9 @@ function onAgentCreated(id: string) {
 async function loadMeta() {
     try {
         busy.value = true
-        const [presets, models] = await Promise.all([
-            send('chatluna-agent/getPresetNames'),
-            send('chatluna-agent/getModelNames')
-        ])
-
-        presetNames.value = [...presets]
-        modelNames.value = [...models]
+        presetNames.value = [
+            ...(await send('chatluna-agent/getPresetNames'))
+        ]
     } catch {
         ElMessage.error('读取 Sub Agent 扩展数据失败，请稍后重试。')
     } finally {
@@ -663,7 +654,6 @@ async function saveSelected() {
             authority: draft.authority,
             source: item.source,
             format: item.format,
-            model: draft.model.trim() || undefined,
             maxTurns: draft.maxTurns,
             hidden: draft.hidden,
             promptContent: draft.promptContent,
@@ -685,7 +675,7 @@ async function saveSelected() {
             ) as keyof SubAgentConfig['builtin']
             next.builtin[key] = saved
         } else if (item.source === 'preset') {
-            next.presetAgents[item.id.replace('preset:', '')] = saved
+            next.presetAgents[item.id] = saved
         } else {
             next.items[item.id] = saved
         }
@@ -752,7 +742,6 @@ async function createPresetAgent(
         characterGroupIds?: string[]
         characterPrivateIds?: string[]
         authority?: number
-        model: string | undefined
         maxTurns: number
         hidden: boolean
         allowKoishiMessageTransform: boolean
@@ -857,7 +846,6 @@ async function savePreview() {
             characterGroupIds: item.characterGroupIds,
             characterPrivateIds: item.characterPrivateIds,
             authority: item.authority,
-            model: item.model,
             maxTurns: item.maxTurns,
             hidden: item.hidden,
             enabled: item.enabled,

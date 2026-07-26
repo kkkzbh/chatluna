@@ -133,9 +133,15 @@ export class ChatLunaAgentTaskAttachService {
         session: Session,
         conversation: ConversationRecord
     ) {
-        const model = await this.ctx.chatluna.createChatModel(
-            conversation.model
-        )
+        const binding = await this.ctx.chatluna.resolveModelBinding({
+            workload: 'main.chat',
+            session,
+            conversation
+        })
+        if (binding.mode !== 'dedicated') {
+            throw new Error(`Invalid main.chat mode: ${binding.mode}`)
+        }
+        const model = await this.ctx.chatluna.createChatModel(binding.model)
         return {
             configurable: {
                 model: model.value,

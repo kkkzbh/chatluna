@@ -38,23 +38,6 @@
             </div>
             <div class="field-grid two-col-grid">
                 <div class="field-card">
-                    <div class="field-label">模型覆盖</div>
-                    <el-select
-                        v-model="form.model"
-                        clearable
-                        filterable
-                        placeholder="留空则继承父会话模型"
-                    >
-                        <el-option label="继承当前会话模型" value="" />
-                        <el-option
-                            v-for="item in modelOptions"
-                            :key="item"
-                            :label="item"
-                            :value="item"
-                        />
-                    </el-select>
-                </div>
-                <div class="field-card">
                     <div class="field-label">最大轮次</div>
                     <el-input-number
                         v-model="form.maxTurns"
@@ -75,12 +58,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 const props = defineProps<{
     visible: boolean
     presetNames: string[]
-    modelNames: string[]
 }>()
 
 const mobile = ref(false)
@@ -105,7 +87,6 @@ const emit = defineEmits<{
         preset: string,
         options: {
             description: string
-            model: string | undefined
             maxTurns: number
             hidden: boolean
             allowKoishiMessageTransform: boolean
@@ -117,7 +98,6 @@ const form = reactive({
     name: '',
     description: '',
     preset: '',
-    model: '',
     maxTurns: 100
 })
 
@@ -128,19 +108,10 @@ watch(
             form.name = ''
             form.description = ''
             form.preset = props.presetNames[0] ?? ''
-            form.model = ''
             form.maxTurns = 100
         }
     }
 )
-
-const modelOptions = computed(() => {
-    const items = new Set(props.modelNames)
-    if (form.model.trim()) {
-        items.add(form.model.trim())
-    }
-    return [...items]
-})
 
 function handleCreate() {
     emit(
@@ -149,7 +120,6 @@ function handleCreate() {
         form.preset,
         {
             description: form.description.trim() || form.name.trim(),
-            model: form.model.trim() || undefined,
             maxTurns: form.maxTurns,
             hidden: false,
             allowKoishiMessageTransform: false

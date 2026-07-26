@@ -50,11 +50,17 @@ export class ConversationRuntime {
         return this.service.platform
     }
 
-    async ensureChatInterface(conversation: ConversationRecord) {
+    async ensureChatInterface(
+        conversation: ConversationRecord,
+        embeddings: string | undefined,
+        bindingRevision: number
+    ) {
         const cached = this.interfaces.get(conversation.id)
         if (
             cached != null &&
-            hasSameInterfaceConfiguration(cached.conversation, conversation)
+            hasSameInterfaceConfiguration(cached.conversation, conversation) &&
+            cached.embeddings === embeddings &&
+            cached.bindingRevision === bindingRevision
         ) {
             cached.conversation = conversation
             return cached.chatInterface
@@ -63,11 +69,15 @@ export class ConversationRuntime {
             this.interfaces.delete(conversation.id)
         }
 
-        const chatInterface =
-            await this.service.createChatInterface(conversation)
+        const chatInterface = await this.service.createChatInterface(
+            conversation,
+            embeddings
+        )
         this.interfaces.set(conversation.id, {
             conversation,
-            chatInterface
+            chatInterface,
+            embeddings,
+            bindingRevision
         })
         return chatInterface
     }
@@ -78,16 +88,41 @@ export class ConversationRuntime {
         message: Message,
         options: ChatOptions = {}
     ): Promise<Message> {
-        return this.withConversationAndPlatformLock(
-            conversation,
-            async (config) =>
-                this.internalChat(
-                    config,
-                    session,
-                    conversation,
-                    message,
-                    options
-                )
+        const requestId = options.requestId ?? randomUUID()
+        const [main, embeddings] = await Promise.all([
+            this.service.resolveModelBinding({
+                workload: 'main.chat',
+                session,
+                conversation,
+                requestId
+            }),
+            this.service.resolveModelBinding({
+                workload: 'chatluna.defaultEmbedding',
+                session,
+                conversation,
+                requestId
+            })
+        ])
+        if (main.mode !== 'dedicated') {
+            throw new Error(`Invalid main.chat mode: ${main.mode}`)
+        }
+        if (embeddings.mode !== 'dedicated' && embeddings.mode !== 'disabled') {
+            throw new Error(
+                `Invalid chatluna.defaultEmbedding mode: ${embeddings.mode}`
+            )
+        }
+
+        const effective = { ...conversation, model: main.model }
+        return this.withConversationAndPlatformLock(effective, async (config) =>
+            this.internalChat(
+                config,
+                session,
+                effective,
+                message,
+                { ...options, requestId },
+                embeddings.mode === 'dedicated' ? embeddings.model : undefined,
+                Math.max(main.revision, embeddings.revision)
+            )
         )
     }
 
@@ -96,12 +131,18 @@ export class ConversationRuntime {
         session: Session,
         conversation: ConversationRecord,
         message: Message,
-        options: ChatOptions
+        options: ChatOptions,
+        embeddings: string | undefined,
+        bindingRevision: number
     ): Promise<Message> {
-        const requestId = options.requestId ?? randomUUID()
+        const requestId = options.requestId as string
         const platform = requirePlatform(conversation)
 
-        const chatInterface = await this.ensureChatInterface(conversation)
+        const chatInterface = await this.ensureChatInterface(
+            conversation,
+            embeddings,
+            bindingRevision
+        )
         const abortController = new AbortController()
         const releaseSignal = linkAbortSignal(abortController, options.signal)
         const activeRequest = this.registerRequest(
@@ -417,10 +458,36 @@ export class ConversationRuntime {
 
     async clearConversationHistory(conversation: ConversationRecord) {
         return this.withConversationLock(conversation.id, async () => {
-            const chatInterface = await this.ensureChatInterface(conversation)
+            const [main, embeddings] = await Promise.all([
+                this.service.resolveModelBinding({
+                    workload: 'main.chat',
+                    conversation
+                }),
+                this.service.resolveModelBinding({
+                    workload: 'chatluna.defaultEmbedding',
+                    conversation
+                })
+            ])
+            if (main.mode !== 'dedicated') {
+                throw new Error(`Invalid main.chat mode: ${main.mode}`)
+            }
+            if (
+                embeddings.mode !== 'dedicated' &&
+                embeddings.mode !== 'disabled'
+            ) {
+                throw new Error(
+                    `Invalid chatluna.defaultEmbedding mode: ${embeddings.mode}`
+                )
+            }
+            const effective = { ...conversation, model: main.model }
+            const chatInterface = await this.ensureChatInterface(
+                effective,
+                embeddings.mode === 'dedicated' ? embeddings.model : undefined,
+                Math.max(main.revision, embeddings.revision)
+            )
             await this.service.ctx.root.parallel(
                 'chatluna/before-conversation-clear-history',
-                { conversation, chatInterface }
+                { conversation: effective, chatInterface }
             )
             await this.service.ctx.root.parallel(
                 'chatluna/clear-chat-history',
@@ -431,7 +498,7 @@ export class ConversationRuntime {
             this.interfaces.delete(conversation.id)
             await this.service.ctx.root.parallel(
                 'chatluna/after-conversation-clear-history',
-                { conversation, chatInterface }
+                { conversation: effective, chatInterface }
             )
         })
     }
@@ -440,8 +507,31 @@ export class ConversationRuntime {
         conversation: ConversationRecord,
         force = false
     ) {
-        return this.withConversationAndPlatformLock(conversation, async () => {
-            const chatInterface = await this.ensureChatInterface(conversation)
+        const [main, embeddings] = await Promise.all([
+            this.service.resolveModelBinding({
+                workload: 'main.chat',
+                conversation
+            }),
+            this.service.resolveModelBinding({
+                workload: 'chatluna.defaultEmbedding',
+                conversation
+            })
+        ])
+        if (main.mode !== 'dedicated') {
+            throw new Error(`Invalid main.chat mode: ${main.mode}`)
+        }
+        if (embeddings.mode !== 'dedicated' && embeddings.mode !== 'disabled') {
+            throw new Error(
+                `Invalid chatluna.defaultEmbedding mode: ${embeddings.mode}`
+            )
+        }
+        const effective = { ...conversation, model: main.model }
+        return this.withConversationAndPlatformLock(effective, async () => {
+            const chatInterface = await this.ensureChatInterface(
+                effective,
+                embeddings.mode === 'dedicated' ? embeddings.model : undefined,
+                Math.max(main.revision, embeddings.revision)
+            )
             return await chatInterface.compressContext(force)
         })
     }

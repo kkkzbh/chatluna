@@ -497,20 +497,8 @@ commands:
                     limit: 'Items per page'
                 messages:
                     header: 'Supported embedding models:'
-                    footer: 'Set default: chatluna.embeddings.set [model]'
+                    footer: 'Manage embedding bindings on the model interfaces admin page.'
                     pages: 'Page: [page] / [total]'
-            set:
-                description: 'Set default embedding model.'
-                arguments:
-                    embeddings: 'Model name'
-                messages:
-                    usage_hint: 'Usage: chatluna.embeddings.set [model]'
-                    multiple_models_found:
-                        header: 'Multiple models found:'
-                        footer: 'Please provide a more specific model name'
-                        example: 'Example: chatluna.embeddings.set {0}'
-                    model_not_found: 'Model not found. Check the name and try again.'
-                    success: 'Default set to {0}. Restarting plugin to apply.'
 
         vectorstore:
             description: 'ChatLuna vector database management.'
@@ -566,7 +554,6 @@ chatluna:
             action_locked: 'Conversation {0} is locked by the current rule.'
             action_disabled: 'Conversation {0} is disabled in the current route.'
             action_failed: 'Conversation {0} failed: {1}'
-            fixed_model: 'The current route fixes the model to {0}.'
             fixed_preset: 'The current route fixes the preset to {0}.'
             fixed_chat_mode: 'The current route fixes the chat mode to {0}.'
             invalid_chat_mode: 'Chat mode {0} is unavailable. Check the input and try again.'
@@ -582,8 +569,6 @@ chatluna:
             delete_success: 'Deleted conversation: {0}'
             delete_success_multi: 'Deleted conversations:\n{0}'
             delete_failed: 'Failed to delete conversation: {0}'
-            use_model_success: '{1} now uses model {0}.'
-            use_model_failed: 'Failed to switch model: {0}'
             use_preset_success: '{1} now uses preset {0}.'
             use_preset_failed: 'Failed to switch preset: {0}'
             use_mode_success: '{1} now uses chat mode {0}.'
@@ -597,11 +582,9 @@ chatluna:
             export_empty: 'No conversation is available to export.'
             export_success: 'Exported conversation: {0}, file: {3}'
             export_failed: 'Failed to export conversation: {0}'
-            rule_model_status: 'Model rule: default {0}, fixed {1}.'
             rule_preset_status: 'Current preset lane: {0}. New conversation preset: {1}.'
             rule_mode_status: 'Chat mode rule: default {0}, fixed {1}.'
             rule_share_status: 'Route mode: {0}.'
-            rule_model_success: 'Rule fixed model set to {0}.'
             rule_preset_success: 'Rule fixed preset set to {0}.'
             rule_mode_success: 'Rule fixed chat mode set to {0}.'
             rule_share_success: 'Rule route mode set to {0}.'
@@ -633,7 +616,6 @@ chatluna:
         conversation_compression_count: 'Compression count: {0}'
         conversation_updated_at: 'Updated at: {0}'
         rule_share: 'Route rule: {0}'
-        rule_model: 'Fixed model: {0}'
         rule_preset: 'Fixed preset: {0}'
         rule_mode: 'Fixed chat mode: {0}'
         rule_lock: 'Lock rule: {0}'

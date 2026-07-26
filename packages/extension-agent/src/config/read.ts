@@ -14,6 +14,7 @@ import {
     createToolItemConfig,
     getDefaultConfig
 } from './defaults'
+import { assertPresetAgentId } from '../utils/id'
 
 function mergeSkills(base: AgentConfig['skills'], cfg: AgentConfig['skills']) {
     return {
@@ -75,6 +76,23 @@ export async function readConfig(ctx: Context): Promise<AgentConfig> {
         const content = await readFile(path, 'utf-8')
         const base = getDefaultConfig()
         const cfg = JSON.parse(content) as AgentConfig
+        for (const id of Object.keys(cfg.subAgent?.presetAgents ?? {})) {
+            assertPresetAgentId(id)
+        }
+        const agents = [
+            ...Object.values(cfg.subAgent?.items ?? {}),
+            ...Object.values(cfg.subAgent?.builtin ?? {}),
+            ...Object.values(cfg.subAgent?.presetAgents ?? {})
+        ]
+        if (
+            agents.some((item) =>
+                Object.prototype.hasOwnProperty.call(item, 'model')
+            )
+        ) {
+            throw new Error(
+                'Sub-agent model fields are no longer supported; run the model configuration migration'
+            )
+        }
         return {
             ...base,
             ...cfg,
@@ -84,7 +102,10 @@ export async function readConfig(ctx: Context): Promise<AgentConfig> {
             computer: deepAssign({}, base.computer, cfg.computer ?? {}),
             subAgent: deepAssign({}, base.subAgent, cfg.subAgent ?? {})
         }
-    } catch {
-        return getDefaultConfig()
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            return getDefaultConfig()
+        }
+        throw error
     }
 }

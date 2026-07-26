@@ -22,7 +22,7 @@ export class TaskTool extends StructuredTool {
                 .string()
                 .optional()
                 .describe(
-                    'The exact sub-agent name from the injected sub-agent catalog. ' +
+                    'The exact canonical sub-agent id from the injected catalog. ' +
                         'Required when starting a new task. Optional when ' +
                         'resuming an existing task by id.'
                 ),

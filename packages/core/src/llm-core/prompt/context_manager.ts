@@ -7,12 +7,17 @@ import {
 import { Document } from '@langchain/core/documents'
 import { HumanMessagePromptTemplate } from '@langchain/core/prompts'
 import { ChainValues } from '@langchain/core/utils/types'
-import { CompiledPreset } from './type'
+import {
+    CompiledPreset,
+    ContextAnchor,
+    ContextPresetCompileError
+} from './type'
 import type {
     ChatLunaPromptRenderService,
     RenderConfigurable
 } from '../../services/chat'
 import { Context } from 'koishi'
+import { countMessageTokens } from 'koishi-plugin-chatluna/llm-core/utils/count_tokens'
 import {
     ContextTrace,
     ContextTraceLease,
@@ -51,6 +56,42 @@ export const STAGE_ORDER: Record<string, number> = {
     input: 400,
     scratchpad: 500,
     after_scratchpad: 600
+}
+
+function runtimeStageOrder(stage: PromptPipelineStage, preset: CompiledPreset) {
+    if (stage === 'system_prompts') return -1
+    const input = preset.definition.blocks.findIndex(
+        (block) => block.type === 'currentInput'
+    )
+    if (stage === 'chat_history') {
+        return preset.definition.blocks.findIndex(
+            (block) => block.type === 'chatHistory'
+        )
+    }
+    if (stage === 'long_history') {
+        const indexes = preset.definition.blocks
+            .map((block, index) =>
+                block.type === 'longMemory' ||
+                block.type === 'knowledge' ||
+                block.type === 'requestDocuments'
+                    ? index
+                    : -1
+            )
+            .filter((index) => index >= 0)
+        return indexes.length === 0 ? input - 1 : Math.min(...indexes)
+    }
+    if (stage === 'injections') {
+        const indexes = preset.definition.blocks
+            .map((block, index) =>
+                block.type === 'lore' || block.type === 'authorsNote'
+                    ? index
+                    : -1
+            )
+            .filter((index) => index >= 0)
+        return indexes.length === 0 ? input - 1 : Math.min(...indexes)
+    }
+    if (stage === 'input') return input
+    return preset.definition.blocks.length + (STAGE_ORDER[stage] ?? 999)
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +156,21 @@ export interface PromptContextRuntime {
     /** Hard ceiling for the whole prompt. */
     sendTokenLimit: number
 
+    /** Required input/scratchpad tokens reserved before optional blocks. */
+    requiredTailTokens: number
+
+    /** Per-block optional token capacities allocated by budget priority. */
+    blockBudgets: Map<string, number>
+
+    /** Per-block optional token consumption. */
+    blockUsage: Map<string, number>
+
+    /** Preset messages rendered once before the pipeline starts. */
+    preparedSystemPrompts: BaseMessage[]
+
+    /** Request injections leased once during budget planning. */
+    injections: PromptContextInjectionCollection
+
     /** Counts tokens for an arbitrary string. */
     tokenCounter: (text: string) => Promise<number>
 
@@ -129,6 +185,18 @@ export interface PromptContextRuntime {
 
     /** Rendered preset messages used by anchored insertion. */
     systemPrompts: BaseMessage[]
+
+    /** Messages emitted by each stored context block. */
+    blockSegments: Map<string, BaseMessage[]>
+
+    /** Runtime-owned message segments emitted by generic injections. */
+    runtimeInjectionSegments: Array<{
+        injection: AnchoredInjection
+        messages: BaseMessage[]
+    }>
+
+    /** Request-local prepared injection payloads. */
+    preparedInjections: Map<string, unknown>
 
     // -- Inputs provided by the caller (ChatLunaChatPrompt.formatMessages) --
 
@@ -152,15 +220,260 @@ export interface PromptContextRuntime {
 }
 
 export interface PromptDocumentCollection {
+    blockId: string
     documents: Document[]
-    source: 'long_memory' | 'knowledge' | `documents.${number}`
+    source: 'long_memory' | `knowledge.${string}` | `documents.${number}`
     prompt: HumanMessagePromptTemplate
     promptVariable: 'long_history' | 'knowledge'
     promptPath:
         | 'promptConfig.longMemoryPrompt'
-        | 'knowledge.prompt'
+        | `knowledgeBlocks.${number}.prompt`
         | 'runtimeDefaults.longMemoryPrompt'
         | 'runtimeDefaults.knowledgePrompt'
+}
+
+export function claimBlockTokens(
+    runtime: PromptContextRuntime,
+    blockId: string,
+    tokens: number
+) {
+    const used = runtime.blockUsage.get(blockId) ?? 0
+    const limit = runtime.blockBudgets.get(blockId) ?? 0
+    if (
+        used + tokens > limit ||
+        runtime.usedTokens + runtime.requiredTailTokens + tokens >
+            runtime.sendTokenLimit
+    ) {
+        return false
+    }
+    runtime.blockUsage.set(blockId, used + tokens)
+    runtime.usedTokens += tokens
+    return true
+}
+
+export function appendBlockMessages(
+    runtime: PromptContextRuntime,
+    blockId: string,
+    messages: BaseMessage[]
+) {
+    const segment = runtime.blockSegments.get(blockId)
+    if (segment == null) {
+        runtime.blockSegments.set(blockId, [...messages])
+        return
+    }
+    segment.push(...messages)
+}
+
+export function assembleContextMessages(runtime: PromptContextRuntime) {
+    const definition = runtime.preset.definition
+    const blocks = new Map(
+        definition.blocks.map((block) => [block.id, block] as const)
+    )
+    const definitionIndex = new Map(
+        definition.blocks.map((block, index) => [block.id, index] as const)
+    )
+    const before = new Map<string, string[]>()
+    const after = new Map<string, string[]>()
+    const roleAnchors: Array<{ blockId: string; anchor: ContextAnchor }> = []
+    const historyAnchors: Array<{ blockId: string; anchor: ContextAnchor }> = []
+    const anchored = new Set<string>()
+
+    for (const block of definition.blocks) {
+        if (block.type !== 'lore' && block.type !== 'authorsNote') continue
+        anchored.add(block.id)
+        if (block.anchor.type === 'role') {
+            roleAnchors.push({ blockId: block.id, anchor: block.anchor })
+            continue
+        }
+        if (block.anchor.type === 'chatHistory') {
+            historyAnchors.push({ blockId: block.id, anchor: block.anchor })
+            continue
+        }
+        const target =
+            block.anchor.position === 'before' ? before : after
+        const children = target.get(block.anchor.blockId) ?? []
+        children.push(block.id)
+        target.set(block.anchor.blockId, children)
+    }
+
+    const sortByDefinition = (ids: string[]) =>
+        ids.sort(
+            (left, right) =>
+                definitionIndex.get(left)! - definitionIndex.get(right)!
+        )
+    for (const ids of before.values()) sortByDefinition(ids)
+    for (const ids of after.values()) sortByDefinition(ids)
+    roleAnchors.sort(
+        (left, right) =>
+            definitionIndex.get(left.blockId)! -
+            definitionIndex.get(right.blockId)!
+    )
+    historyAnchors.sort(
+        (left, right) =>
+            definitionIndex.get(left.blockId)! -
+            definitionIndex.get(right.blockId)!
+    )
+
+    const emit = (blockId: string): BaseMessage[] => [
+        ...(before.get(blockId) ?? []).flatMap(emit),
+        ...(runtime.blockSegments.get(blockId) ?? []),
+        ...(after.get(blockId) ?? []).flatMap(emit)
+    ]
+
+    const roleBlock = definition.blocks.find((block) => block.type === 'role')!
+    const roleMessages = runtime.blockSegments.get(roleBlock.id) ?? []
+    const roleInsertions = new Map<number, BaseMessage[]>()
+    for (const { blockId, anchor } of roleAnchors) {
+        const index = findRoleAnchorIndex(roleMessages, anchor)
+        const messages = roleInsertions.get(index) ?? []
+        messages.push(...emit(blockId))
+        roleInsertions.set(index, messages)
+    }
+    if (roleInsertions.size > 0) {
+        const merged: BaseMessage[] = []
+        for (let index = 0; index <= roleMessages.length; index++) {
+            merged.push(...(roleInsertions.get(index) ?? []))
+            if (index < roleMessages.length) merged.push(roleMessages[index])
+        }
+        runtime.blockSegments.set(roleBlock.id, merged)
+    }
+
+    const historyBlock = definition.blocks.find(
+        (block) => block.type === 'chatHistory' && block.enabled
+    )
+    if (historyBlock != null && historyAnchors.length > 0) {
+        const historyMessages = runtime.blockSegments.get(historyBlock.id) ?? []
+        const historyInsertions = new Map<number, BaseMessage[]>()
+        for (const { blockId, anchor } of historyAnchors) {
+            const depth = anchor.type === 'chatHistory' ? anchor.depth : 0
+            const index = Math.max(0, historyMessages.length - depth)
+            const messages = historyInsertions.get(index) ?? []
+            messages.push(...emit(blockId))
+            historyInsertions.set(index, messages)
+        }
+        const merged: BaseMessage[] = []
+        for (let index = 0; index <= historyMessages.length; index++) {
+            merged.push(...(historyInsertions.get(index) ?? []))
+            if (index < historyMessages.length) {
+                merged.push(historyMessages[index])
+            }
+        }
+        runtime.blockSegments.set(historyBlock.id, merged)
+    }
+
+    const result = definition.blocks
+        .filter((block) => !anchored.has(block.id))
+        .flatMap((block) => emit(block.id))
+    const inputBlock = definition.blocks.find(
+        (block) => block.type === 'currentInput'
+    )!
+    const inputMessages = new Set(
+        runtime.blockSegments.get(inputBlock.id) ?? []
+    )
+    const roleSegment = new Set(
+        runtime.blockSegments.get(roleBlock.id) ?? []
+    )
+    const afterAnchorOffsets = new Map<string, number>()
+    let afterRoleOffset = 0
+
+    for (const segment of runtime.runtimeInjectionSegments) {
+        const { injection, messages } = segment
+        if (injection.afterMessageId != null) {
+            const anchorIndex = result.findIndex(
+                (message) => message.id === injection.afterMessageId
+            )
+            const offset =
+                afterAnchorOffsets.get(injection.afterMessageId) ?? 0
+            const index = anchorIndex < 0 ? result.length : anchorIndex + 1 + offset
+            result.splice(index, 0, ...messages)
+            afterAnchorOffsets.set(
+                injection.afterMessageId,
+                offset + messages.length
+            )
+            continue
+        }
+        if (injection.beforeMessageId != null) {
+            const index = result.findIndex(
+                (message) => message.id === injection.beforeMessageId
+            )
+            result.splice(index < 0 ? result.length : index, 0, ...messages)
+            continue
+        }
+        if (injection.stage === 'after_scratchpad') {
+            result.push(...messages)
+            continue
+        }
+        if (injection.stage === 'after_system_prompts') {
+            let lastRoleIndex = -1
+            for (let index = result.length - 1; index >= 0; index--) {
+                if (roleSegment.has(result[index])) {
+                    lastRoleIndex = index
+                    break
+                }
+            }
+            const index =
+                lastRoleIndex < 0
+                    ? afterRoleOffset
+                    : lastRoleIndex + 1 + afterRoleOffset
+            result.splice(index, 0, ...messages)
+            afterRoleOffset += messages.length
+            continue
+        }
+        const inputIndex = result.findIndex((message) =>
+            inputMessages.has(message)
+        )
+        result.splice(inputIndex < 0 ? result.length : inputIndex, 0, ...messages)
+    }
+
+    runtime.result = result
+}
+
+function findRoleAnchorIndex(messages: BaseMessage[], anchor: ContextAnchor) {
+    if (anchor.type !== 'role') return messages.length
+    const purposeIndex = (purpose: string) =>
+        messages.findIndex(
+            (message) => message.additional_kwargs?.purpose === purpose
+        )
+    const description = purposeIndex('description')
+    const personality = purposeIndex('personality')
+    const scenario = purposeIndex('scenario')
+    const exampleStart = purposeIndex('exampleStart')
+    const exampleEnd = purposeIndex('exampleEnd')
+    const firstMessage = purposeIndex('firstMessage')
+    const characterStart = [description, personality]
+        .filter((index) => index >= 0)
+        .sort((left, right) => left - right)[0]
+    const characterEnd = Math.max(description, personality)
+
+    if (anchor.position === 'beforeCharacterDefinitions') {
+        return characterStart ?? 0
+    }
+    if (anchor.position === 'afterCharacterDefinitions') {
+        return characterEnd >= 0 ? characterEnd + 1 : messages.length
+    }
+    if (anchor.position === 'beforeScenario') {
+        return scenario >= 0
+            ? scenario
+            : characterEnd >= 0
+              ? characterEnd + 1
+              : messages.length
+    }
+    if (anchor.position === 'afterScenario') {
+        return scenario >= 0
+            ? scenario + 1
+            : characterEnd >= 0
+              ? characterEnd + 1
+              : messages.length
+    }
+    if (anchor.position === 'beforeExampleMessages') {
+        if (exampleStart >= 0) return exampleStart
+        if (firstMessage >= 0) return firstMessage
+        if (scenario >= 0) return scenario + 1
+        return characterEnd >= 0 ? characterEnd + 1 : messages.length
+    }
+    if (exampleEnd >= 0) return exampleEnd + 1
+    if (firstMessage >= 0) return firstMessage + 1
+    return messages.length
 }
 
 // ---------------------------------------------------------------------------
@@ -371,7 +684,12 @@ export class ChatLunaContextManagerService {
      * middleware.
      */
     async runPipeline(runtime: PromptContextRuntime): Promise<void> {
-        const entries = [...this._pipelineMiddlewares]
+        const entries = [...this._pipelineMiddlewares].sort(
+            (left, right) =>
+                runtimeStageOrder(left.stage, runtime.preset) -
+                    runtimeStageOrder(right.stage, runtime.preset) ||
+                left.priority - right.priority
+        )
         let index = -1
 
         const dispatch = async (step: number): Promise<void> => {
@@ -381,7 +699,40 @@ export class ChatLunaContextManagerService {
             index = step
             const current = entries[step]
             if (!current) return
-            await current.middleware(runtime, () => dispatch(step + 1))
+            const before = new Set(runtime.result)
+            const capture = () => {
+                const stored = new Set(
+                    [...runtime.blockSegments.values()].flat()
+                )
+                const runtimeOwned = new Set(
+                    runtime.runtimeInjectionSegments.flatMap(
+                        (segment) => segment.messages
+                    )
+                )
+                const messages = runtime.result.filter(
+                    (message) =>
+                        !before.has(message) &&
+                        !stored.has(message) &&
+                        !runtimeOwned.has(message)
+                )
+                if (messages.length === 0) return
+                runtime.runtimeInjectionSegments.push({
+                    injection: {
+                        id: `pipeline-${step}-${current.stage}`,
+                        name: `pipeline-${current.stage}`,
+                        value: messages,
+                        stage: current.stage,
+                        priority: current.priority,
+                        createdAt: step
+                    },
+                    messages
+                })
+            }
+            await current.middleware(runtime, async () => {
+                capture()
+                await dispatch(step + 1)
+            })
+            capture()
         }
 
         await dispatch(0)
@@ -809,6 +1160,48 @@ export class ChatLunaContextManagerService {
             }
         }
 
+        const addedMessages = runtime.result.filter((message) => !before.has(message))
+        const tokenEstimates = new Map<BaseMessage, number>()
+        const blockOwned =
+            injection.name === 'lore_books' ||
+            injection.name === 'authors_note'
+        if (!blockOwned && addedMessages.length > 0) {
+            const tokenCounts = await Promise.all(
+                addedMessages.map((message) =>
+                    countMessageTokens(message, runtime.tokenCounter)
+                )
+            )
+            const tokens = tokenCounts.reduce(
+                (total, tokenCount) => total + tokenCount,
+                0
+            )
+            const remaining =
+                runtime.sendTokenLimit -
+                runtime.usedTokens -
+                runtime.requiredTailTokens
+            if (tokens > remaining) {
+                for (const message of addedMessages) {
+                    const index = runtime.result.indexOf(message)
+                    if (index >= 0) runtime.result.splice(index, 1)
+                }
+                throw new ContextPresetCompileError(
+                    'required_block_over_limit',
+                    'budget',
+                    `Runtime injection ${injection.name} requires ${tokens} tokens with ${Math.max(0, remaining)} remaining.`,
+                    `runtime-${injection.name}`,
+                    Math.max(0, remaining)
+                )
+            }
+            for (const [index, message] of addedMessages.entries()) {
+                tokenEstimates.set(message, tokenCounts[index])
+            }
+            runtime.usedTokens += tokens
+            runtime.runtimeInjectionSegments.push({
+                injection,
+                messages: addedMessages
+            })
+        }
+
         const stage: ContextTraceStage =
             injection.stage === 'after_scratchpad'
                 ? 'after_scratchpad'
@@ -824,6 +1217,15 @@ export class ChatLunaContextManagerService {
 
         for (const msg of runtime.result) {
             if (before.has(msg)) continue
+            if (
+                runtime.trace.entries.some(
+                    (entry) =>
+                        entry.messageId === msg.id &&
+                        entry.role !== 'document'
+                )
+            ) {
+                continue
+            }
             traceMessage(runtime.trace, msg, {
                 stage,
                 source: {
@@ -831,11 +1233,9 @@ export class ChatLunaContextManagerService {
                     name: injection.name,
                     path: `injections.${injection.id}`
                 },
-                tokenEstimate: await runtime.tokenCounter(
-                    typeof msg.content === 'string'
-                        ? msg.content
-                        : JSON.stringify(msg.content)
-                ),
+                tokenEstimate:
+                    tokenEstimates.get(msg) ??
+                    (await countMessageTokens(msg, runtime.tokenCounter)),
                 status: 'included'
             })
         }

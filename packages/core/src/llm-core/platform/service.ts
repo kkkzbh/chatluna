@@ -31,6 +31,11 @@ import { randomUUID } from 'crypto'
 import { RunnableConfig } from '@langchain/core/runnables'
 import { ToolMask } from '../agent'
 import type { ConversationRecord } from '../../types'
+import {
+    MODEL_BINDING_ALLOWED_MODES,
+    ModelBindingRequest,
+    ModelBindingResolver
+} from 'koishi-plugin-chatluna/llm-core/platform/binding'
 
 export class PlatformService {
     private _platformClients: Record<string, BasePlatformClient> = reactive({})
@@ -45,6 +50,8 @@ export class PlatformService {
     private _vectorStore: Record<string, CreateVectorStoreFunction> = reactive(
         {}
     )
+
+    private _modelBindingResolver?: ModelBindingResolver
 
     private _tmpVectorStores = new LRUCache<
         string,
@@ -78,6 +85,48 @@ export class PlatformService {
         }
         this._createClientFunctions[name] = createClientFunction
         return () => this.unregisterClient(name)
+    }
+
+    registerModelBindingResolver(resolver: ModelBindingResolver) {
+        if (this._modelBindingResolver != null) {
+            throw new Error('Model binding resolver is already registered')
+        }
+
+        this._modelBindingResolver = resolver
+        return () => {
+            if (this._modelBindingResolver === resolver) {
+                this._modelBindingResolver = undefined
+            }
+        }
+    }
+
+    async resolveModelBinding(request: ModelBindingRequest) {
+        if (this._modelBindingResolver == null) {
+            throw new Error('Model binding resolver is not registered')
+        }
+
+        const binding = await this._modelBindingResolver(request)
+        if (
+            !MODEL_BINDING_ALLOWED_MODES[request.workload].some(
+                (mode) => mode === binding.mode
+            )
+        ) {
+            throw new Error(
+                `Invalid model binding mode ${binding.mode} for ${request.workload}`
+            )
+        }
+        if (!Number.isInteger(binding.revision) || binding.revision < 1) {
+            throw new Error(
+                `Invalid model binding revision for ${request.workload}`
+            )
+        }
+        if (binding.mode === 'dedicated' && binding.model.trim().length < 1) {
+            throw new Error(
+                `Dedicated model binding is empty for ${request.workload}`
+            )
+        }
+
+        return binding
     }
 
     registerTool(name: string, toolCreator: ChatLunaTool) {
@@ -441,6 +490,7 @@ export class PlatformService {
 
     dispose() {
         this._tmpVectorStores.clear()
+        this._modelBindingResolver = undefined
         this._platformClients = reactive({})
         this._models = reactive({})
         this._tools = reactive({})

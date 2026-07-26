@@ -10,7 +10,8 @@ export function apply(ctx: Context, _: Config, chain: ChatChain) {
             }
 
             const input = context.options.deletePreset
-            const preset = ctx.chatluna.preset.findPresetInput(input).value
+            const preset =
+                ctx.chatluna.preset.findContextPresetInput(input).value
             if (preset == null) {
                 await context.send(session.text('.not_found'))
                 return ChainMiddlewareRunStatus.STOP
@@ -28,7 +29,10 @@ export function apply(ctx: Context, _: Config, chain: ChatChain) {
                 return ChainMiddlewareRunStatus.STOP
             }
 
-            await ctx.chatluna.preset.deletePreset(preset.id, preset.revision)
+            await ctx.chatluna.preset.deleteContextPreset(
+                preset.id,
+                preset.revision
+            )
             context.message = session.text('.success', [preset.id])
             return ChainMiddlewareRunStatus.STOP
         })

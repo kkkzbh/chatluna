@@ -14,9 +14,10 @@ import {
     ClientConfig,
     ClientConfigPool
 } from 'koishi-plugin-chatluna/llm-core/platform/config'
-import { Config, logger } from '.'
+import { Config } from '.'
 import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
 import { Context } from 'koishi'
+import { createLogger } from 'koishi-plugin-chatluna/utils/logger'
 import {
     completion,
     completionStream,
@@ -46,6 +47,8 @@ export class OpenAIRequester
     extends ModelRequester
     implements EmbeddingsRequester, RerankerRequester
 {
+    private readonly _logger
+
     constructor(
         ctx: Context,
         _configPool: ClientConfigPool<ClientConfig>,
@@ -53,6 +56,10 @@ export class OpenAIRequester
         _plugin: ChatLunaPlugin
     ) {
         super(ctx, _configPool, _pluginConfig, _plugin)
+        this._logger = createLogger(
+            ctx,
+            `chatluna-${_plugin.platformName}-adapter`
+        )
     }
 
     async completion(params: ModelRequestParams): Promise<ChatGeneration> {
@@ -242,7 +249,7 @@ export class OpenAIRequester
     }
 
     get logger() {
-        return logger
+        return this._logger
     }
 
     private _imageProvider(): ResponseImageProvider {

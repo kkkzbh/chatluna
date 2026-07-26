@@ -56,6 +56,7 @@ import { GrepTool } from '../computer/tools/grep'
 import { GlobTool } from '../computer/tools/glob'
 import { BashTool } from '../computer/tools/bash'
 import { quoteShell, quoteShellPath } from '../utils/shell'
+import { getComputerRootPath } from '../config/path'
 
 export class ChatLunaAgentComputerService {
     private _sessions = new ComputerSessionStore()
@@ -139,7 +140,10 @@ export class ChatLunaAgentComputerService {
         }
 
         if (type === 'local') {
-            return this.config.computer.local.scopePath || process.cwd()
+            return (
+                this.config.computer.local.scopePath ||
+                getComputerRootPath(this.ctx)
+            )
         }
 
         return '~'
@@ -954,14 +958,19 @@ export class ChatLunaAgentComputerService {
     }
 
     private async createSession(backend: ComputerBackendType, userId?: string) {
+        const localScopePath =
+            this.config.computer.local.scopePath ||
+            getComputerRootPath(this.ctx)
         const cwd =
-            this.config.computer.local.scopePath &&
-            !/^[A-Za-z]:/.test(this.config.computer.local.scopePath)
-                ? this.config.computer.local.scopePath.replaceAll('\\', '/')
+            !/^[A-Za-z]:/.test(localScopePath)
+                ? localScopePath.replaceAll('\\', '/')
                 : undefined
 
         if (backend === 'local') {
-            return new LocalComputerSession(this.config.computer.local)
+            return new LocalComputerSession({
+                ...this.config.computer.local,
+                scopePath: localScopePath
+            })
         }
 
         if (backend === 'open-terminal') {

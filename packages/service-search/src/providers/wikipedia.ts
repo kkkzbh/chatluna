@@ -2,9 +2,8 @@ import { Context, Schema } from 'koishi'
 import { SearchManager, SearchProvider } from '../provide'
 import { SearchResult, SummaryType } from '../types'
 import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
-import { Config, createModel, logger } from '..'
+import { Config, logger } from '..'
 import { ChatLunaChatModel } from 'koishi-plugin-chatluna/llm-core/platform/model'
-import { ComputedRef } from 'koishi-plugin-chatluna'
 
 // See https://github.com/langchain-ai/langchainjs/blob/fc21aa4df583a5e5de425b6b15f39a5014743bac/libs/langchain-community/src/tools/wikipedia_query_run.ts#L1
 
@@ -74,8 +73,7 @@ class WikipediaSearchProvider extends SearchProvider {
         ctx: Context,
         config: Config,
         plugin: ChatLunaPlugin,
-        params: WikipediaQueryRunParams,
-        private model: ComputedRef<ChatLunaChatModel>
+        params: WikipediaQueryRunParams
     ) {
         super(ctx, config, plugin)
 
@@ -83,20 +81,15 @@ class WikipediaSearchProvider extends SearchProvider {
         this.maxDocContentLength =
             params.maxDocContentLength ?? this.maxDocContentLength
         this.baseUrl = params.baseUrl ?? this.baseUrl
-
-        if (!model) {
-            logger?.warn(
-                'No keywordExtract model provided, skip enhanced keyword extract'
-            )
-        }
     }
 
     async search(
         query: string,
-        limit = this.config.topK
+        limit = this.config.topK,
+        model?: ChatLunaChatModel
     ): Promise<SearchResult[]> {
-        if (this.model) {
-            query = await this._extractKeyword(query)
+        if (model) {
+            query = await this._extractKeyword(query, model)
             logger?.debug(`Extracted keyword For Wikipedia: ${query}`)
         }
 
@@ -149,16 +142,10 @@ class WikipediaSearchProvider extends SearchProvider {
         return summaries
     }
 
-    private async _extractKeyword(query: string): Promise<string> {
-        const model = this.model.value
-
-        if (model == null) {
-            logger?.warn(
-                'No keywordExtract model provided, skip enhanced keyword extract'
-            )
-            return query
-        }
-
+    private async _extractKeyword(
+        query: string,
+        model: ChatLunaChatModel
+    ): Promise<string> {
         const result = await model.invoke(PROMPT.replace(/{query}/g, query))
         return (result.content as string).trim()
     }
@@ -291,30 +278,16 @@ export async function apply(
         return
     }
 
-    let summaryModel: ComputedRef<ChatLunaChatModel>
-
-    try {
-        summaryModel = await createModel(ctx, config.summaryModel)
-    } catch (error) {
-        logger?.error(error)
-    }
-
     const wikipediaBaseURLs = config.wikipediaBaseURL
     for (const baseURL of wikipediaBaseURLs) {
         manager.addProvider(
-            new WikipediaSearchProvider(
-                ctx,
-                config,
-                plugin,
-                {
-                    baseUrl: baseURL,
-                    maxDocContentLength:
-                        config.summaryType !== SummaryType.Balanced
-                            ? config.maxWikipediaDocContentLength
-                            : 100000
-                },
-                summaryModel
-            )
+            new WikipediaSearchProvider(ctx, config, plugin, {
+                baseUrl: baseURL,
+                maxDocContentLength:
+                    config.summaryType !== SummaryType.Balanced
+                        ? config.maxWikipediaDocContentLength
+                        : 100000
+            })
         )
     }
 }

@@ -83,7 +83,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 conversation
             }
 
-            const presetTemplate = ctx.chatluna.preset.getPreset(
+            const presetTemplate = ctx.chatluna.preset.getContextPreset(
                 conversation.preset
             ).value
 

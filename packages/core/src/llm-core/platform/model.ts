@@ -26,7 +26,9 @@ import {
     EmbeddingsRequestParams,
     ModelRequester,
     ModelRequestInternalControl,
-    ModelRequestParams
+    ModelRequestParams,
+    type ModelReasoningEffort,
+    type ModelThinkingMode
 } from 'koishi-plugin-chatluna/llm-core/platform/api'
 import type { FileHandlingConfig } from 'koishi-plugin-chatluna/llm-core/platform/client'
 import {
@@ -56,18 +58,20 @@ import type {
 import { estimateTextTokens } from 'koishi-plugin-chatluna/llm-core/platform/usage'
 import {
     applyModelCropTrace,
-    ContextTraceEntry,
     contextTraceIdFromMessages,
-    ContextTraceSource,
     createModelCallIdentity,
-    ModelContextMessage,
-    ModelContextTool,
     redactContextContent,
     redactContextSchema,
     redactContextToolCalls,
     stripContextMetadata,
     takeContextTrace
-} from '../prompt/context_trace'
+} from 'koishi-plugin-chatluna/context-trace'
+import type {
+    ContextTraceEntry,
+    ContextTraceSource,
+    ModelContextMessage,
+    ModelContextTool
+} from 'koishi-plugin-chatluna/context-trace'
 
 function snapshotMessage(
     msg: BaseMessage,
@@ -155,6 +159,12 @@ export interface ChatLunaModelCallOptions extends BaseChatModelCallOptions {
 
     /** Penalizes repeated tokens */
     presencePenalty?: number
+
+    /** Provider reasoning effort, serialized according to the request mode. */
+    reasoningEffort?: ModelReasoningEffort
+
+    /** Provider thinking switch, serialized according to the request mode. */
+    thinkingMode?: ModelThinkingMode
 
     /** Number of completions to generate for each prompt */
     n?: number
@@ -252,6 +262,8 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
             'topP',
             'frequencyPenalty',
             'presencePenalty',
+            'reasoningEffort',
+            'thinkingMode',
             'n',
             'logitBias',
             'id',
@@ -299,16 +311,19 @@ export class ChatLunaChatModel extends BaseChatModel<ChatLunaModelCallOptions> {
                 options?.frequencyPenalty ?? this._options.frequencyPenalty,
             presencePenalty:
                 options?.presencePenalty ?? this._options.presencePenalty,
+            reasoningEffort:
+                options?.reasoningEffort ?? this._options.reasoningEffort,
+            thinkingMode: options?.thinkingMode ?? this._options.thinkingMode,
             n: options?.n ?? this._options.n,
             logitBias: options?.logitBias ?? this._options.logitBias,
             maxTokens: options?.maxTokens ?? this._options.maxTokens,
             maxTokenLimit,
             variables:
                 options?.['variables_hide'] ?? options?.['variables'] ?? {},
-            overrideRequestParams:
-                options?.overrideRequestParams ??
-                this._options.overrideRequestParams ??
-                {},
+            overrideRequestParams: {
+                ...(this._options.overrideRequestParams ?? {}),
+                ...(options?.overrideRequestParams ?? {})
+            },
             stop: options?.stop ?? this._options.stop,
             stream: options?.stream ?? this._options.stream,
             tools: options?.tools ?? this._options.tools,
@@ -1376,6 +1391,24 @@ export interface ChatLunaBaseEmbeddingsParams extends EmbeddingsParams {
 }
 
 export abstract class ChatLunaBaseEmbeddings extends Embeddings {}
+
+export class EmptyEmbeddings extends ChatLunaBaseEmbeddings {
+    readonly isChatLunaEmptyEmbeddings = true
+
+    constructor(params?: EmbeddingsParams) {
+        super(params ?? {})
+    }
+
+    embedDocuments(documents: string[]): Promise<number[][]> {
+        return Promise.resolve(documents.map(() => []))
+    }
+
+    embedQuery(_: string): Promise<number[]> {
+        return Promise.resolve([])
+    }
+}
+
+export const emptyEmbeddings = new EmptyEmbeddings()
 
 export class ChatLunaEmbeddings extends ChatLunaBaseEmbeddings {
     modelName = 'text-embedding-ada-002'

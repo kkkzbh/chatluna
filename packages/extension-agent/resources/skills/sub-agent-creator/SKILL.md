@@ -1,6 +1,6 @@
 ---
 name: sub-agent-creator
-description: Create, edit, convert, or audit ChatLuna sub-agent markdown files. Use when adding a new sub-agent, refining a sub-agent prompt, choosing a sub-agent's goal and output contract, restricting tools, skills, MCP, or computer permissions, pinning or omitting a model, setting maxTurns, placing agents under local `data/chatluna/agents`, writing them into a remote sandbox before `agentcli sync`, or converting Claude or OpenCode agent files into ChatLuna-compatible sub-agents.
+description: Create, edit, convert, or audit ChatLuna sub-agent markdown files. Use when adding a new sub-agent, refining a sub-agent prompt, choosing a sub-agent's goal and output contract, restricting tools, skills, MCP, or computer permissions, setting maxTurns, placing agents under local `data/chatluna/agents`, writing them into a remote sandbox before `agentcli sync`, or converting Claude or OpenCode agent files into ChatLuna-compatible sub-agents.
 ---
 
 # Sub-Agent Creator
@@ -19,8 +19,8 @@ clearly calls for Claude or OpenCode compatibility.
 subagents` so the local ChatLuna path is updated.
 - Preserve the existing format when editing an existing sub-agent file.
 - Use a short, specific agent name. Keep the job narrow.
-- Omit `model` when you do not know the exact installed model name. Let the
-  sub-agent inherit the parent model instead of guessing.
+- Model selection is owned by the model interfaces admin page and never belongs
+  in sub-agent frontmatter.
 - Keep `allowKoishiMessageTransform: false` unless the agent must receive the
   user's Koishi message structure instead of plain text.
 
@@ -40,9 +40,7 @@ subagents` so the local ChatLuna path is updated.
       `browser_read_text`, and `browser_summarize`.
     - Keep computer access denied unless the task truly needs desktop control.
 
-3. Choose model and turn budget.
-    - Use the exact requested model when the user provides one.
-    - Leave `model` unset when the correct model is unknown.
+3. Choose the turn budget.
     - Use `8-20` turns for lookup or review, `20-60` for focused
       implementation, and `100` only for broad multi-step work.
 
@@ -71,6 +69,8 @@ subagents` so the local ChatLuna path is updated.
   checklists, or concise result summaries.
 - Do not rely on nested delegation. The platform blocks sub-agents from using
   `task`.
+- Do not add a `model` frontmatter field. Configure default and per-agent model
+  bindings on the model interfaces admin page.
 
 ## ChatLuna Format
 
@@ -83,7 +83,6 @@ description: Read-only API exploration agent. Use when you need to find routes, 
 format: chatluna
 enabled: true
 hidden: false
-model: openai/gpt-4.1-mini
 maxTurns: 12
 allowKoishiMessageTransform: false
 permissions:
@@ -130,7 +129,6 @@ Return:
 - `enabled`: Usually `true`.
 - `hidden`: Set `true` only when the agent should stay out of the normal
   catalog.
-- `model`: Optional exact model name. Omit to inherit from the parent agent.
 - `maxTurns`: Hard turn budget. Default config is `100`, but most specialists
   should use less.
 - `allowKoishiMessageTransform`: Set `true` only when the prompt must preserve
@@ -256,7 +254,6 @@ Supported Claude fields:
 
 - `name`
 - `description`
-- `model`
 - `maxTurns`
 - `hidden`
 - `tools`
@@ -270,7 +267,6 @@ Use a simple allow list when possible.
 ---
 name: repo-reviewer
 description: Read-only review agent. Use when you need to inspect code, trace behavior, and report issues with evidence.
-model: openai/gpt-4.1-mini
 maxTurns: 16
 hidden: false
 tools:
@@ -299,7 +295,6 @@ Supported OpenCode fields:
 
 - `name`
 - `description`
-- `model`
 - `hidden`
 - `disable`
 - `prompt`
@@ -314,7 +309,6 @@ Example:
 name: quick-explorer
 description: Fast read-only explorer. Use when you need to search a repo, inspect files, and return exact evidence.
 mode: subagent
-model: openai/gpt-4.1-mini
 hidden: false
 disable: false
 tools:
@@ -356,7 +350,7 @@ Notes:
 - Use the correct format for the target directory or existing file.
 - Match the agent name, file name, and job.
 - Make the description specific enough to trigger the right agent.
-- Omit `model` instead of inventing one.
+- Confirm the file has no `model` frontmatter field.
 - Use the narrowest permission set that still works.
 - Keep `computer` off unless the task explicitly needs it.
 - Keep the prompt complete. Do not leave stubs.

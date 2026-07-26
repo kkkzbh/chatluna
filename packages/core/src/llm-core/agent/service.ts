@@ -10,6 +10,15 @@ import type { CompiledPreset } from '../prompt'
 import { createPromptPreset } from './agent'
 import type { ToolMask } from './types'
 
+function isEmptyEmbeddings(input: unknown): boolean {
+    return (
+        typeof input === 'object' &&
+        input !== null &&
+        (input as { isChatLunaEmptyEmbeddings?: unknown })
+            .isChatLunaEmptyEmbeddings === true
+    )
+}
+
 export interface CreateChatLunaAgentOptions {
     id?: string
     name?: string
@@ -65,23 +74,23 @@ export async function resolveAgentModel(
 }
 
 export async function resolveAgentEmbeddings(
-    input: CreateChatLunaAgentOptions['embeddings'],
+    input: NonNullable<CreateChatLunaAgentOptions['embeddings']>,
     createEmbeddings: (
         fullModelName: string
-    ) => Promise<ComputedRef<Embeddings | undefined>>,
-    fallback: string
+    ) => Promise<ComputedRef<Embeddings | undefined>>
 ) {
-    if (input == null) {
-        const ref = await createEmbeddings(fallback)
-        return ref.value as ChatLunaBaseEmbeddings
-    }
-
     if (typeof input === 'string') {
         const ref = await createEmbeddings(input)
+        if (!ref.value || isEmptyEmbeddings(ref.value)) {
+            throw new Error(`Embeddings model not found: ${input}`)
+        }
         return ref.value as ChatLunaBaseEmbeddings
     }
 
     if ('value' in input) {
+        if (!input.value) {
+            throw new Error('Embeddings model is not available')
+        }
         return input.value as ChatLunaBaseEmbeddings
     }
 

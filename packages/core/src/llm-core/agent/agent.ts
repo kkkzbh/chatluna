@@ -19,7 +19,10 @@ import type {
     ChatLunaTool,
     ChatLunaToolRunnable
 } from 'koishi-plugin-chatluna/llm-core/platform/types'
-import { compilePreset } from '../prompt/preset_prompt_parse'
+import {
+    compileContextPreset,
+    compileRolePreset
+} from '../prompt/preset_prompt_parse'
 import type { CompiledPreset } from '../prompt/type'
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
 import { createAgentRunner, createToolsRef } from './creator'
@@ -284,20 +287,43 @@ export function createPromptPreset(
     }
 
     return computed(() =>
-        compilePreset(
+        compileContextPreset(
             {
-                schemaVersion: 2,
+                schemaVersion: 1,
                 id: 'agent',
                 displayName: name,
                 aliases: [],
-                messages:
-                    system == null ? [] : [{ role: 'system', content: system }],
-                inputFormat: null,
-                lore: { defaults: {}, entries: [] },
-                authorsNote: null,
-                knowledge: null,
-                promptConfig: {}
+                blocks: [
+                    {
+                        id: 'role',
+                        type: 'role',
+                        rolePresetId: 'agent'
+                    },
+                    {
+                        id: 'input',
+                        type: 'currentInput',
+                        inputFormat: null
+                    },
+                    {
+                        id: 'output',
+                        type: 'modelOutput',
+                        maxOutputTokens: 1024,
+                        postHandler: null
+                    }
+                ]
             },
+            compileRolePreset(
+                {
+                    schemaVersion: 1,
+                    id: 'agent',
+                    displayName: name,
+                    messages:
+                        system == null
+                            ? []
+                            : [{ role: 'system', content: system }]
+                },
+                { source: 'ephemeral', raw: system ?? '' }
+            ),
             { source: 'ephemeral', raw: system ?? '' }
         )
     )

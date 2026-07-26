@@ -197,7 +197,6 @@ declare module '@koishijs/plugin-console' {
         'chatluna-agent/exportSubAgent': (
             id: string
         ) => Promise<SubAgentExportResult | undefined>
-        'chatluna-agent/getModelNames': () => Promise<string[]>
         'chatluna-agent/importSkills': (
             input: SkillImportInput
         ) => Promise<SkillImportResult>

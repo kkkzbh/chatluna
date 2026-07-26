@@ -4,11 +4,9 @@ import { SearchResult } from './types'
 import { Config } from './config'
 import { Document } from '@langchain/core/documents'
 import { MemoryVectorStore } from 'koishi-plugin-chatluna/llm-core/vectorstores'
-import { parseRawModelName } from 'koishi-plugin-chatluna/llm-core/utils/count_tokens'
-import { ChatLunaBaseEmbeddings } from 'koishi-plugin-chatluna/llm-core/platform/model'
-import { ComputedRef } from 'koishi-plugin-chatluna'
 import { EmptyEmbeddings } from 'koishi-plugin-chatluna/llm-core/model/in_memory'
 import { createLogger } from 'koishi-plugin-chatluna/utils/logger'
+import { ChatLunaChatModel } from 'koishi-plugin-chatluna/llm-core/platform/model'
 
 export class SearchManagerError extends Error {
     readonly operation = 'search'
@@ -34,7 +32,11 @@ export abstract class SearchProvider {
         protected _plugin: ChatLunaPlugin
     ) {}
 
-    abstract search(query: string, limit: number): Promise<SearchResult[]>
+    abstract search(
+        query: string,
+        limit: number,
+        model?: ChatLunaChatModel
+    ): Promise<SearchResult[]>
 
     abstract name: string
 }
@@ -42,7 +44,6 @@ export abstract class SearchProvider {
 export class SearchManager {
     private providers: Map<string, SearchProvider> = new Map()
     private schemas: Schema[] = []
-    private _embeddings: ComputedRef<ChatLunaBaseEmbeddings>
     private readonly logger: Logger
 
     constructor(
@@ -78,7 +79,8 @@ export class SearchManager {
     async search(
         query: string,
         limit: number = this.config.topK,
-        providerNames: string[] = this.config.searchEngine
+        providerNames: string[] = this.config.searchEngine,
+        model?: ChatLunaChatModel
     ): Promise<SearchResult[]> {
         const providers = providerNames
             ? Array.from(this.providers.values()).filter((p) =>
@@ -91,7 +93,7 @@ export class SearchManager {
         if (providers.length === 1) {
             // 一个源就不用分了，直接返回
             try {
-                return await providers[0].search(query, limit)
+                return await providers[0].search(query, limit, model)
             } catch (error) {
                 this.logger.error(
                     `Error searching with provider ${providers[0].name}:`,
@@ -110,7 +112,7 @@ export class SearchManager {
 
         const searchPromises = providers.map(async (provider) => {
             try {
-                const results = await provider.search(query, signalLimit)
+                const results = await provider.search(query, signalLimit, model)
                 searchResults.push(...results)
             } catch (error) {
                 this.logger.error(
@@ -196,24 +198,16 @@ export class SearchManager {
     }
 
     private async _getEmbeddings() {
-        if (this._embeddings) return this._embeddings
-
-        try {
-            const [platform, model] = parseRawModelName(
-                this.ctx.chatluna.config.defaultEmbeddings
+        const binding = await this.ctx.chatluna.resolveModelBinding({
+            workload: 'chatluna.defaultEmbedding'
+        })
+        if (binding.mode === 'disabled') return null
+        if (binding.mode !== 'dedicated') {
+            throw new Error(
+                `Invalid chatluna.defaultEmbedding mode: ${binding.mode}`
             )
-            this._embeddings = await this.ctx.chatluna.createEmbeddings(
-                platform,
-                model
-            )
-        } catch (e) {
-            this.logger.warn(
-                `Get embeddings failed: ${e}. Try check your defaultEmbeddings`
-            )
-            return null
         }
-
-        return this._embeddings
+        return await this.ctx.chatluna.createEmbeddings(binding.model)
     }
 
     private async _reRankResults(

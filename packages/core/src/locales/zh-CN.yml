@@ -496,20 +496,8 @@ commands:
                     limit: '设置每页显示数量。'
                 messages:
                     header: '以下是目前可用的嵌入模型列表：'
-                    footer: '你可以使用 chatluna.embeddings.set [model] 来设置默认使用的嵌入模型'
+                    footer: '嵌入模型绑定请在管理端的模型接口页面配置。'
                     pages: '当前为第 [page] / [total] 页'
-            set:
-                description: '设置默认嵌入模型。'
-                arguments:
-                    embeddings: '嵌入模型名称。'
-                messages:
-                    usage_hint: '你可以使用 chatluna.embeddings.set [model] 来设置默认使用的嵌入模型'
-                    multiple_models_found:
-                        header: '基于你的输入，找到了以下嵌入模型：'
-                        footer: '请输入更精确的嵌入模型名称以避免歧义'
-                        example: '例如：chatluna.embeddings.set {0}'
-                    model_not_found: '找不到对应的嵌入模型，请检查输入是否正确'
-                    success: '已将默认嵌入模型设置为 {0} (将自动重启插件应用更改)'
 
         vectorstore:
             description: 'ChatLuna 向量数据库管理。'
@@ -565,7 +553,6 @@ chatluna:
             action_locked: '当前规则已锁定会话{0}。'
             action_disabled: '当前路由已禁用会话{0}。'
             action_failed: '会话{0}失败：{1}'
-            fixed_model: '当前路由已将模型固定为 {0}。'
             fixed_preset: '当前路由已将预设固定为 {0}。'
             fixed_chat_mode: '当前路由已将聊天模式固定为 {0}。'
             invalid_chat_mode: '聊天模式 {0} 不可用，请检查输入是否正确。'
@@ -581,8 +568,6 @@ chatluna:
             delete_success: '已删除会话：{0}'
             delete_success_multi: '已删除会话：\n{0}'
             delete_failed: '删除会话失败：{0}'
-            use_model_success: '{1} 已切换到模型 {0}。'
-            use_model_failed: '切换模型失败：{0}'
             use_preset_success: '{1} 已切换到预设 {0}。'
             use_preset_failed: '切换预设失败：{0}'
             use_mode_success: '{1} 已切换到聊天模式 {0}。'
@@ -596,11 +581,9 @@ chatluna:
             export_empty: '没有可导出的会话。'
             export_success: '已导出会话：{0}，文件：{3}'
             export_failed: '导出会话失败：{0}'
-            rule_model_status: '模型规则：默认 {0}，强制 {1}。'
             rule_preset_status: '当前预设线：{0}；新建默认预设：{1}。'
             rule_mode_status: '聊天模式规则：默认 {0}，强制 {1}。'
             rule_share_status: '路由模式：{0}。'
-            rule_model_success: '规则固定模型已设置为 {0}。'
             rule_preset_success: '规则固定预设已设置为 {0}。'
             rule_mode_success: '规则固定聊天模式已设置为 {0}。'
             rule_share_success: '规则路由模式已设置为 {0}。'
@@ -632,7 +615,6 @@ chatluna:
         conversation_compression_count: '压缩次数：{0}'
         conversation_updated_at: '更新时间：{0}'
         rule_share: '路由规则：{0}'
-        rule_model: '固定模型：{0}'
         rule_preset: '固定预设：{0}'
         rule_mode: '固定聊天模式：{0}'
         rule_lock: '锁定规则：{0}'

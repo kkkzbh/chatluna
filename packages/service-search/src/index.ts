@@ -6,8 +6,7 @@ import { PlatformService } from 'koishi-plugin-chatluna/llm-core/platform/servic
 import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
 import { createLogger } from 'koishi-plugin-chatluna/utils/logger'
 import { ChatLunaBrowsingChain } from './chain/browsing_chain'
-import { Config, apply as configApply } from './config'
-import { parseRawModelName } from 'koishi-plugin-chatluna/llm-core/utils/count_tokens'
+import { Config } from './config'
 import { SearchManager } from './provide'
 import { providerPlugin } from './plugin'
 import { SEARCH_TOOL_DESCRIPTION, SearchTool } from './tools/search'
@@ -29,11 +28,6 @@ export function apply(ctx: Context, config: Config) {
     logger = createLogger(ctx, 'chatluna-search-service')
 
     ctx.on('ready', async () => {
-        const keywordExtractModel =
-            config.summaryModel && config.summaryModel !== 'empty'
-                ? await createModel(ctx, config.summaryModel)
-                : null
-
         const plugin = new ChatLunaPlugin<ClientConfig, Config>(
             ctx,
             config,
@@ -43,9 +37,8 @@ export function apply(ctx: Context, config: Config) {
 
         const searchManager = new SearchManager(ctx, config)
         const browserManager = new BrowserManager(ctx, config)
-        const summaryModel = computed(() => keywordExtractModel?.value)
 
-        registerBrowserTools(plugin, browserManager, summaryModel)
+        registerBrowserTools(ctx, plugin, browserManager)
 
         if (config.searchEngine.length > 0) {
             await providerPlugin(ctx, config, plugin, searchManager)
@@ -62,14 +55,11 @@ export function apply(ctx: Context, config: Config) {
                     const summaryType: SummaryType =
                         params['summaryType'] ?? config.summaryType
 
-                    const browserModelRef = computed(
-                        () => keywordExtractModel?.value ?? null
-                    )
                     return new SearchTool(
+                        ctx,
                         searchManager,
                         browserManager,
                         params.embeddings,
-                        browserModelRef,
                         summaryType
                     )
                 },
@@ -104,10 +94,6 @@ export function apply(ctx: Context, config: Config) {
                             name === 'web_search' || name.startsWith('browser_')
                     )
 
-                    const summaryModel = computed(
-                        () => keywordExtractModel?.value ?? params.model
-                    )
-
                     const model = params.model
                     const options = {
                         preset: params.preset,
@@ -115,7 +101,7 @@ export function apply(ctx: Context, config: Config) {
                         embeddings: params.embeddings,
                         historyMemory: params.historyMemory,
                         summaryType: config.summaryType,
-                        summaryModel,
+                        chatluna: ctx.chatluna,
                         thoughtMessage: ctx.chatluna.config.showThoughtMessage,
                         searchPrompt: config.searchPrompt,
                         newQuestionPrompt: config.newQuestionPrompt,
@@ -139,8 +125,6 @@ export function apply(ctx: Context, config: Config) {
             )
         }
     })
-
-    configApply(ctx, config)
 }
 
 function getTools(service: PlatformService, filter: (name: string) => boolean) {
@@ -152,17 +136,6 @@ function getTools(service: PlatformService, filter: (name: string) => boolean) {
             tool: service.getTool(name)
         }))
     )
-}
-
-export async function createModel(ctx: Context, model: string) {
-    logger.debug('Create summary model: %s', model)
-    if (model == null || model === 'empty') {
-        return null
-    }
-
-    const [platform, modelName] = parseRawModelName(model)
-    await ctx.chatluna.awaitLoadPlatform(platform)
-    return ctx.chatluna.createChatModel(platform, modelName)
 }
 
 export const inject = {

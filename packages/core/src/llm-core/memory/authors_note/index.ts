@@ -15,31 +15,31 @@ export function apply(ctx: Context, config: Config): void {
         ) => {
             const preset = chatInterface.preset.value
 
-            const authorsNote = preset.authorsNote
-
-            if (!authorsNote || authorsNote.insertFrequency === 0) {
-                return
-            }
-
             const authorsNoteCache = cache.get(conversationId) || {
                 chatCount: 1
             }
-
-            if (
-                authorsNote.insertFrequency > 0 &&
-                authorsNoteCache.chatCount % authorsNote.insertFrequency !== 0
-            ) {
-                return
-            }
-
             cache.set(conversationId, authorsNoteCache)
-
-            ctx.chatluna.contextManager.inject({
-                conversationId,
-                name: 'authors_note',
-                value: authorsNote,
-                once: true
-            })
+            for (const block of preset.authorsNoteBlocks) {
+                if (
+                    !block.enabled ||
+                    block.insertFrequency === 0 ||
+                    authorsNoteCache.chatCount % block.insertFrequency !== 0
+                ) {
+                    continue
+                }
+                ctx.chatluna.contextManager.inject({
+                    conversationId,
+                    name: 'authors_note',
+                    value: {
+                        blockId: block.id,
+                        content: block.content,
+                        anchor: block.anchor,
+                        maxTokens: block.maxTokens
+                    },
+                    priority: block.budgetPriority,
+                    once: true
+                })
+            }
         }
     )
 

@@ -103,7 +103,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 parsePresetLaneInput(
                     content,
                     ctx.chatluna.preset
-                        .listPresets()
+                        .listContextPresets()
                         .value.flatMap((preset) => [
                             preset.id,
                             ...preset.aliases

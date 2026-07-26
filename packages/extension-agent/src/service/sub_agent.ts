@@ -191,7 +191,7 @@ export class ChatLunaAgentSubAgentService {
     }
 
     findRunnableAgent(
-        name: string,
+        id: string,
         session?: Parameters<
             ChatLunaAgentPermissionService['canUseSubAgent']
         >[1],
@@ -203,10 +203,7 @@ export class ChatLunaAgentSubAgentService {
                 this.permission.canUseSubAgent(item, session, source)
         )
 
-        return (
-            items.find((item) => item.name === name) ??
-            items.find((item) => item.name.toLowerCase() === name.toLowerCase())
-        )
+        return items.find((item) => item.id === id)
     }
 
     buildToolDescription() {
@@ -216,13 +213,11 @@ export class ChatLunaAgentSubAgentService {
     async registerManualAgent(
         input: ManualSubAgentInput
     ): Promise<ManualSubAgentRegistration> {
-        const prev = input.id?.trim()
-            ? this._manual.get(input.id.trim())
-            : undefined
+        const prev = input.id == null ? undefined : this._manual.get(input.id)
         const next = {
             ...prev,
             ...input,
-            id: input.id?.trim() || prev?.id
+            id: input.id ?? prev?.id
         } satisfies ManualSubAgentInput
         const info = createManualAgent(this.ctx, next)
 
@@ -380,7 +375,11 @@ export class ChatLunaAgentSubAgentService {
                     status != null && status.defaultProvider !== 'local'
 
                 const msg = renderAvailableAgents(
-                    agents,
+                    agents.map((item) => ({
+                        ...item,
+                        name: item.id,
+                        description: `${item.name}: ${item.description}`
+                    })),
                     remote
                         ? REMOTE_SUBAGENTS_ROOT
                         : getSubAgentsRootPath(this.ctx),

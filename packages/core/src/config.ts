@@ -41,13 +41,13 @@ export interface Config {
     allowAtReply: boolean
     streamResponse: boolean
 
-    defaultEmbeddings: string
     defaultVectorStore: string
 
     defaultChatMode: string
-    defaultModel: string
-    bundledPresetDir: string
-    runtimePresetDir: string
+    bundledContextPresetDir: string
+    runtimeContextPresetDir: string
+    bundledRolePresetDir: string
+    runtimeRolePresetDir: string
     archiveDir: string
 
     voiceSpeakId: number
@@ -160,7 +160,6 @@ export const Config: Schema<Config> = Schema.intersect([
     }),
 
     Schema.object({
-        defaultEmbeddings: Schema.dynamic('embeddings').default('无'),
         defaultVectorStore: Schema.dynamic('vector-store').default('无')
     }),
 
@@ -170,9 +169,10 @@ export const Config: Schema<Config> = Schema.intersect([
             Schema.const('personal')
         ]).default('shared'),
         defaultChatMode: Schema.dynamic('chat-mode').default('plugin'),
-        defaultModel: Schema.dynamic('model').default('无'),
-        bundledPresetDir: Schema.string().required(),
-        runtimePresetDir: Schema.string().required(),
+        bundledContextPresetDir: Schema.string().required(),
+        runtimeContextPresetDir: Schema.string().required(),
+        bundledRolePresetDir: Schema.string().required(),
+        runtimeRolePresetDir: Schema.string().required(),
         archiveDir: Schema.string().required()
     }),
 

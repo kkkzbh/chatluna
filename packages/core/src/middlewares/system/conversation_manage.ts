@@ -77,7 +77,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
         const requestedPreset =
             create?.preset == null
                 ? undefined
-                : ctx.chatluna.preset.findPresetInput(create.preset).value
+                : ctx.chatluna.preset.findContextPresetInput(create.preset).value
         if (create?.preset != null && requestedPreset == null) {
             context.message = session.text(
                 'chatluna.conversation.messages.preset_unavailable',
@@ -86,7 +86,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             return ChainMiddlewareRunStatus.STOP
         }
 
-        for (const field of ['model', 'preset', 'chatMode'] as const) {
+        for (const field of ['preset', 'chatMode'] as const) {
             const value =
                 field === 'preset' ? requestedPreset?.id : create?.[field]
             const fixed = resolved.constraint[FIXED_FIELD_KEY[field]]
@@ -112,17 +112,11 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                     create?.title ??
                     presetLane ??
                     session.text('chatluna.conversation.default_title'),
-                model:
-                    create?.model ??
-                    ctx.chatluna.conversation.pickModel(
-                        resolved.constraint,
-                        resolved.conversation
-                    ) ??
-                    config.defaultModel,
+                model: resolved.effectiveModel,
                 preset:
                     requestedPreset?.id ??
                     resolved.effectivePreset ??
-                    ctx.chatluna.preset.getGlobalDefaultPresetId().value,
+                    ctx.chatluna.preset.getGlobalDefaultContextPresetId().value,
                 chatMode:
                     create?.chatMode ??
                     resolved.effectiveChatMode ??
@@ -201,7 +195,6 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
         const pagination = new Pagination<ConversationListEntry>({
             formatItem: (item) =>
                 formatConversationLine(
-                    ctx,
                     session,
                     item.conversation,
                     resolved,
@@ -241,7 +234,6 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
         context.message = [
             session.text('chatluna.conversation.messages.current_header'),
             formatConversationLine(
-                ctx,
                 session,
                 resolved.conversation,
                 resolved
@@ -364,7 +356,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 const input = context.options.conversation_use?.[field]
                 const value =
                     field === 'preset' && input != null
-                        ? ctx.chatluna.preset.findPresetInput(input).value?.id
+                        ? ctx.chatluna.preset.findContextPresetInput(input).value?.id
                         : input
                 if (input != null && value == null) {
                     throw new Error(`Unknown preset: ${input}`)
@@ -560,7 +552,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
         const value =
             input == null || input === 'reset'
                 ? input
-                : ctx.chatluna.preset.findPresetInput(input).value?.id
+                : ctx.chatluna.preset.findContextPresetInput(input).value?.id
         const clear =
             context.options.conversation_rule?.clear === true ||
             value === 'reset'
@@ -717,10 +709,6 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             ]),
             session.text('chatluna.conversation.messages.rule_share_status', [
                 resolved.constraint.routeMode
-            ]),
-            session.text('chatluna.conversation.messages.rule_model_status', [
-                current?.defaultModel ?? 'reset',
-                current?.fixedModel ?? 'reset'
             ]),
             session.text('chatluna.conversation.messages.rule_preset_status', [
                 formatPresetLane(
@@ -987,7 +975,6 @@ function formatConversationError(
 }
 
 function formatConversationLine(
-    ctx: Context,
     session: Session,
     conversation: ConversationRecord,
     resolved: ResolvedConversationContext,
@@ -998,11 +985,7 @@ function formatConversationLine(
         conversation,
         resolved.binding?.activeConversationId
     )
-    const model =
-        ctx.chatluna.conversation.pickModel(
-            resolved.constraint,
-            conversation
-        ) ?? '-'
+    const model = resolved.effectiveModel
     const preset =
         resolved.constraint.fixedPreset ??
         conversation.preset ??
@@ -1039,12 +1022,6 @@ function formatPresetLane(session: Session, presetLane?: string | null) {
 
 const USE_FIELDS = [
     {
-        cmd: 'conversation_use_model' as const,
-        field: 'model' as const,
-        successKey: 'use_model_success',
-        failKey: 'use_model_failed'
-    },
-    {
         cmd: 'conversation_use_preset' as const,
         field: 'preset' as const,
         successKey: 'use_preset_success',
@@ -1060,13 +1037,6 @@ const USE_FIELDS = [
 
 const RULE_FIELDS = [
     {
-        cmd: 'conversation_rule_model' as const,
-        field: 'model' as const,
-        defaultKey: 'defaultModel' as const,
-        constraintKey: 'fixedModel' as const,
-        msgKey: 'rule_model_status'
-    },
-    {
         cmd: 'conversation_rule_mode' as const,
         field: 'chatMode' as const,
         defaultKey: 'defaultChatMode' as const,
@@ -1076,13 +1046,11 @@ const RULE_FIELDS = [
 ] as const
 
 const FIXED_FIELD_KEY = {
-    model: 'fixedModel',
     preset: 'fixedPreset',
     chatMode: 'fixedChatMode'
 } as const
 
 const FIXED_FIELD_MSG_KEY = {
-    model: 'fixed_model',
     preset: 'fixed_preset',
     chatMode: 'fixed_chat_mode'
 } as const
@@ -1095,14 +1063,12 @@ declare module '../../chains/chain' {
         conversation_current: never
         conversation_rename: never
         conversation_delete: never
-        conversation_use_model: never
         conversation_use_preset: never
         conversation_use_mode: never
         conversation_archive: never
         conversation_restore: never
         conversation_export: never
         conversation_compress: never
-        conversation_rule_model: never
         conversation_rule_preset: never
         conversation_rule_mode: never
         conversation_rule_share: never

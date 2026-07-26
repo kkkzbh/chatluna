@@ -1,18 +1,12 @@
 /* eslint-disable max-len */
-import { Context, Schema } from 'koishi'
+import { Schema } from 'koishi'
 import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
-import { modelSchema } from 'koishi-plugin-chatluna/utils/schema'
 import { SummaryType } from './types'
-
-export async function apply(ctx: Context, _config: Config) {
-    modelSchema(ctx)
-}
 
 export interface Config extends ChatLunaPlugin.Config {
     searchEngine: string[]
     topK: number
     summaryType: SummaryType
-    summaryModel: string
     multiSourceMode: 'average' | 'total'
     searchFailedPrompt: string
 
@@ -78,8 +72,6 @@ export const Config: Schema<Config> = Schema.intersect([
             Schema.const('average'),
             Schema.const('total')
         ]).default('average') as Schema<Config['multiSourceMode']>,
-        summaryModel: Schema.dynamic('model').default('empty'),
-
         searchThreshold: Schema.percent().step(0.01).default(0.25),
         contextualCompression: Schema.boolean().default(false)
     }),

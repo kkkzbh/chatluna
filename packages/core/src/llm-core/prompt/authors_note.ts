@@ -1,10 +1,14 @@
 import { HumanMessage } from '@langchain/core/messages'
 import {
+    appendBlockMessages,
     ChatLunaContextManagerService,
+    claimBlockTokens,
     PromptContextMiddleware
 } from './context_manager'
 import { AuthorsNote } from './type'
-import { findMessageIndex } from './lore_books'
+import { findMessageIndex, resolveAnchorPosition } from './lore_books'
+import { countMessageTokens } from './system_prompts'
+import { traceMessage } from './context_trace'
 
 // ---------------------------------------------------------------------------
 // authors_note injection middleware
@@ -31,16 +35,24 @@ export function createAuthorsNoteMiddleware(): PromptContextMiddleware {
             })
             .then((value) => value.text)
 
-        const tokenCount = await runtime.tokenCounter(formatAuthorsNote)
+        const message = new HumanMessage(formatAuthorsNote)
+        const tokenCount = await countMessageTokens(
+            message,
+            runtime.tokenCounter
+        )
 
         if (tokenCount <= 0) {
             return next()
         }
 
-        runtime.usedTokens += tokenCount
+        if (!claimBlockTokens(runtime, authorsNote.blockId, tokenCount)) {
+            return next()
+        }
 
-        // Determine insertion position
-        const rawPosition = authorsNote.insertPosition ?? 'inChat'
+        const rawPosition = resolveAnchorPosition(
+            authorsNote.anchor,
+            runtime.preset
+        )
 
         const insertPosition = findMessageIndex(
             runtime.result,
@@ -51,21 +63,31 @@ export function createAuthorsNoteMiddleware(): PromptContextMiddleware {
         if (rawPosition === 'inChat') {
             const safeInsertPosition = Math.max(
                 0,
-                insertPosition - (authorsNote.insertDepth ?? 0)
+                insertPosition -
+                    (authorsNote.anchor.type === 'chatHistory'
+                        ? authorsNote.anchor.depth
+                        : 0)
             )
 
             runtime.result.splice(
                 safeInsertPosition,
                 0,
-                new HumanMessage(formatAuthorsNote)
+                message
             )
         } else {
-            runtime.result.splice(
-                insertPosition,
-                0,
-                new HumanMessage(formatAuthorsNote)
-            )
+            runtime.result.splice(insertPosition, 0, message)
         }
+        appendBlockMessages(runtime, authorsNote.blockId, [message])
+        traceMessage(runtime.trace, message, {
+            stage: 'injections',
+            source: {
+                kind: 'authors_note',
+                name: 'authors note rendered context',
+                path: `blocks.${authorsNote.blockId}`
+            },
+            tokenEstimate: tokenCount,
+            status: 'included'
+        })
 
         context.markHandled()
     }

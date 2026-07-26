@@ -1,6 +1,8 @@
-import { EmbeddingsParams } from '@langchain/core/embeddings'
 import { VectorStore, VectorStoreRetriever } from '@langchain/core/vectorstores'
-import { ChatLunaBaseEmbeddings } from 'koishi-plugin-chatluna/llm-core/platform/model'
+export {
+    EmptyEmbeddings,
+    emptyEmbeddings
+} from 'koishi-plugin-chatluna/llm-core/platform/model'
 import { CreateVectorStoreParams } from 'koishi-plugin-chatluna/llm-core/platform/types'
 import { ScoreThresholdRetriever } from 'koishi-plugin-chatluna/llm-core/retrievers'
 import { MemoryVectorStore } from 'koishi-plugin-chatluna/llm-core/vectorstores'
@@ -22,22 +24,6 @@ class InMemoryVectorStoreRetrieverProvider {
         return retriever
     }
 }
-
-export class EmptyEmbeddings extends ChatLunaBaseEmbeddings {
-    constructor(params?: EmbeddingsParams) {
-        super(params ?? {})
-    }
-
-    embedDocuments(documents: string[]): Promise<number[][]> {
-        return Promise.resolve(documents.map(() => []))
-    }
-
-    embedQuery(_: string): Promise<number[]> {
-        return Promise.resolve([])
-    }
-}
-
-export const emptyEmbeddings = new EmptyEmbeddings()
 
 export const inMemoryVectorStoreRetrieverProvider =
     new InMemoryVectorStoreRetrieverProvider()

@@ -3,9 +3,9 @@ import { mkdir, writeFile } from 'fs/promises'
 import { resolve, sep } from 'path'
 import { StructuredTool } from '@langchain/core/tools'
 import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
-import { ComputedRef } from 'koishi-plugin-chatluna'
 import { ChatLunaChatModel } from 'koishi-plugin-chatluna/llm-core/platform/model'
 import { ChatLunaToolRunnable } from 'koishi-plugin-chatluna/llm-core/platform/types'
+import { Context } from 'koishi'
 import type { ElementHandle, KeyInput } from 'puppeteer-core'
 import z from 'zod'
 import { BrowserManager, BrowserSnapshotNode } from './manager'
@@ -86,9 +86,9 @@ const uidSchema = pageIdSchema.extend({
 })
 
 export function registerBrowserTools(
+    ctx: Context,
     plugin: ChatLunaPlugin,
-    manager: BrowserManager,
-    summaryModel: ComputedRef<ChatLunaChatModel | undefined>
+    manager: BrowserManager
 ) {
     const tools = [
         new BrowserOpenTool(manager),
@@ -99,7 +99,7 @@ export function registerBrowserTools(
         new BrowserReadTextTool(manager),
         new BrowserGetHtmlTool(manager),
         new BrowserGetLinksTool(manager),
-        new BrowserSummarizeTool(manager, summaryModel),
+        new BrowserSummarizeTool(ctx, manager),
         new BrowserSnapshotTool(manager),
         new BrowserWaitForTool(manager),
         new BrowserScreenshotTool(manager),
@@ -325,8 +325,8 @@ class BrowserSummarizeTool extends StructuredTool {
     })
 
     constructor(
-        private manager: BrowserManager,
-        private model: ComputedRef<ChatLunaChatModel | undefined>
+        private ctx: Context,
+        private manager: BrowserManager
     ) {
         super()
     }
@@ -336,8 +336,23 @@ class BrowserSummarizeTool extends StructuredTool {
         _,
         cfg: ChatLunaToolRunnable
     ) {
-        const model = this.model.value ?? cfg.configurable.model
-        if (!model) throw new Error('No model available for summarization')
+        const binding = await this.ctx.chatluna.resolveModelBinding({
+            workload: 'search.summary',
+            session: cfg.configurable.session,
+            requestId: cfg.configurable.agentContext?.requestId
+        })
+        let model: ChatLunaChatModel
+        if (binding.mode === 'inheritInvocation') {
+            model = cfg.configurable.model
+        } else if (binding.mode === 'dedicated') {
+            const ref = await this.ctx.chatluna.createChatModel(binding.model)
+            if (!ref.value) {
+                throw new Error(`Model not found: ${binding.model}`)
+            }
+            model = ref.value
+        } else {
+            throw new Error(`Invalid search.summary mode: ${binding.mode}`)
+        }
         return await this.manager.summarize(input, model, cfg)
     }
 }

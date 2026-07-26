@@ -24,8 +24,16 @@ export class ChatLunaRAGService extends Service {
         }
     ): Promise<ComputedRef<RAGRetrieverInstance<T>>> {
         const caller = this[Context.origin]
+        const binding = await this.ctx.chatluna.resolveModelBinding({
+            workload: 'chatluna.defaultEmbedding'
+        })
+        if (binding.mode !== 'dedicated') {
+            throw new Error(
+                `RAG requires a dedicated chatluna.defaultEmbedding binding, received: ${binding.mode}`
+            )
+        }
         const embeddingsRef = await this.ctx.chatluna.createEmbeddings(
-            this.ctx.chatluna.config.defaultEmbeddings
+            binding.model
         )
 
         const llmRef = config.llm

@@ -40,6 +40,16 @@ export interface ModelRequestInternalControl {
     toolProfile?: string
 }
 
+export type ModelReasoningEffort =
+    | 'none'
+    | 'minimal'
+    | 'low'
+    | 'medium'
+    | 'high'
+    | 'xhigh'
+
+export type ModelThinkingMode = 'enabled' | 'disabled'
+
 export interface ModelRequestParams extends BaseRequestParams {
     /** Sampling temperature to use */
     temperature?: number
@@ -58,6 +68,12 @@ export interface ModelRequestParams extends BaseRequestParams {
 
     /** Penalizes repeated tokens */
     presencePenalty?: number
+
+    /** Provider reasoning effort, serialized according to the request mode. */
+    reasoningEffort?: ModelReasoningEffort
+
+    /** Provider thinking switch, serialized according to the request mode. */
+    thinkingMode?: ModelThinkingMode
 
     /** Number of completions to generate for each prompt */
     n?: number

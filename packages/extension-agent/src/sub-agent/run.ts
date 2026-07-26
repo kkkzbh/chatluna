@@ -12,7 +12,7 @@ import {
     ChatLunaBaseEmbeddings,
     ChatLunaChatModel
 } from 'koishi-plugin-chatluna/llm-core/platform/model'
-import { parseRawModelName } from 'koishi-plugin-chatluna/llm-core/utils/count_tokens'
+import { emptyEmbeddings } from 'koishi-plugin-chatluna/llm-core/model/in_memory'
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
 import { computed } from 'koishi-plugin-chatluna'
 import { Context, h, Session } from 'koishi'
@@ -89,28 +89,52 @@ async function createInnerAgent(
         input.source ?? 'chatluna'
     )
 
+    const binding = await options.ctx.chatluna.resolveModelBinding({
+        workload: 'agent.subagent.default',
+        agentId: options.info.id,
+        session: input.session,
+        requestId: input.requestId
+    })
     let llm: ChatLunaChatModel
-    if (!options.info.model) {
+    if (binding.mode === 'inheritInvocation') {
         if (!options.model) {
             throw new Error('Parent model is missing for sub-agent inheritance')
         }
         llm = options.model
-    } else {
-        const ref = await options.ctx.chatluna.createChatModel(
-            options.info.model
-        )
+    } else if (binding.mode === 'dedicated') {
+        const ref = await options.ctx.chatluna.createChatModel(binding.model)
         if (!ref.value) {
-            throw new Error(`Model not found: ${options.info.model}`)
+            throw new Error(`Model not found: ${binding.model}`)
         }
         llm = ref.value
+    } else {
+        throw new Error(`Invalid agent.subagent.default mode: ${binding.mode}`)
     }
 
-    const [platform, embModel] = parseRawModelName(
-        options.ctx.chatluna.config.defaultEmbeddings
-    )
-    const embeddings = (
-        await options.ctx.chatluna.createEmbeddings(platform, embModel)
-    ).value as ChatLunaBaseEmbeddings
+    const embeddingsBinding = await options.ctx.chatluna.resolveModelBinding({
+        workload: 'chatluna.defaultEmbedding',
+        agentId: options.info.id,
+        session: input.session,
+        requestId: input.requestId
+    })
+    let embeddings: ChatLunaBaseEmbeddings
+    if (embeddingsBinding.mode === 'disabled') {
+        embeddings = emptyEmbeddings
+    } else if (embeddingsBinding.mode === 'dedicated') {
+        const ref = await options.ctx.chatluna.createEmbeddings(
+            embeddingsBinding.model
+        )
+        if (!ref.value) {
+            throw new Error(
+                `Embeddings model not found: ${embeddingsBinding.model}`
+            )
+        }
+        embeddings = ref.value
+    } else {
+        throw new Error(
+            `Invalid chatluna.defaultEmbedding mode: ${embeddingsBinding.mode}`
+        )
+    }
 
     const service = options.ctx.chatluna_agent?.skills
     const toolCallMask = toolMask.toolCallMask ?? toolMask

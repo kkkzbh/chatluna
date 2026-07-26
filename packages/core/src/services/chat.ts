@@ -32,7 +32,8 @@ import {
 } from 'koishi-plugin-chatluna/llm-core/platform/config'
 import {
     ChatLunaBaseEmbeddings,
-    ChatLunaChatModel
+    ChatLunaChatModel,
+    emptyEmbeddings
 } from 'koishi-plugin-chatluna/llm-core/platform/model'
 import { ChatLunaReranker } from 'koishi-plugin-chatluna/llm-core/platform/rerank'
 import {
@@ -69,7 +70,6 @@ import { ClientRequestArgs } from 'http'
 import { Config } from '../config'
 import { DefaultRenderer, Renderer } from 'koishi-plugin-chatluna'
 import { withResolver } from 'koishi-plugin-chatluna/utils/promise'
-import { emptyEmbeddings } from 'koishi-plugin-chatluna/llm-core/model/in_memory'
 import { ChatLunaPromptRenderService } from './prompt_renderer'
 import { computed, ComputedRef, watch } from '@vue/reactivity'
 import { Embeddings } from '@langchain/core/embeddings'
@@ -82,6 +82,10 @@ import {
     type ResearchReplyHistoryNormalizationResult
 } from 'koishi-plugin-chatluna/llm-core/memory/message'
 import { PresetKnowledgeService } from './knowledge'
+import {
+    ModelBindingRequest,
+    ModelBindingResolver
+} from 'koishi-plugin-chatluna/llm-core/platform/binding'
 
 export class ChatLunaService extends Service<Config> {
     private _plugins: Record<string, ChatLunaPlugin> = {}
@@ -236,6 +240,14 @@ export class ChatLunaService extends Service<Config> {
         return this._platformService.resolveToolMask(arg)
     }
 
+    registerModelBindingResolver(resolver: ModelBindingResolver) {
+        return this._platformService.registerModelBindingResolver(resolver)
+    }
+
+    async resolveModelBinding(request: ModelBindingRequest) {
+        return this._platformService.resolveModelBinding(request)
+    }
+
     registerAllowReplyResolver(name: string, resolver: AllowReplyResolver) {
         this._allowReplyResolvers.set(name, resolver)
 
@@ -335,7 +347,10 @@ export class ChatLunaService extends Service<Config> {
         )
     }
 
-    async createChatInterface(conversation: ConversationRecord) {
+    async createChatInterface(
+        conversation: ConversationRecord,
+        embeddings?: string
+    ) {
         const config = this.currentConfig
         const chatInterface = new ChatInterface(
             this.ctx,
@@ -343,14 +358,10 @@ export class ChatLunaService extends Service<Config> {
                 chatMode: conversation.chatMode,
                 autoTitle: conversation.autoTitle === true,
                 botName: config.botNames[0],
-                preset: this.preset.getPreset(conversation.preset),
+                preset: this.preset.getContextPreset(conversation.preset),
                 model: conversation.model,
                 conversationId: conversation.id,
-                embeddings:
-                    config.defaultEmbeddings &&
-                    config.defaultEmbeddings.length > 0
-                        ? config.defaultEmbeddings
-                        : undefined,
+                embeddings,
                 vectorStoreName:
                     config.defaultVectorStore &&
                     config.defaultVectorStore.length > 0
@@ -515,16 +526,33 @@ export class ChatLunaService extends Service<Config> {
         const llm = await resolveAgentModel(options.model, (name) =>
             this.createChatModel(name)
         )
+        const binding =
+            options.embeddings == null
+                ? await this.resolveModelBinding({
+                      workload: 'chatluna.defaultEmbedding'
+                  })
+                : undefined
+        if (
+            binding != null &&
+            binding.mode !== 'dedicated' &&
+            binding.mode !== 'disabled'
+        ) {
+            throw new Error(
+                `Invalid chatluna.defaultEmbedding mode: ${binding.mode}`
+            )
+        }
         const embeddings = await resolveAgentEmbeddings(
-            options.embeddings,
-            (name) => this.createEmbeddings(name),
-            this.currentConfig.defaultEmbeddings
+            options.embeddings ??
+                (binding?.mode === 'dedicated'
+                    ? binding.model
+                    : emptyEmbeddings),
+            (name) => this.createEmbeddings(name)
         )
         const tools = resolveAgentTools(options.tools, (name) =>
             this.platform.getTool(name)
         )
         const { preset, instructions } = resolveAgentPreset(options, (name) =>
-            computed(() => this._preset.getPreset(name).value)
+            computed(() => this._preset.getContextPreset(name).value)
         )
         const model = llm.value
         const prompt =
@@ -925,11 +953,6 @@ export class ChatLunaService extends Service<Config> {
                     length: 255,
                     nullable: true
                 },
-                defaultModel: {
-                    type: 'char',
-                    length: 100,
-                    nullable: true
-                },
                 defaultPreset: {
                     type: 'char',
                     length: 255,
@@ -938,11 +961,6 @@ export class ChatLunaService extends Service<Config> {
                 defaultChatMode: {
                     type: 'char',
                     length: 20,
-                    nullable: true
-                },
-                fixedModel: {
-                    type: 'char',
-                    length: 100,
                     nullable: true
                 },
                 fixedPreset: {
@@ -1129,15 +1147,18 @@ export class ChatLunaPlugin<
         protected ctx: Context,
         public readonly config: T,
         public platformName: PlatformClientNames,
-        createConfigPool: boolean = true
+        createConfigPool: boolean = true,
+        lifecycle: 'automatic' | 'manual' = 'automatic'
     ) {
-        ctx.on('dispose', async () => {
-            ctx.chatluna.uninstallPlugin(this)
-        })
+        if (lifecycle === 'automatic') {
+            ctx.on('dispose', async () => {
+                ctx.chatluna.uninstallPlugin(this)
+            })
 
-        ctx.on('ready', async () => {
-            ctx.chatluna.installPlugin(this)
-        })
+            ctx.on('ready', async () => {
+                ctx.chatluna.installPlugin(this)
+            })
+        }
 
         if (createConfigPool) {
             if (config == null) {

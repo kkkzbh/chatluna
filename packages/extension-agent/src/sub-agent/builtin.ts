@@ -38,7 +38,6 @@ function createBuiltin(
         hidden: item.hidden ?? false,
         priority,
         promptContent,
-        model: item.model,
         maxTurns: item.maxTurns,
         permissions: item.permissions,
         allowKoishiMessageTransform: false,

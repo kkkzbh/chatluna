@@ -1,11 +1,11 @@
 import { BaseMessage } from '@langchain/core/messages'
 import {
+    appendBlockMessages,
     ChatLunaContextManagerService,
     PromptContextRuntime,
     PromptPipelineMiddleware
 } from './context_manager'
 import { countMessageTokens } from './system_prompts'
-import { logger } from 'koishi-plugin-chatluna'
 import { isChatLunaUserMessage } from 'koishi-plugin-chatluna/utils/langchain'
 import { traceMessage } from './context_trace'
 
@@ -21,70 +21,11 @@ import { traceMessage } from './context_trace'
 export function createChatHistoryMiddleware(): PromptPipelineMiddleware {
     return async (runtime: PromptContextRuntime, next) => {
         const chatHistory = runtime.chatHistory ?? []
-        const hasDocuments = (runtime.documentCollections ?? []).some(
-            (collection) => collection.documents.length > 0
+        const block = runtime.preset.definition.blocks.find(
+            (candidate) => candidate.type === 'chatHistory' && candidate.enabled
         )
-
-        // Pre-account input tokens
-        if (runtime.input) {
-            const inputTokens = await countMessageTokens(
-                runtime.input,
-                runtime.tokenCounter
-            )
-            runtime.usedTokens += inputTokens
-            traceMessage(runtime.trace, runtime.input, {
-                stage: 'input',
-                source: {
-                    kind: 'input',
-                    name: 'current user input',
-                    path: 'input'
-                },
-                tokenEstimate: inputTokens,
-                status: 'candidate'
-            })
-        }
-
-        // Pre-account scratchpad tokens
-        if (runtime.agentScratchpad) {
-            if (Array.isArray(runtime.agentScratchpad)) {
-                for (const msg of runtime.agentScratchpad) {
-                    const tokens = await countMessageTokens(
-                        msg,
-                        runtime.tokenCounter
-                    )
-                    runtime.usedTokens += tokens
-                    traceMessage(runtime.trace, msg, {
-                        stage: 'scratchpad',
-                        source: {
-                            kind: 'scratchpad',
-                            name: 'agent scratchpad',
-                            path: 'agent_scratchpad'
-                        },
-                        tokenEstimate: tokens,
-                        status: 'candidate'
-                    })
-                }
-            } else {
-                const tokens = await countMessageTokens(
-                    runtime.agentScratchpad as BaseMessage,
-                    runtime.tokenCounter
-                )
-                runtime.usedTokens += tokens
-                traceMessage(
-                    runtime.trace,
-                    runtime.agentScratchpad as BaseMessage,
-                    {
-                        stage: 'scratchpad',
-                        source: {
-                            kind: 'scratchpad',
-                            name: 'agent scratchpad',
-                            path: 'agent_scratchpad'
-                        },
-                        tokenEstimate: tokens,
-                        status: 'candidate'
-                    }
-                )
-            }
+        if (block == null) {
+            return next()
         }
 
         // Build conversation rounds and truncate
@@ -97,38 +38,24 @@ export function createChatHistoryMiddleware(): PromptPipelineMiddleware {
             round.reduce((total, msg) => total + tokens.get(msg)!, 0)
         )
         const selectedRounds: BaseMessage[][] = []
-        const availableLimit =
-            runtime.sendTokenLimit - (hasDocuments ? 480 : 80)
-        const hasValidLimit = availableLimit > 0
-        let truncated = false
         let usedTokens = runtime.usedTokens
+        let blockTokens = 0
+        const limit = runtime.blockBudgets.get(block.id) ?? 0
 
         for (let i = rounds.length - 1; i >= 0; i--) {
             const round = rounds[i]
-            const exceedsLimit = hasValidLimit
-                ? usedTokens + roundTokens[i] > availableLimit
-                : false
+            const exceedsLimit =
+                blockTokens + roundTokens[i] > limit ||
+                usedTokens + runtime.requiredTailTokens + roundTokens[i] >
+                    runtime.sendTokenLimit
 
-            if (exceedsLimit && selectedRounds.length > 0) {
-                truncated = true
+            if (exceedsLimit) {
                 break
             }
 
             usedTokens += roundTokens[i]
+            blockTokens += roundTokens[i]
             selectedRounds.unshift(round)
-
-            if (exceedsLimit) {
-                truncated = true
-                break
-            }
-        }
-
-        // Ensure at least one round
-        if (rounds.length > 0 && selectedRounds.length === 0) {
-            const lastRound = rounds[rounds.length - 1]
-            usedTokens += roundTokens[rounds.length - 1]
-            selectedRounds.unshift(lastRound)
-            truncated = hasValidLimit
         }
 
         // Flatten selected rounds and push
@@ -137,7 +64,9 @@ export function createChatHistoryMiddleware(): PromptPipelineMiddleware {
             []
         )
         runtime.result.push(...historyMessages)
+        appendBlockMessages(runtime, block.id, historyMessages)
         runtime.usedTokens = usedTokens
+        runtime.blockUsage.set(block.id, blockTokens)
 
         const included = new Set(historyMessages)
         for (const [idx, msg] of chatHistory.entries()) {
@@ -152,12 +81,6 @@ export function createChatHistoryMiddleware(): PromptPipelineMiddleware {
                 status: included.has(msg) ? 'included' : 'dropped',
                 reason: included.has(msg) ? undefined : 'history_budget'
             })
-        }
-
-        if (truncated && hasValidLimit) {
-            logger?.warn(
-                `Exceeded token limit (${usedTokens} > ${availableLimit}) of the message placeholder; kept the most recent complete turns.`
-            )
         }
 
         await next()

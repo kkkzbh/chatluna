@@ -1,20 +1,17 @@
-import { Context, Logger, Schema } from 'koishi'
+import { Context, Schema } from 'koishi'
 import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
 import {
     ChatLunaError,
     ChatLunaErrorCode
 } from 'koishi-plugin-chatluna/utils/error'
-import { createLogger } from 'koishi-plugin-chatluna/utils/logger'
 import { OpenAIClient } from './client'
 import { ModelCapabilities } from 'koishi-plugin-chatluna/llm-core/platform/types'
 import type { ResponseBuiltinToolName } from '@chatluna/v1-shared-adapter'
+import type { ChatLunaModelCallOptions } from 'koishi-plugin-chatluna/llm-core/platform/model'
 
-export let logger: Logger
 export const reusable = true
 
 export function apply(ctx: Context, config: Config) {
-    logger = createLogger(ctx, 'chatluna-openai-like-adapter')
-
     ctx.on('ready', async () => {
         if (config.platform == null || config.platform.length < 1) {
             throw new ChatLunaError(
@@ -51,14 +48,178 @@ export function apply(ctx: Context, config: Config) {
     })
 }
 
+export interface ManagedOpenAIModel {
+    id: string
+    transportModel: string
+    type: 'llm' | 'embeddings' | 'reranker'
+    contextSize: number
+    capabilities: ModelCapabilities[]
+    requestMode?: 'chatCompletions' | 'responses'
+    timeoutMs: number
+    requestDefaults?: Pick<
+        ChatLunaModelCallOptions,
+        | 'temperature'
+        | 'topP'
+        | 'frequencyPenalty'
+        | 'presencePenalty'
+        | 'maxTokens'
+        | 'reasoningEffort'
+        | 'thinkingMode'
+    >
+}
+
+export interface ManagedOpenAIConnection {
+    id: string
+    baseUrl: string
+    apiKey: string
+    models: ManagedOpenAIModel[]
+    concurrentMaxSize?: number
+    maxRetries?: number
+}
+
+export interface ManagedOpenAIRegistration {
+    platform: string
+    models: string[]
+    dispose: () => Promise<void>
+}
+
+export async function registerManagedOpenAIConnection(
+    ctx: Context,
+    connection: ManagedOpenAIConnection
+): Promise<ManagedOpenAIRegistration> {
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(connection.id)) {
+        throw new Error(`Invalid managed connection id: ${connection.id}`)
+    }
+    const endpoint = new URL(connection.baseUrl)
+    if (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:') {
+        throw new Error(
+            `Invalid managed connection protocol: ${endpoint.protocol}`
+        )
+    }
+    if (connection.models.length < 1) {
+        throw new Error(
+            `Managed connection ${connection.id} has no model profiles`
+        )
+    }
+    if (
+        new Set(connection.models.map((model) => model.id)).size !==
+        connection.models.length
+    ) {
+        throw new Error(
+            `Managed connection ${connection.id} has duplicate model ids`
+        )
+    }
+    for (const model of connection.models) {
+        if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/.test(model.id)) {
+            throw new Error(
+                `Invalid managed model id ${model.id} in connection ${connection.id}`
+            )
+        }
+        if (model.transportModel.trim().length < 1) {
+            throw new Error(
+                `Managed model ${model.id} has an empty transport model`
+            )
+        }
+        if (!Number.isInteger(model.contextSize) || model.contextSize < 1) {
+            throw new Error(
+                `Managed model ${model.id} has an invalid context size`
+            )
+        }
+        if (!Number.isInteger(model.timeoutMs) || model.timeoutMs < 1) {
+            throw new Error(`Managed model ${model.id} has an invalid timeout`)
+        }
+    }
+
+    const platform = `qqbot-${connection.id}`
+    const config: Config = {
+        configMode: 'default',
+        chatConcurrentMaxSize: connection.concurrentMaxSize ?? 3,
+        chatTimeLimit: 200,
+        timeout: Math.max(...connection.models.map((model) => model.timeoutMs)),
+        maxRetries: connection.maxRetries ?? 2,
+        proxyMode: 'system',
+        proxyAddress: '',
+        apiKeys: [[connection.apiKey, connection.baseUrl, true]],
+        pullModels: false,
+        additionalModels: connection.models.map((model) => ({
+            model: model.id,
+            transportModel: model.transportModel,
+            modelType:
+                model.type === 'embeddings'
+                    ? 'Embeddings 嵌入模型'
+                    : model.type === 'reranker'
+                      ? 'Reranker 重排序模型'
+                      : 'LLM 大语言模型',
+            modelCapabilities: model.capabilities,
+            contextSize: model.contextSize,
+            requestMode: model.requestMode,
+            timeoutMs: model.timeoutMs,
+            requestDefaults: model.requestDefaults
+        })),
+        blacklistModels: [],
+        additionCookies: [],
+        maxContextRatio: 1,
+        temperature: 1,
+        presencePenalty: 0,
+        frequencyPenalty: 0,
+        nonStreaming: false,
+        responseApi: false,
+        googleSearch: false,
+        googleSearchSupportModel: [],
+        responseBuiltinTools: [],
+        responseBuiltinToolSupportModel: [],
+        responseFileSearchVectorStoreIds: [],
+        platform
+    }
+    const plugin = new ChatLunaPlugin(ctx, config, platform, true, 'manual')
+    plugin.parseConfig((cfg) =>
+        cfg.apiKeys.map(([apiKey, apiEndpoint]) => ({
+            apiKey,
+            apiEndpoint,
+            platform,
+            chatLimit: cfg.chatTimeLimit,
+            timeout: cfg.timeout,
+            maxRetries: cfg.maxRetries,
+            concurrentMaxSize: cfg.chatConcurrentMaxSize
+        }))
+    )
+
+    await ctx.chatluna.installPlugin(plugin)
+    let unregister: (() => void) | undefined
+    try {
+        unregister = ctx.chatluna.platform.registerClient(
+            platform,
+            () => new OpenAIClient(ctx, config, plugin)
+        )
+        await ctx.chatluna.platform.createClient(platform)
+    } catch (error) {
+        unregister?.()
+        ctx.chatluna.uninstallPlugin(plugin)
+        throw error
+    }
+
+    return {
+        platform,
+        models: connection.models.map((model) => `${platform}/${model.id}`),
+        dispose: async () => {
+            unregister?.()
+            ctx.chatluna.uninstallPlugin(plugin)
+        }
+    }
+}
+
 export interface Config extends ChatLunaPlugin.Config {
     apiKeys: [string, string, boolean][]
     pullModels: boolean
     additionalModels: {
         model: string
+        transportModel?: string
         modelType: string
         modelCapabilities: ModelCapabilities[]
         contextSize: number
+        requestMode?: 'chatCompletions' | 'responses'
+        timeoutMs?: number
+        requestDefaults?: ManagedOpenAIModel['requestDefaults']
     }[]
     blacklistModels: string[]
     additionCookies: [string, string][]

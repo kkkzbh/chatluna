@@ -9,7 +9,7 @@ import {
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
 
 export function apply(ctx: Context, config: Config): void {
-    const cache = new Map<CompiledPreset, LoreBookMatcher>()
+    const cache = new Map<CompiledPreset, LoreBookMatcher[]>()
 
     ctx.before(
         'chatluna/chat',
@@ -22,19 +22,24 @@ export function apply(ctx: Context, config: Config): void {
         ) => {
             const preset = chatInterface.preset.value
 
-            if (preset.lore.entries.length === 0) {
+            const blocks = preset.loreBlocks.filter(
+                (block) => block.enabled && block.entries.length > 0
+            )
+            if (blocks.length === 0) {
                 return
             }
 
-            let matcher = cache.get(preset)
-            if (!matcher) {
-                const loreBooks = preset.lore.entries
-                matcher = new LoreBookMatcher(loreBooks, {
-                    scanDepth: preset.lore.defaults.scanDepth,
-                    recursiveScan: preset.lore.defaults.recursiveScan,
-                    maxRecursionDepth: preset.lore.defaults.maxRecursionDepth
-                })
-                cache.set(preset, matcher)
+            let matchers = cache.get(preset)
+            if (matchers == null) {
+                matchers = blocks.map(
+                    (block) =>
+                        new LoreBookMatcher(block.id, block.entries, {
+                            scanDepth: block.defaults.scanDepth,
+                            recursiveScan: block.defaults.recursiveScan,
+                            maxRecursionDepth: block.defaults.maxRecursionDepth
+                        })
+                )
+                cache.set(preset, matchers)
             }
 
             const messages = [
@@ -43,7 +48,9 @@ export function apply(ctx: Context, config: Config): void {
 
             messages.push(message)
 
-            const matchedLores = matcher.matchLoreBooks(messages)
+            const matchedLores = matchers.flatMap((matcher) =>
+                matcher.matchLoreBooks(messages)
+            )
 
             if (matchedLores.length > 0) {
                 logger.debug(
@@ -87,12 +94,14 @@ export class LoreBookMatcher {
     private regexCache: Map<string, RegExp>
 
     constructor(
+        blockId: string,
         loreBooks: LoreEntry[],
         defaultConfig: Partial<LoreBookConfig> = {}
     ) {
         this.loreBooks = loreBooks.map((entry, presetEntryIndex) => ({
             entry,
-            presetEntryIndex
+            presetEntryIndex,
+            blockId
         }))
         this.defaultConfig = {
             scanDepth: defaultConfig.scanDepth ?? 2,

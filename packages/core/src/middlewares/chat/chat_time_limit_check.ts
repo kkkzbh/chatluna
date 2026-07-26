@@ -36,11 +36,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
 
         // 为什么会是无
 
-        if (
-            (config.defaultModel === '无' ||
-                config.defaultModel.trim().length < 1) &&
-            ctx.chatluna.platform.listAllModels(ModelType.all).value.length < 1
-        ) {
+        if (ctx.chatluna.platform.listAllModels(ModelType.all).value.length < 1) {
             return session.text('chatluna.not_available_model')
         }
 
@@ -124,11 +120,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
         }
 
         return {
-            model:
-                ctx.chatluna.conversation.pickModel(
-                    resolved.constraint,
-                    conversation
-                ) ?? conversation.model,
+            model: resolved.effectiveModel,
             conversationId: conversation.id
         }
     }

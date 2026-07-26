@@ -2,15 +2,17 @@
 
 import { Context } from 'koishi'
 import { AgentConfig, SubAgentInfo } from '../types'
+import { assertPresetAgentId } from '../utils/id'
 
 export function getPresetAgents(
     ctx: Context,
     cfg: AgentConfig['subAgent']
 ): SubAgentInfo[] {
-    return Object.entries(cfg.presetAgents).map(([name, item], idx) => {
+    return Object.entries(cfg.presetAgents).map(([id, item], idx) => {
+        assertPresetAgentId(id)
         const base = {
-            id: `preset:${name}`,
-            name,
+            id,
+            name: item.name,
             description: item.description,
             dedupeTools: item.dedupeTools,
             source: 'preset' as const,
@@ -27,7 +29,6 @@ export function getPresetAgents(
             authority: item.authority,
             hidden: item.hidden ?? false,
             priority: 20 + idx,
-            model: item.model,
             maxTurns: item.maxTurns,
             permissions: item.permissions,
             allowKoishiMessageTransform: item.allowKoishiMessageTransform,
@@ -37,7 +38,7 @@ export function getPresetAgents(
 
         try {
             const preset = item.preset
-                ? ctx.chatluna.preset.getPreset(item.preset).value
+                ? ctx.chatluna.preset.getContextPreset(item.preset).value
                 : undefined
 
             if (!preset) {

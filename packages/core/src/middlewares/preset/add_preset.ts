@@ -14,7 +14,7 @@ export function apply(ctx: Context, _: Config, chain: ChatChain) {
 
             const preset = ctx.chatluna.preset
 
-            const existsPreset = preset.getPreset(presetName, false)
+            const existsPreset = preset.getContextPreset(presetName, false)
 
             if (existsPreset.value != null) {
                 await context.send(session.text('.conflict'))
@@ -31,22 +31,40 @@ export function apply(ctx: Context, _: Config, chain: ChatChain) {
                 return ChainMiddlewareRunStatus.STOP
             }
 
-            await preset.createPreset({
-                schemaVersion: 2,
+            await preset.createRolePreset({
+                schemaVersion: 1,
                 id: presetName,
                 displayName: presetName,
-                aliases: [],
                 messages: [
                     {
                         role: 'system',
                         content: result
                     }
-                ],
-                inputFormat: null,
-                lore: { defaults: {}, entries: [] },
-                authorsNote: null,
-                knowledge: null,
-                promptConfig: {}
+                ]
+            })
+            await preset.createContextPreset({
+                schemaVersion: 1,
+                id: presetName,
+                displayName: presetName,
+                aliases: [],
+                blocks: [
+                    {
+                        id: 'role',
+                        type: 'role',
+                        rolePresetId: presetName
+                    },
+                    {
+                        id: 'input',
+                        type: 'currentInput',
+                        inputFormat: null
+                    },
+                    {
+                        id: 'output',
+                        type: 'modelOutput',
+                        maxOutputTokens: 1024,
+                        postHandler: null
+                    }
+                ]
             })
 
             context.message = session.text('.success', [presetName])

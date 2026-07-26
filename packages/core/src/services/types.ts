@@ -31,6 +31,7 @@ import type {
     ToolMaskArg,
     ToolMaskResolver
 } from '../llm-core/platform/service'
+import type { CompiledPreset } from '../llm-core/prompt/type'
 
 export interface LegacyConversationRecord {
     id: string
@@ -133,6 +134,8 @@ export type AllowReplyResolver = (
 export interface RuntimeConversationEntry {
     conversation: ConversationRecord
     chatInterface: ChatInterface
+    embeddings?: string
+    bindingRevision: number
 }
 
 export interface ActiveRequest {
@@ -231,6 +234,7 @@ declare module '@chatluna/shared-prompt-renderer' {
         subagentContext?: SubagentContext
         toolMask?: ToolMask
         source?: string
+        contextPreset?: CompiledPreset
     }
 }
 

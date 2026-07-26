@@ -1,11 +1,11 @@
-import { SystemMessage } from '@langchain/core/messages'
 import {
+    appendBlockMessages,
     ChatLunaContextManagerService,
     PromptContextRuntime,
     PromptPipelineMiddleware
 } from './context_manager'
 import { traceMessage } from './context_trace'
-import { logger } from 'koishi-plugin-chatluna'
+import { ContextPresetCompileError } from './type'
 import {
     countMessagesTokens,
     countMessageTokens
@@ -24,41 +24,31 @@ export { countMessageTokens, countMessagesTokens }
  */
 export function createSystemPromptsMiddleware(): PromptPipelineMiddleware {
     return async (runtime: PromptContextRuntime, next) => {
-        const preset = runtime.preset
-        const variables = runtime.variables
-        const configurable = runtime.configurable
-
-        // -- instructions (e.g. agent instructions) --
-        if (runtime.instructions) {
-            const msg = new SystemMessage(runtime.instructions)
-            const tokens = await countMessageTokens(msg, runtime.tokenCounter)
-            runtime.result.push(msg)
-            runtime.usedTokens += tokens
-            traceMessage(runtime.trace, msg, {
-                stage: 'system_prompts',
-                source: {
-                    kind: 'instructions',
-                    name: 'runtime instructions',
-                    path: 'instructions'
-                },
-                tokenEstimate: tokens,
-                status: 'included'
-            })
-        }
-
-        // -- render preset system prompts --
-        const rendered = await runtime.promptRenderService.renderCompiledPreset(
-            preset,
-            variables,
-            { configurable: configurable ?? {} }
-        )
-
-        for (const [idx, message] of (rendered.messages ?? []).entries()) {
+        const role = runtime.preset.definition.blocks.find(
+            (block) => block.type === 'role'
+        )!
+        for (const [idx, message] of runtime.preparedSystemPrompts.entries()) {
             const tokens = await countMessageTokens(
                 message,
                 runtime.tokenCounter
             )
+            if (
+                runtime.usedTokens + tokens + runtime.requiredTailTokens >
+                runtime.sendTokenLimit
+            ) {
+                const block = runtime.preset.definition.blocks.find(
+                    (candidate) => candidate.type === 'role'
+                )!
+                throw new ContextPresetCompileError(
+                    'required_block_over_limit',
+                    'budget',
+                    `Role prompt exceeds the input token limit ${runtime.sendTokenLimit}.`,
+                    block.id,
+                    runtime.sendTokenLimit
+                )
+            }
             runtime.result.push(message)
+            appendBlockMessages(runtime, role.id, [message])
             runtime.usedTokens += tokens
             traceMessage(runtime.trace, message, {
                 stage: 'system_prompts',
@@ -72,14 +62,7 @@ export function createSystemPromptsMiddleware(): PromptPipelineMiddleware {
             })
         }
 
-        runtime.systemPrompts = rendered.messages ?? []
-
-        if (runtime.usedTokens > runtime.sendTokenLimit) {
-            logger?.warn(
-                // eslint-disable-next-line max-len
-                `After system prompts, the max tokens exceeded: ${runtime.usedTokens} > ${runtime.sendTokenLimit}. Try increasing the adapter token limit or optimizing the system prompts.`
-            )
-        }
+        runtime.systemPrompts = runtime.preparedSystemPrompts
 
         await next()
     }

@@ -66,7 +66,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 const parsed = parsePresetLaneInput(
                     text,
                     ctx.chatluna.preset
-                        .listPresets()
+                        .listContextPresets()
                         .value.flatMap((preset) => [
                             preset.id,
                             ...preset.aliases
@@ -74,7 +74,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 )
 
                 if (parsed?.preset != null) {
-                    const preset = ctx.chatluna.preset.findPresetInput(
+                    const preset = ctx.chatluna.preset.findContextPresetInput(
                         parsed.preset
                     ).value
 
@@ -145,10 +145,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 await ctx.chatluna.messageTransformer.transform(
                     session,
                     message,
-                    ctx.chatluna.conversation.pickModel(
-                        resolved.constraint,
-                        resolved.conversation
-                    ) ?? '',
+                    resolved.effectiveModel,
                     undefined,
                     {
                         quote: false,

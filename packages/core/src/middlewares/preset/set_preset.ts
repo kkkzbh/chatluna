@@ -1,7 +1,10 @@
 import { Context } from 'koishi'
 import { Config } from '../../config'
 import { ChainMiddlewareRunStatus, ChatChain } from '../../chains/chain'
-import type { PresetDefinitionV2, PresetMessage } from '../../preset_schema'
+import type {
+    PresetMessage,
+    RolePresetDefinitionV1
+} from '../../preset_schema'
 
 export type SetPresetCommandRejection = 'empty_messages' | 'multiple_messages'
 
@@ -20,7 +23,7 @@ export class SetPresetCommandError extends Error {
 }
 
 export function requireSinglePresetMessage(
-    preset: Pick<PresetDefinitionV2, 'id' | 'messages'>
+    preset: Pick<RolePresetDefinitionV1, 'id' | 'messages'>
 ): PresetMessage {
     if (preset.messages.length === 0) {
         throw new SetPresetCommandError('empty_messages', preset.id)
@@ -45,14 +48,20 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
 
             const presetService = ctx.chatluna.preset
 
-            const preset = presetService.findPresetInput(presetName).value
+            const preset =
+                presetService.findContextPresetInput(presetName).value
 
             if (!preset) {
                 await context.send(session.text('.not_found'))
                 return ChainMiddlewareRunStatus.STOP
             }
 
-            const definition = presetService.getDefinition(preset.id)
+            const roleBlock = preset.definition.blocks.find(
+                (block) => block.type === 'role'
+            )!
+            const role = presetService.getRolePreset(roleBlock.rolePresetId)
+                .value
+            const definition = presetService.getRolePresetDefinition(role.id)
             let message: PresetMessage
             try {
                 message = requireSinglePresetMessage(definition)
@@ -79,10 +88,10 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             }
 
             message.content = result
-            await presetService.updatePreset(
-                preset.id,
+            await presetService.updateRolePreset(
+                role.id,
                 definition,
-                preset.revision
+                role.revision
             )
 
             await context.send(session.text('.success', [presetName]))

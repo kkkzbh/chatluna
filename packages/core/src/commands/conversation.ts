@@ -21,7 +21,6 @@ export function apply(ctx: Context, _config: Config, chain: ChatChain) {
     newCommand
         .alias('chatluna.clear')
         .option('preset', '-p <preset:string>')
-        .option('model', '-m <model:string>')
         .option('chatMode', '-c <chatMode:string>')
         .action(async ({ options, session }, title) => {
             await chain.receiveCommand(
@@ -31,7 +30,6 @@ export function apply(ctx: Context, _config: Config, chain: ChatChain) {
                     conversation_create: {
                         title: title?.trim() || undefined,
                         preset: options.preset?.trim() || undefined,
-                        model: options.model?.trim() || undefined,
                         chatMode: options.chatMode?.trim() || undefined
                     }
                 },
@@ -257,26 +255,6 @@ export function apply(ctx: Context, _config: Config, chain: ChatChain) {
             )
         })
 
-    ctx.command('chatluna.use.model <model:string>', {
-        authority: 1
-    })
-        .option('preset', '-p <preset:string>')
-        .action(async ({ options, session }, model) => {
-            await chain.receiveCommand(
-                session,
-                'conversation_use_model',
-                {
-                    conversation_manage: {
-                        presetLane: options.preset?.trim() || undefined
-                    },
-                    conversation_use: {
-                        model: model?.trim() || undefined
-                    }
-                },
-                ctx
-            )
-        })
-
     ctx.command('chatluna.use.preset <preset:string>', {
         authority: 1
     })
@@ -311,26 +289,6 @@ export function apply(ctx: Context, _config: Config, chain: ChatChain) {
                     },
                     conversation_use: {
                         chatMode: mode?.trim() || undefined
-                    }
-                },
-                ctx
-            )
-        })
-
-    ctx.command('chatluna.rule.model [model:string]', {
-        authority: 3
-    })
-        .option('force', '-f')
-        .option('clear', '-c')
-        .action(async ({ options, session }, model) => {
-            await chain.receiveCommand(
-                session,
-                'conversation_rule_model',
-                {
-                    conversation_rule: {
-                        model: model?.trim() || undefined,
-                        force: options.force === true,
-                        clear: options.clear === true
                     }
                 },
                 ctx
@@ -420,7 +378,6 @@ declare module '../chains/chain' {
         conversation_create?: {
             title?: string
             preset?: string
-            model?: string
             chatMode?: string
         }
         conversation_manage?: {
@@ -430,12 +387,10 @@ declare module '../chains/chain' {
             title?: string
         }
         conversation_use?: {
-            model?: string
             preset?: string
             chatMode?: string
         }
         conversation_rule?: {
-            model?: string
             preset?: string
             chatMode?: string
             share?: string

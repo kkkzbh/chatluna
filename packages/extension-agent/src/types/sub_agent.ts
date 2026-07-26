@@ -26,7 +26,6 @@ export interface SubAgentItemConfig {
     authority: number
     source: 'builtin' | 'markdown' | 'preset' | 'manual'
     format: 'chatluna' | 'claude' | 'opencode'
-    model?: string
     maxTurns?: number
     hidden?: boolean
     promptMode: 'markdown' | 'preset'
@@ -71,7 +70,6 @@ export interface SubAgentInfo {
     scope?: 'data' | 'project' | 'user'
     priority: number
     promptContent: string
-    model?: string
     maxTurns?: number
     permissions: SubAgentPermissionConfig
     allowKoishiMessageTransform: boolean
@@ -157,7 +155,6 @@ export interface ManualSubAgentInput {
     characterPrivateIds?: string[]
     authority?: number
     format?: SubAgentInfo['format']
-    model?: string
     maxTurns?: number
     hidden?: boolean
     enabled?: boolean

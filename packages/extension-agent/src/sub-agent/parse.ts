@@ -18,7 +18,6 @@ export interface ParsedAgentFrontmatter {
     characterPrivateIds: string[]
     authority: number
     dedupeTools: boolean
-    model?: string
     maxTurns?: number
     hidden: boolean
     enabled: boolean
@@ -84,6 +83,12 @@ export function parseAgentFrontmatter(
     }
 
     const diagnostics: string[] = []
+    const hasModel = Object.prototype.hasOwnProperty.call(frontmatter, 'model')
+    if (hasModel) {
+        diagnostics.push(
+            'Agent frontmatter model is no longer supported; configure its binding in the model interface'
+        )
+    }
     const permissions: SubAgentPermissionConfig = {
         skills: createRule(undefined, 'inherit'),
         mcp: createRule(undefined, 'inherit'),
@@ -103,7 +108,6 @@ export function parseAgentFrontmatter(
     let characterPrivateIds: string[] = []
     let authority = 0
     const dedupeTools = frontmatter.dedupeTools === true
-    let model: string | undefined
     let maxTurns: number | undefined
     let allowKoishiMessageTransform = false
 
@@ -155,10 +159,6 @@ export function parseAgentFrontmatter(
         }
 
         hidden = frontmatter.hidden === true
-        model =
-            typeof frontmatter.model === 'string'
-                ? frontmatter.model
-                : undefined
         maxTurns =
             typeof frontmatter.maxTurns === 'number'
                 ? frontmatter.maxTurns
@@ -225,11 +225,6 @@ export function parseAgentFrontmatter(
 
         hidden = frontmatter.hidden === true
         enabled = frontmatter.disable === true ? false : enabled
-        model =
-            typeof frontmatter.model === 'string'
-                ? frontmatter.model
-                : undefined
-
         if (
             typeof frontmatter.prompt === 'string' &&
             frontmatter.prompt.trim()
@@ -272,10 +267,6 @@ export function parseAgentFrontmatter(
             typeof frontmatter.authority === 'number'
                 ? frontmatter.authority
                 : 0
-        model =
-            typeof frontmatter.model === 'string'
-                ? frontmatter.model
-                : undefined
         maxTurns =
             typeof frontmatter.maxTurns === 'number'
                 ? frontmatter.maxTurns
@@ -315,7 +306,9 @@ export function parseAgentFrontmatter(
 
     return {
         state:
-            description.length > 0 && promptContent.trim().length > 0
+            description.length > 0 &&
+            promptContent.trim().length > 0 &&
+            !hasModel
                 ? ('ready' as const)
                 : ('invalid' as const),
         value: {
@@ -332,7 +325,6 @@ export function parseAgentFrontmatter(
             characterPrivateIds,
             authority,
             dedupeTools,
-            model,
             maxTurns,
             hidden,
             enabled,

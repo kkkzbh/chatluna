@@ -3,9 +3,20 @@ import { Config, logger, MemoryRetrievalLayerType } from '..'
 import { enhancedMemoryToDocument, isMemoryExpired } from '../utils/memory'
 import { FunctionProvider } from '@chatluna/shared-prompt-renderer'
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
+import type { CompiledPreset } from 'koishi-plugin-chatluna/llm-core/prompt'
 
 export async function apply(ctx: Context, config: Config) {
     const handler: FunctionProvider = async (args, variables, configurable) => {
+        const preset = configurable['contextPreset'] as
+            | CompiledPreset
+            | undefined
+        const longMemory = preset?.definition.blocks.find(
+            (block) => block.type === 'longMemory'
+        )
+        if (longMemory?.type !== 'longMemory' || !longMemory.enabled) {
+            return ''
+        }
+
         const session = configurable.session
 
         const layerTypes = (args.length > 0 ? args : config.enabledLayers)
@@ -21,7 +32,7 @@ export async function apply(ctx: Context, config: Config) {
 
         const layers = await ctx.chatluna_long_memory.initMemoryLayers(
             {
-                presetId: variables['built']?.['preset'] || 'default',
+                presetId: preset.id,
                 userId: session.userId,
                 guildId: session.guildId || session.channelId
             },

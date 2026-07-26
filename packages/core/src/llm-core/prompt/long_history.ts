@@ -1,6 +1,7 @@
 import { BaseMessage } from '@langchain/core/messages'
 import { Document } from '@langchain/core/documents'
 import {
+    appendBlockMessages,
     ChatLunaContextManagerService,
     PromptContextRuntime,
     PromptDocumentCollection,
@@ -37,6 +38,24 @@ export function createLongHistoryMiddleware(): PromptPipelineMiddleware {
     }
 }
 
+export async function measureDocumentCollectionDemand(
+    collection: PromptDocumentCollection,
+    chatHistory: BaseMessage[] | string,
+    tokenCounter: PromptContextRuntime['tokenCounter']
+): Promise<number> {
+    const documents = collection.documents.filter(
+        (document) => document.pageContent.length > 0
+    )
+    if (documents.length === 0) return 0
+
+    const formatted = await renderDocumentCollection(
+        collection,
+        documents,
+        chatHistory
+    )
+    return await countMessageTokens(formatted, tokenCounter)
+}
+
 async function formatLongHistory(
     collection: PromptDocumentCollection,
     chatHistory: BaseMessage[] | string,
@@ -46,6 +65,10 @@ async function formatLongHistory(
 ): Promise<number> {
     const formatDocuments: Document[] = []
     const acceptedEntries: ContextTraceEntry[] = []
+    const baseBlockTokens = runtime.blockUsage.get(collection.blockId) ?? 0
+    const baseUsedTokens = usedTokens
+    let formatted: BaseMessage | undefined
+    let formattedTokens = 0
     let accepting = true
 
     for (const [idx, document] of collection.documents.entries()) {
@@ -62,10 +85,22 @@ async function formatLongHistory(
             continue
         }
         const documentTokens = await runtime.tokenCounter(document.pageContent)
-
+        const candidateDocuments = [...formatDocuments, document]
+        const candidate = await renderDocumentCollection(
+            collection,
+            candidateDocuments,
+            chatHistory
+        )
+        const candidateTokens = await countMessageTokens(
+            candidate,
+            runtime.tokenCounter
+        )
         const accepted =
             accepting &&
-            usedTokens + documentTokens <= runtime.sendTokenLimit - 80
+            baseBlockTokens + candidateTokens <=
+                (runtime.blockBudgets.get(collection.blockId) ?? 0) &&
+            baseUsedTokens + runtime.requiredTailTokens + candidateTokens <=
+                runtime.sendTokenLimit
         const entry = traceDocument(runtime.trace, {
             id: `${collection.source}:${document.id ?? idx}`,
             content: document.pageContent,
@@ -79,53 +114,62 @@ async function formatLongHistory(
             accepting = false
             continue
         }
-        usedTokens += documentTokens
+
         formatDocuments.push(document)
         acceptedEntries.push(entry)
+        formatted = candidate
+        formattedTokens = candidateTokens
     }
 
-    if (formatDocuments.length < 1) {
+    if (formatted == null) {
         return usedTokens
     }
 
-    const documentText = formatDocuments
-        .map(
-            (document) =>
-                `<doc metadata="${JSON.stringify(document.metadata)}" id="${document.id}">${document.pageContent}</doc>`
-        )
-        .join(' ')
-    const formatted = await collection.prompt.format({
-        [collection.promptVariable]: documentText,
-        chat_history: chatHistory
+    usedTokens = baseUsedTokens + formattedTokens
+    runtime.blockUsage.set(
+        collection.blockId,
+        baseBlockTokens + formattedTokens
+    )
+    result.push(formatted)
+    appendBlockMessages(runtime, collection.blockId, [formatted])
+    const renderedEntry = traceMessage(runtime.trace, formatted, {
+        stage: 'long_history',
+        source: {
+            kind: sourceKind(collection.source),
+            name: `${collection.source} rendered context`,
+            path: collection.promptPath
+        },
+        tokenEstimate: formattedTokens,
+        status: 'included'
     })
-
-    if (formatted) {
-        result.push(formatted)
-        const renderedEntry = traceMessage(runtime.trace, formatted, {
-            stage: 'long_history',
-            source: {
-                kind: sourceKind(collection.source),
-                name: `${collection.source} rendered context`,
-                path: collection.promptPath
-            },
-            tokenEstimate: await countMessageTokens(
-                formatted,
-                runtime.tokenCounter
-            ),
-            status: 'included'
-        })
-        for (const entry of acceptedEntries) {
-            entry.parentMessageId = renderedEntry.messageId
-        }
+    for (const entry of acceptedEntries) {
+        entry.parentMessageId = renderedEntry.messageId
     }
 
     return usedTokens
 }
 
+async function renderDocumentCollection(
+    collection: PromptDocumentCollection,
+    documents: Document[],
+    chatHistory: BaseMessage[] | string
+): Promise<BaseMessage> {
+    const documentText = documents
+        .map(
+            (document) =>
+                `<doc metadata="${JSON.stringify(document.metadata)}" id="${document.id}">${document.pageContent}</doc>`
+        )
+        .join(' ')
+    return await collection.prompt.format({
+        [collection.promptVariable]: documentText,
+        chat_history: chatHistory
+    })
+}
+
 function sourceKind(source: PromptDocumentCollection['source']) {
     return source === 'long_memory'
         ? ('long_memory' as const)
-        : source === 'knowledge'
+        : source.startsWith('knowledge.')
           ? ('knowledge' as const)
           : ('document' as const)
 }
@@ -135,7 +179,7 @@ function resolveDocumentSource(
     document: Document,
     index: number
 ) {
-    if (collection.source === 'knowledge') {
+    if (collection.source.startsWith('knowledge.')) {
         const metadata = getPresetKnowledgeMetadata(document)
         if (metadata != null) {
             return {

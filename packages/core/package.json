@@ -37,11 +37,6 @@
             "import": "./lib/context_trace.mjs",
             "require": "./lib/context_trace.cjs"
         },
-        "./migration/preset-v2": {
-            "types": "./lib/migration/preset_v2.d.ts",
-            "import": "./lib/migration/preset_v2.mjs",
-            "require": "./lib/migration/preset_v2.cjs"
-        },
         "./chains": {
             "types": "./lib/chains/index.d.ts",
             "import": "./lib/chains/index.mjs",
@@ -76,6 +71,11 @@
             "types": "./lib/llm-core/platform/api.d.ts",
             "import": "./lib/llm-core/platform/api.mjs",
             "require": "./lib/llm-core/platform/api.cjs"
+        },
+        "./llm-core/platform/binding": {
+            "types": "./lib/llm-core/platform/binding.d.ts",
+            "import": "./lib/llm-core/platform/binding.mjs",
+            "require": "./lib/llm-core/platform/binding.cjs"
         },
         "./llm-core/platform/client": {
             "types": "./lib/llm-core/platform/client.d.ts",

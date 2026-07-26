@@ -26,7 +26,6 @@ export function createSubAgentMarkdown(input: ManualSubAgentInput) {
             characterPrivateIds: input.characterPrivateIds ?? [],
             authority: input.authority ?? 0,
             hidden: input.hidden ?? false,
-            model: input.model,
             maxTurns: input.maxTurns,
             allowKoishiMessageTransform:
                 input.allowKoishiMessageTransform ?? false,

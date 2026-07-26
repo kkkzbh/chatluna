@@ -71,7 +71,6 @@ export function createSubAgentItemConfig(
         authority: input.authority ?? 0,
         source: input.source ?? 'markdown',
         format: input.format ?? 'chatluna',
-        model: input.model,
         maxTurns: input.maxTurns ?? 100,
         hidden: input.hidden ?? false,
         promptMode: input.promptMode ?? 'markdown',

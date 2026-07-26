@@ -1,14 +1,21 @@
 import { BaseMessage } from '@langchain/core/messages'
 import { HumanMessagePromptTemplate } from '@langchain/core/prompts'
-import { ChainValues } from '@langchain/core/utils/types'
 import {
+    appendBlockMessages,
     ChatLunaContextManagerService,
+    claimBlockTokens,
     PromptContextMiddleware,
     PromptContextRuntime
 } from './context_manager'
-import { LoreInsertPosition, MatchedLoreEntry } from './type'
+import {
+    CompiledPreset,
+    ContextAnchor,
+    LoreInsertPosition,
+    MatchedLoreEntry
+} from './type'
 import { logger } from 'koishi-plugin-chatluna/utils/logger'
-import { ContextTraceEntry, traceDocument, traceMessage } from './context_trace'
+import { traceDocument, traceMessage } from './context_trace'
+import { countMessageTokens } from './system_prompts'
 
 // ---------------------------------------------------------------------------
 // lore_books injection middleware
@@ -29,146 +36,183 @@ export function createLoreBooksMiddleware(): PromptContextMiddleware {
             return next()
         }
 
-        const usedTokens = await formatLoreBooks(
-            loreBooks,
-            runtime.usedTokens,
-            runtime.result,
-            runtime.variables,
-            runtime
-        )
-
-        runtime.usedTokens += usedTokens
+        const prepared = runtime.preparedInjections.get(
+            context.injection.id
+        ) as PreparedLoreBooks
+        await applyPreparedLoreBooks(prepared, runtime)
         context.markHandled()
     }
 }
 
-async function formatLoreBooks(
+export interface PreparedLoreBooks {
+    groups: Array<{
+        blockId: string
+        message: BaseMessage
+        tokenCount: number
+        entries: Array<{
+            matched: MatchedLoreEntry
+            tokenCount: number
+        }>
+    }>
+    emptyEntries: MatchedLoreEntry[]
+}
+
+export async function prepareLoreBooks(
     loreBooks: MatchedLoreEntry[],
-    usedTokens: number,
-    result: BaseMessage[],
-    variables: ChainValues,
-    runtime: PromptContextRuntime
-): Promise<number> {
+    runtime: Pick<
+        PromptContextRuntime,
+        | 'preset'
+        | 'tokenCounter'
+        | 'promptRenderService'
+        | 'variables'
+        | 'configurable'
+    >
+): Promise<PreparedLoreBooks> {
     const preset = runtime.preset
-    const tokenCounter = runtime.tokenCounter
-    let acceptedLoreTokens = 0
-
-    let usedToken = await tokenCounter(
-        preset.promptConfig.loreBooksPrompt ?? '{input}'
-    )
-
-    const loreBooksPrompt = HumanMessagePromptTemplate.fromTemplate(
-        preset.promptConfig.loreBooksPrompt ?? '{input}'
-    )
-
-    const accepted = new Map<
-        LoreInsertPosition,
-        { contents: string[]; entries: ContextTraceEntry[] }
-    >()
-    const limit = preset.lore.defaults.tokenLimit ?? 300
-    let accepting = true
+    const grouped = new Map<string, MatchedLoreEntry[]>()
+    const emptyEntries: MatchedLoreEntry[] = []
 
     for (const matchedLore of loreBooks) {
-        const { entry: loreBook, presetEntryIndex } = matchedLore
-        if ((loreBook.content?.length ?? 0) === 0) {
-            traceDocument(runtime.trace, {
-                id: `lore:${presetEntryIndex}`,
-                content: loreBook.content,
-                stage: 'injections',
-                source: {
-                    kind: 'lore',
-                    name: loreBook.keywords.join(', '),
-                    path: `lore.entries.${presetEntryIndex}`
-                },
-                tokenEstimate: 0,
-                status: 'dropped',
-                reason: 'empty'
-            })
+        const { entry: loreBook } = matchedLore
+        const block = preset.loreBlocks.find(
+            (candidate) =>
+                candidate.id === matchedLore.blockId && candidate.enabled
+        )
+        if (block == null) {
             continue
         }
+        if ((loreBook.content?.length ?? 0) === 0) {
+            emptyEntries.push(matchedLore)
+            continue
+        }
+        const entries = grouped.get(block.id) ?? []
+        entries.push(matchedLore)
+        grouped.set(block.id, entries)
+    }
 
-        const loreBookTokens = await tokenCounter(loreBook.content)
-        const canAccept =
-            accepting &&
-            acceptedLoreTokens + loreBookTokens <= limit &&
-            usedTokens + usedToken + loreBookTokens <=
-                runtime.sendTokenLimit - 80
-        const traceEntry = traceDocument(runtime.trace, {
+    const groups = await Promise.all(
+        [...grouped.entries()]
+            .sort(
+                ([left], [right]) =>
+                    preset.definition.blocks.findIndex(
+                        (block) => block.id === left
+                    ) -
+                    preset.definition.blocks.findIndex(
+                        (block) => block.id === right
+                    )
+            )
+            .map(async ([blockId, matched]) => {
+                const block = preset.loreBlocks.find(
+                    (candidate) => candidate.id === blockId
+                )!
+                const loreBooksPrompt =
+                    HumanMessagePromptTemplate.fromTemplate(
+                        block.prompt ?? '{input}'
+                    )
+                const message = await runtime.promptRenderService
+                    .renderMessages(
+                        [
+                            await loreBooksPrompt.format({
+                                input: matched
+                                    .map(({ entry }) => entry.content)
+                                    .join('\n')
+                            })
+                        ],
+                        runtime.variables,
+                        {
+                            configurable: runtime.configurable ?? {}
+                        }
+                    )
+                    .then((value) => value[0])
+                return {
+                    blockId,
+                    message,
+                    tokenCount: await countMessageTokens(
+                        message,
+                        runtime.tokenCounter
+                    ),
+                    entries: await Promise.all(
+                        matched.map(async (entry) => ({
+                            matched: entry,
+                            tokenCount: await runtime.tokenCounter(
+                                entry.entry.content
+                            )
+                        }))
+                    )
+                }
+            })
+    )
+
+    return { groups, emptyEntries }
+}
+
+async function applyPreparedLoreBooks(
+    prepared: PreparedLoreBooks,
+    runtime: PromptContextRuntime
+) {
+    for (const matchedLore of prepared.emptyEntries) {
+        const { entry, presetEntryIndex, blockId } = matchedLore
+        traceDocument(runtime.trace, {
             id: `lore:${presetEntryIndex}`,
-            content: loreBook.content,
+            content: entry.content,
             stage: 'injections',
             source: {
                 kind: 'lore',
-                name: loreBook.keywords.join(', '),
-                path: `lore.entries.${presetEntryIndex}`
+                name: entry.keywords.join(', '),
+                path: `blocks.${blockId}.entries.${presetEntryIndex}`
             },
-            tokenEstimate: loreBookTokens,
-            status: canAccept ? 'included' : 'dropped',
-            reason: canAccept ? undefined : 'lore_budget'
+            tokenEstimate: 0,
+            status: 'dropped',
+            reason: 'empty'
+        })
+    }
+
+    for (const group of prepared.groups) {
+        const accepted = claimBlockTokens(
+            runtime,
+            group.blockId,
+            group.tokenCount
+        )
+        const traceEntries = group.entries.map(({ matched, tokenCount }) => {
+            const { entry, presetEntryIndex } = matched
+            return traceDocument(runtime.trace, {
+                id: `lore:${presetEntryIndex}`,
+                content: entry.content,
+                stage: 'injections',
+                source: {
+                    kind: 'lore',
+                    name: entry.keywords.join(', '),
+                    path: `blocks.${group.blockId}.entries.${presetEntryIndex}`
+                },
+                tokenEstimate: tokenCount,
+                status: accepted ? 'included' : 'dropped',
+                reason: accepted ? undefined : 'lore_budget'
+            })
         })
 
-        if (!canAccept) {
-            accepting = false
+        if (!accepted) {
             logger?.warn(
-                `Lore context exceeds its token budget (${acceptedLoreTokens + loreBookTokens} > ${limit}); remaining lore entries were dropped.`
+                `Lore block ${group.blockId} exceeds its token budget.`
             )
             continue
         }
 
-        const position =
-            loreBook.insertPosition ??
-            preset.lore.defaults.insertPosition ??
-            'afterCharacterDefinitions'
-        const group = accepted.get(position) ?? {
-            contents: [],
-            entries: []
-        }
-        group.contents.push(loreBook.content)
-        group.entries.push(traceEntry)
-        accepted.set(position, group)
-
-        acceptedLoreTokens += loreBookTokens
-        usedToken += loreBookTokens
-    }
-
-    for (const [position, group] of accepted) {
-        const message = await runtime.promptRenderService
-            .renderMessages(
-                [
-                    await loreBooksPrompt.format({
-                        input: group.contents.join('\n')
-                    })
-                ],
-                variables
-            )
-            .then((value) => value[0])
-        const renderedEntry = traceMessage(runtime.trace, message, {
+        runtime.result.push(group.message)
+        appendBlockMessages(runtime, group.blockId, [group.message])
+        const renderedEntry = traceMessage(runtime.trace, group.message, {
             stage: 'injections',
             source: {
                 kind: 'lore',
                 name: 'lore rendered context',
-                path: `lore.${position}`
+                path: `blocks.${group.blockId}`
             },
-            tokenEstimate: await tokenCounter(
-                typeof message.content === 'string'
-                    ? message.content
-                    : JSON.stringify(message.content)
-            ),
+            tokenEstimate: group.tokenCount,
             status: 'included'
         })
-        for (const entry of group.entries) {
+        for (const entry of traceEntries) {
             entry.parentMessageId = renderedEntry.messageId
         }
-
-        const insertPosition = findMessageIndex(
-            result,
-            runtime.systemPrompts,
-            position
-        )
-        result.splice(insertPosition, 0, message)
     }
-
-    return usedToken
 }
 
 /**
@@ -244,3 +288,18 @@ export function registerLoreBooksMiddleware(
 
 // Re-export findMessageIndex for use by other middlewares (e.g. authors_note)
 export { findMessageIndex }
+
+export function resolveAnchorPosition(
+    anchor: ContextAnchor,
+    preset: CompiledPreset
+): LoreInsertPosition | 'inChat' {
+    if (anchor.type === 'role') return anchor.position
+    if (anchor.type === 'chatHistory') return 'inChat'
+    const target = preset.definition.blocks.find(
+        (block) => block.id === anchor.blockId
+    )!
+    if (target.type !== 'role') return 'inChat'
+    return anchor.position === 'before'
+        ? 'beforeCharacterDefinitions'
+        : 'afterCharacterDefinitions'
+}

@@ -132,7 +132,6 @@ async function scanTarget(target: ScanTarget, cfg: AgentConfig['subAgent']) {
                 authority: parsed.value?.authority,
                 source: 'markdown',
                 format: parsed.value?.format ?? target.hint ?? 'chatluna',
-                model: parsed.value?.model,
                 maxTurns: parsed.value?.maxTurns,
                 hidden: parsed.value?.hidden,
                 promptMode: 'markdown',
@@ -190,7 +189,6 @@ async function scanTarget(target: ScanTarget, cfg: AgentConfig['subAgent']) {
                 priority: target.priority,
                 promptContent:
                     parsed.value?.promptContent ?? parsed.promptContent,
-                model: item.model,
                 maxTurns: item.maxTurns,
                 permissions: item.permissions,
                 allowKoishiMessageTransform: item.allowKoishiMessageTransform,

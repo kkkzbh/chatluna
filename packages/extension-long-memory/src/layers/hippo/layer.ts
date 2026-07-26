@@ -1,8 +1,8 @@
 import { VectorStoreRetriever } from '@langchain/core/vectorstores'
 import { Config, logger } from '../..'
 import { ScoreThresholdRetriever } from 'koishi-plugin-chatluna/llm-core/retrievers'
-import { parseRawModelName } from 'koishi-plugin-chatluna/llm-core/utils/count_tokens'
 import { ChatLunaSaveableVectorStore } from 'koishi-plugin-chatluna/llm-core/vectorstores'
+import { emptyEmbeddings } from 'koishi-plugin-chatluna/llm-core/model/in_memory'
 import path from 'path'
 import { Context } from 'koishi'
 import {
@@ -505,11 +505,19 @@ export async function createVectorStoreRetriever(
     config: Config,
     longMemoryId: string
 ): Promise<VectorStoreRetriever<ChatLunaSaveableVectorStore>> {
-    const [platform, model] = parseRawModelName(
-        ctx.chatluna.config.defaultEmbeddings
-    )
-    const embeddingRef = await ctx.chatluna.createEmbeddings(platform, model)
+    const binding = await ctx.chatluna.resolveModelBinding({
+        workload: 'chatluna.defaultEmbedding'
+    })
+    if (binding.mode !== 'dedicated') {
+        throw new Error(
+            `Long memory requires a dedicated chatluna.defaultEmbedding binding, received: ${binding.mode}`
+        )
+    }
+    const embeddingRef = await ctx.chatluna.createEmbeddings(binding.model)
     const embeddingModel = embeddingRef.value
+    if (embeddingModel == null || embeddingModel === emptyEmbeddings) {
+        throw new Error(`Embeddings model not found: ${binding.model}`)
+    }
 
     const vectorStore = await ctx.chatluna.platform.createVectorStore(
         ctx.chatluna.config.defaultVectorStore,

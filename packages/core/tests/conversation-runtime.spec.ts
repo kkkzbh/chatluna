@@ -35,6 +35,17 @@ it('ConversationRuntime chat preserves additional kwargs metadata', async () => 
                 message: new HumanMessage('placeholder')
             })
         }),
+        resolveModelBinding: async ({ workload }: { workload: string }) =>
+            workload === 'main.chat'
+                ? {
+                      mode: 'dedicated',
+                      model: 'platform/model',
+                      revision: 1
+                  }
+                : {
+                      mode: 'disabled',
+                      revision: 1
+                  },
         awaitLoadPlatform: async () => {},
         currentConfig: {
             showThoughtMessage: true
@@ -84,7 +95,9 @@ it('ConversationRuntime chat preserves additional kwargs metadata', async () => 
     }
     runtime.interfaces.set(conversation.id, {
         conversation,
-        chatInterface: chatInterface as never
+        chatInterface: chatInterface as never,
+        embeddings: undefined,
+        bindingRevision: 1
     })
 
     const result = await runtime.chat(
@@ -172,6 +185,17 @@ it('ConversationRuntime clears cached interfaces and dispatches compression', as
                 }
             }
         }),
+        resolveModelBinding: async ({ workload }: { workload: string }) =>
+            workload === 'main.chat'
+                ? {
+                      mode: 'dedicated',
+                      model: 'platform/model',
+                      revision: 1
+                  }
+                : {
+                      mode: 'disabled',
+                      revision: 1
+                  },
         awaitLoadPlatform: async () => {},
         platform: {
             getClient: async () => ({
@@ -198,7 +222,7 @@ it('ConversationRuntime clears cached interfaces and dispatches compression', as
         model: 'platform/model'
     })
 
-    await runtime.ensureChatInterface(conversation)
+    await runtime.ensureChatInterface(conversation, undefined, 1)
     assert.equal(runtime.getCachedConversations().length, 1)
 
     await runtime.clearConversationHistory(conversation)
@@ -210,7 +234,7 @@ it('ConversationRuntime clears cached interfaces and dispatches compression', as
     assert.deepEqual(compressed, [true])
 })
 
-it('ConversationRuntime rebuilds the cached interface when effective chain identity changes', async () => {
+it('ConversationRuntime rebuilds cached interfaces when chain identity or binding revision changes', async () => {
     const created: string[] = []
     const disposed: string[] = []
     const runtime = new ConversationRuntime({
@@ -235,25 +259,43 @@ it('ConversationRuntime rebuilds the cached interface when effective chain ident
         chatMode: 'plugin'
     })
 
-    const first = await runtime.ensureChatInterface(initial)
-    const same = await runtime.ensureChatInterface({
-        ...initial,
-        updatedAt: new Date(initial.updatedAt.getTime() + 1)
-    })
-    const changed = await runtime.ensureChatInterface({
-        ...initial,
-        model: 'platform/model-b',
-        preset: 'catgirl',
-        chatMode: 'chat'
-    })
+    const first = await runtime.ensureChatInterface(initial, undefined, 1)
+    const same = await runtime.ensureChatInterface(
+        {
+            ...initial,
+            updatedAt: new Date(initial.updatedAt.getTime() + 1)
+        },
+        undefined,
+        1
+    )
+    const bindingChanged = await runtime.ensureChatInterface(
+        initial,
+        undefined,
+        2
+    )
+    const changed = await runtime.ensureChatInterface(
+        {
+            ...initial,
+            model: 'platform/model-b',
+            preset: 'catgirl',
+            chatMode: 'chat'
+        },
+        undefined,
+        1
+    )
 
     assert.equal(same, first)
+    assert.notEqual(bindingChanged, first)
     assert.notEqual(changed, first)
     assert.deepEqual(created, [
         'platform/model-a|sakiko|plugin',
+        'platform/model-a|sakiko|plugin',
         'platform/model-b|catgirl|chat'
     ])
-    assert.deepEqual(disposed, ['platform/model-a|sakiko|plugin'])
+    assert.deepEqual(disposed, [
+        'platform/model-a|sakiko|plugin',
+        'platform/model-a|sakiko|plugin'
+    ])
 })
 
 it('ConversationRuntime dispose clears platform-scoped and global state', () => {
@@ -263,7 +305,9 @@ it('ConversationRuntime dispose clears platform-scoped and global state', () => 
 
     runtime.interfaces.set(conversation.id, {
         conversation,
-        chatInterface: {} as never
+        chatInterface: {} as never,
+        embeddings: undefined,
+        bindingRevision: 1
     })
     runtime.registerRequest(
         conversation.id,

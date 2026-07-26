@@ -4,7 +4,8 @@ import { ChatLunaChatPrompt } from 'koishi-plugin-chatluna/llm-core/chain/prompt
 import type { ChatLunaChatModel } from 'koishi-plugin-chatluna/llm-core/platform/model'
 import {
     type CompiledPreset,
-    compilePreset
+    compileContextPreset,
+    compileRolePreset
 } from 'koishi-plugin-chatluna/llm-core/prompt'
 
 export interface ComputePresetOptions {
@@ -20,24 +21,46 @@ export function computePreset(
 ): ComputedRef<CompiledPreset> {
     return computed(() => {
         if (info.promptMode === 'preset' && info.preset) {
-            return ctx.chatluna.preset.getPreset(info.preset).value
+            return ctx.chatluna.preset.getContextPreset(info.preset).value
         }
-        return compilePreset(
+        const role = compileRolePreset(
             {
-                schemaVersion: 2,
+                schemaVersion: 1,
                 id: 'prompt',
                 displayName: info.name,
-                aliases: [],
                 messages:
                     rawText.length === 0
                         ? []
-                        : [{ role: 'system', content: rawText }],
-                inputFormat: null,
-                lore: { defaults: {}, entries: [] },
-                authorsNote: null,
-                knowledge: null,
-                promptConfig: {}
+                        : [{ role: 'system', content: rawText }]
             },
+            { source: 'ephemeral', raw: rawText }
+        )
+        return compileContextPreset(
+            {
+                schemaVersion: 1,
+                id: 'prompt',
+                displayName: info.name,
+                aliases: [],
+                blocks: [
+                    {
+                        id: 'role',
+                        type: 'role',
+                        rolePresetId: 'prompt'
+                    },
+                    {
+                        id: 'input',
+                        type: 'currentInput',
+                        inputFormat: null
+                    },
+                    {
+                        id: 'output',
+                        type: 'modelOutput',
+                        maxOutputTokens: 1024,
+                        postHandler: null
+                    }
+                ]
+            },
+            role,
             { source: 'ephemeral', raw: rawText }
         )
     })

@@ -18,13 +18,24 @@ it('KoishiChatMessageHistory does not persist transient qqbot request metadata',
         { database } as never,
         conversation.id,
         100,
-        { config: { defaultModel: 'test/model', defaultPreset: 'default', defaultChatMode: 'plugin' } } as never
+        {
+            config: {
+                defaultPreset: 'default',
+                defaultChatMode: 'plugin'
+            }
+        } as never
     )
 
     await history.addMessage(
         new HumanMessage({
             content: '[speaker_id=u1 speaker_name="Alice"] hello',
             name: 'Alice',
+            response_metadata: {
+                chatluna_context_trace: 'stale-trace-id',
+                chatluna: {
+                    createdAt: '2026-07-26T00:00:00.000Z'
+                }
+            },
             additional_kwargs: {
                 preset: 'default',
                 raw_content: 'raw',
@@ -66,6 +77,13 @@ it('KoishiChatMessageHistory does not persist transient qqbot request metadata',
         },
         qqbot_attachment_refs: [{ refId: 'att_1', kind: 'image' }]
     })
+
+    assert.exists(row.response_metadata_binary)
+    const responseMetadata = JSON.parse(
+        await gzipDecode(row.response_metadata_binary as ArrayBuffer)
+    )
+    assert.notProperty(responseMetadata, 'chatluna_context_trace')
+    assert.property(responseMetadata, 'chatluna')
 })
 
 it('KoishiChatMessageHistory rejects a missing conversation without creating one', async () => {

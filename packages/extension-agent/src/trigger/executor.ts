@@ -206,12 +206,15 @@ export class ChatLunaAgentTriggerExecutor {
         const preset =
             constraint.fixedPreset ??
             constraint.defaultPreset ??
-            this.ctx.chatluna.preset.getGlobalDefaultPresetId().value
-        const model = this.ctx.chatluna.conversation.pickModel(constraint)
-
-        if (model == null) {
-            throw new Error('No available model found.')
+            this.ctx.chatluna.preset.getGlobalDefaultContextPresetId().value
+        const binding = await this.ctx.chatluna.resolveModelBinding({
+            workload: 'main.chat',
+            session: routed.session
+        })
+        if (binding.mode !== 'dedicated') {
+            throw new Error(`Invalid main.chat mode: ${binding.mode}`)
         }
+        const model = binding.model
 
         const chatMode =
             constraint.fixedChatMode ??
@@ -240,6 +243,18 @@ export class ChatLunaAgentTriggerExecutor {
             binding: null,
             effectiveModel: model,
             effectivePreset: preset,
+            presetResolution: {
+                source:
+                    constraint.fixedPreset != null
+                        ? 'fixed'
+                        : getPresetLane(constraint.bindingKey) != null
+                          ? 'presetLane'
+                          : constraint.defaultPreset != null
+                            ? 'constraintDefault'
+                            : 'globalDefault',
+                presetId: preset,
+                bindingKey: constraint.bindingKey
+            },
             effectiveChatMode: chatMode,
             constraint
         }

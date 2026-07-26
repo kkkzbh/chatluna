@@ -50,7 +50,6 @@ $inner:
       autoPurgeArchiveTimeout: Set how long archived conversations are retained before automatic purge in seconds.
 
     - $desc: Model Configuration
-      defaultEmbeddings: Set default embedding model.
       defaultVectorStore: Set default vector database.
 
     - $desc: Conversation Routing Defaults
@@ -60,9 +59,10 @@ $inner:
               - Shared group conversation
               - Personal conversation per member
       defaultChatMode: Set default chat mode.
-      defaultModel: Set default chat model.
-      bundledPresetDir: Bundled role preset directory.
-      runtimePresetDir: Writable runtime role preset directory.
+      bundledContextPresetDir: Bundled context preset directory.
+      runtimeContextPresetDir: Writable runtime context preset directory.
+      bundledRolePresetDir: Bundled role preset directory.
+      runtimeRolePresetDir: Writable runtime role preset directory.
       archiveDir: Writable persistent conversation archive directory.
 
     - $desc: Miscellaneous

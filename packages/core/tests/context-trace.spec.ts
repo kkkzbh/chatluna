@@ -385,6 +385,21 @@ it('records history, document, and model budget exclusions', async () => {
         result: [],
         usedTokens: 0,
         sendTokenLimit: 85,
+        requiredTailTokens: 0,
+        blockBudgets: new Map([['history', 4]]),
+        blockSegments: new Map(),
+        blockUsage: new Map(),
+        preset: {
+            definition: {
+                blocks: [
+                    {
+                        id: 'history',
+                        type: 'chatHistory',
+                        enabled: true
+                    }
+                ]
+            }
+        },
         tokenCounter: async () => 1,
         trace: historyTrace
     }
@@ -394,25 +409,47 @@ it('records history, document, and model budget exclusions', async () => {
     )
 
     assert.equal(
-        historyTrace.entries.find(
-            (entry) => entry.messageId === oldHuman.id
-        )?.reason,
+        historyTrace.entries.find((entry) => entry.messageId === oldHuman.id)
+            ?.reason,
         'history_budget'
     )
     assert.equal(
-        historyTrace.entries.find(
-            (entry) => entry.messageId === recentHuman.id
-        )?.status,
+        historyTrace.entries.find((entry) => entry.messageId === recentHuman.id)
+            ?.status,
         'included'
     )
+    const oversized = new HumanMessage('oversized')
+    const oversizedTrace = createContextTrace({
+        requestId: 'oversized-history-request'
+    })
+    const oversizedRuntime = {
+        chatHistory: [oversized],
+        result: [],
+        usedTokens: 0,
+        sendTokenLimit: 85,
+        requiredTailTokens: 0,
+        blockBudgets: new Map([['history', 1]]),
+        blockSegments: new Map(),
+        blockUsage: new Map(),
+        preset: historyRuntime.preset,
+        tokenCounter: async () => 10,
+        trace: oversizedTrace
+    }
+    await createChatHistoryMiddleware()(
+        oversizedRuntime as never,
+        async () => undefined
+    )
+    assert.lengthOf(oversizedRuntime.result, 0)
+    assert.equal(oversizedTrace.entries[0]?.reason, 'history_budget')
 
     const documentTrace = createContextTrace({ requestId: 'document-request' })
     const documentRuntime = {
         documentCollections: [
             {
+                blockId: 'long-memory',
                 documents: [
-                new Document({ pageContent: 'first document' }),
-                new Document({ pageContent: 'second document' })
+                    new Document({ pageContent: 'first document' }),
+                    new Document({ pageContent: 'second document' })
                 ],
                 source: 'long_memory',
                 prompt: HumanMessagePromptTemplate.fromTemplate(
@@ -426,6 +463,10 @@ it('records history, document, and model budget exclusions', async () => {
         result: [],
         usedTokens: 0,
         sendTokenLimit: 85,
+        requiredTailTokens: 0,
+        blockBudgets: new Map([['long-memory', 5]]),
+        blockSegments: new Map(),
+        blockUsage: new Map(),
         tokenCounter: async () => 3,
         trace: documentTrace
     }
@@ -437,10 +478,11 @@ it('records history, document, and model budget exclusions', async () => {
     const documentEntries = documentTrace.entries.filter(
         (entry) => entry.role === 'document'
     )
-    assert.equal(documentEntries[0]?.status, 'included')
+    assert.equal(documentEntries[0]?.status, 'dropped')
+    assert.equal(documentEntries[0]?.reason, 'document_budget')
     assert.equal(documentEntries[1]?.reason, 'document_budget')
     applyModelCropTrace(documentTrace, [])
-    assert.equal(documentEntries[0]?.reason, 'model_crop')
+    assert.equal(documentEntries[0]?.reason, 'document_budget')
 
     const first = new HumanMessage('first')
     const final = new HumanMessage('final')
@@ -459,15 +501,13 @@ it('records history, document, and model budget exclusions', async () => {
     applyModelCropTrace(documentTrace, [final])
 
     assert.equal(
-        documentTrace.entries.find(
-            (entry) => entry.messageId === first.id
-        )?.reason,
+        documentTrace.entries.find((entry) => entry.messageId === first.id)
+            ?.reason,
         'model_crop'
     )
     assert.equal(
-        documentTrace.entries.find(
-            (entry) => entry.messageId === final.id
-        )?.finalOrder,
+        documentTrace.entries.find((entry) => entry.messageId === final.id)
+            ?.finalOrder,
         0
     )
 })

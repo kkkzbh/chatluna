@@ -144,10 +144,8 @@ export interface ConstraintRecord {
     routeMode?: RouteMode | null
     routeKey?: string | null
     activePresetLane?: string | null
-    defaultModel?: string | null
     defaultPreset?: string | null
     defaultChatMode?: string | null
-    fixedModel?: string | null
     fixedPreset?: string | null
     fixedChatMode?: string | null
     lockConversation?: boolean | null
@@ -190,10 +188,8 @@ export interface ResolvedConstraint {
     baseKey: string
     constraints: ConstraintRecord[]
     activePresetLane?: string | null
-    defaultModel?: string | null
     defaultPreset?: string | null
     defaultChatMode?: string | null
-    fixedModel?: string | null
     fixedPreset?: string | null
     fixedChatMode?: string | null
     lockConversation: boolean
@@ -209,7 +205,7 @@ export interface ResolvedConversationContext {
     presetLane?: string
     conversation?: ConversationRecord | null
     binding?: BindingRecord | null
-    effectiveModel?: string | null
+    effectiveModel: string
     effectivePreset?: string | null
     presetResolution: PresetResolution
     effectiveChatMode?: string | null
@@ -264,10 +260,9 @@ export class ConstraintDisabledError extends Error {
     }
 }
 
-export type ConstraintFixedField = 'model' | 'preset' | 'chatMode'
+export type ConstraintFixedField = 'preset' | 'chatMode'
 
 const FIXED_FIELD_LABEL: Record<ConstraintFixedField, string> = {
-    model: 'Model',
     preset: 'Preset',
     chatMode: 'Chat mode'
 }

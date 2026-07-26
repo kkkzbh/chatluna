@@ -15,7 +15,7 @@ import { emptyEmbeddings } from 'koishi-plugin-chatluna/llm-core/model/in_memory
 import { logger } from '..'
 import { removeProperty } from '../utils/parse'
 import { ChatLunaToolRunnable } from 'koishi-plugin-chatluna/llm-core/platform/types'
-import { ComputedRef } from 'koishi-plugin-chatluna'
+import { Context } from 'koishi'
 
 export const SEARCH_TOOL_DESCRIPTION =
     'An search engine. Useful for when you need to answer questions about current events. Input should be a raw string of keyword. About Search Keywords, you should cut what you are searching for into several keywords and separate them with spaces. For example, "What is the weather in Beijing today?" would be "Beijing weather today"'
@@ -30,18 +30,14 @@ export class SearchTool extends Tool {
         chunkOverlap: 100
     })
 
-    private llm: ComputedRef<ChatLunaChatModel>
-
     constructor(
+        private ctx: Context,
         private searchManager: SearchManager,
         private browser: BrowserManager,
         private embeddings: Embeddings,
-        llm: ComputedRef<ChatLunaChatModel>,
         private summaryType: SummaryType
     ) {
         super({})
-
-        this.llm = llm
     }
 
     async _call(
@@ -49,7 +45,23 @@ export class SearchTool extends Tool {
         _,
         config: ChatLunaToolRunnable
     ): Promise<string> {
-        const llm = this.llm?.value ?? config.configurable.model
+        const binding = await this.ctx.chatluna.resolveModelBinding({
+            workload: 'search.summary',
+            session: config.configurable.session,
+            requestId: config.configurable.agentContext?.requestId
+        })
+        let llm: ChatLunaChatModel
+        if (binding.mode === 'inheritInvocation') {
+            llm = config.configurable.model
+        } else if (binding.mode === 'dedicated') {
+            const ref = await this.ctx.chatluna.createChatModel(binding.model)
+            if (!ref.value) {
+                throw new Error(`Model not found: ${binding.model}`)
+            }
+            llm = ref.value
+        } else {
+            throw new Error(`Invalid search.summary mode: ${binding.mode}`)
+        }
 
         const docs = await this.fetchSearchResult(query, llm, config)
 
@@ -71,7 +83,12 @@ export class SearchTool extends Tool {
         llm: ChatLunaChatModel,
         runConfig: ChatLunaToolRunnable
     ) {
-        const results = await this.searchManager.search(query)
+        const results = await this.searchManager.search(
+            query,
+            undefined,
+            undefined,
+            llm
+        )
 
         if (this.summaryType === SummaryType.Speed) {
             return results.map((result) => ({

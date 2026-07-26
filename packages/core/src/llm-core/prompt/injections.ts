@@ -1,4 +1,5 @@
 import {
+    appendBlockMessages,
     ChatLunaContextManagerService,
     PromptContextRuntime,
     PromptPipelineMiddleware
@@ -23,14 +24,7 @@ export function createInjectionsMiddleware(
     return async (runtime: PromptContextRuntime, next) => {
         // Pass runtime.result so collectInjections can stamp ids and prune
         // stale anchor-based persistent injections in place.
-        const injections = contextManager.collectInjections({
-            traceId: runtime.trace.traceId,
-            configurable: runtime.configurable,
-            afterUserMessage: runtime.agentScratchpad
-                ? runtime.afterUserMessage
-                : undefined,
-            currentMessages: runtime.result
-        })
+        const injections = runtime.injections
         runtime.trace.onceInjectionLease = injections.onceInjectionLease
 
         // Apply before-scratchpad injections (lore_books, authors_note, etc.)
@@ -38,10 +32,24 @@ export function createInjectionsMiddleware(
             injections.beforeScratchpad,
             runtime
         )
+        await next()
+    }
+}
+
+export function createInputBoundaryMiddleware(
+    contextManager: ChatLunaContextManagerService
+): PromptPipelineMiddleware {
+    return async (runtime: PromptContextRuntime, next) => {
+        runtime.usedTokens += runtime.requiredTailTokens
+        runtime.requiredTailTokens = 0
 
         // Push user input
         if (runtime.input) {
             runtime.result.push(runtime.input)
+            const inputBlock = runtime.preset.definition.blocks.find(
+                (block) => block.type === 'currentInput'
+            )!
+            appendBlockMessages(runtime, inputBlock.id, [runtime.input])
             const entry = runtime.trace.entries.find(
                 (item) => item.messageId === runtime.input?.id
             )
@@ -60,8 +68,13 @@ export function createInjectionsMiddleware(
         // Push agent scratchpad
         const scratchpad = runtime.agentScratchpad
         if (scratchpad) {
+            const scratchBlock = runtime.preset.definition.blocks.find(
+                (block) =>
+                    block.type === 'agentScratchpad' && block.enabled
+            )!
             if (Array.isArray(scratchpad)) {
                 runtime.result.push(...scratchpad)
+                appendBlockMessages(runtime, scratchBlock.id, scratchpad)
                 for (const msg of scratchpad) {
                     const entry = runtime.trace.entries.find(
                         (item) => item.messageId === msg.id
@@ -79,6 +92,7 @@ export function createInjectionsMiddleware(
                 }
             } else {
                 runtime.result.push(scratchpad)
+                appendBlockMessages(runtime, scratchBlock.id, [scratchpad])
                 const entry = runtime.trace.entries.find(
                     (item) => item.messageId === scratchpad.id
                 )
@@ -99,7 +113,7 @@ export function createInjectionsMiddleware(
 
         // Apply after-scratchpad injections (after_user_message, etc.)
         await contextManager.applyInjections(
-            injections.afterScratchpad,
+            runtime.injections.afterScratchpad,
             runtime
         )
 
@@ -119,6 +133,16 @@ export function registerInjectionsMiddleware(
     return contextManager.pipeline(
         'injections',
         createInjectionsMiddleware(contextManager),
+        0
+    )
+}
+
+export function registerInputBoundaryMiddleware(
+    contextManager: ChatLunaContextManagerService
+): () => void {
+    return contextManager.pipeline(
+        'input',
+        createInputBoundaryMiddleware(contextManager),
         0
     )
 }

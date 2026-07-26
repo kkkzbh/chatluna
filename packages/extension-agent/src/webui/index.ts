@@ -2,7 +2,6 @@
 
 import { DataService } from '@koishijs/plugin-console'
 import { Context } from 'koishi'
-import { listModelNames } from 'koishi-plugin-chatluna/utils/schema'
 import { resolve } from 'path'
 import { getSkillsRootPath } from '../config/path'
 import { readConfig } from '../config/read'
@@ -139,11 +138,6 @@ function registerBaseListeners(ctx: Context, agent: AgentRef) {
 
     ctx.console.addListener('chatluna-agent/getStatus', async () =>
         agent().getStatus()
-    )
-
-    ctx.console.addListener(
-        'chatluna-agent/getModelNames',
-        async () => listModelNames(ctx.chatluna.platform).value
     )
 
     ctx.console.addListener(

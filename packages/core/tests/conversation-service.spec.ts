@@ -36,7 +36,6 @@ it('ConversationService resolves routed constraints and preset lanes', async () 
         guildId: 'guild',
         routeMode: 'custom',
         routeKey: 'team-alpha',
-        defaultModel: 'constraint/model',
         fixedPreset: 'fixed-preset',
         allowNew: false,
         allowSwitch: true,
@@ -56,7 +55,6 @@ it('ConversationService resolves routed constraints and preset lanes', async () 
         excludeUsers: null,
         defaultPreset: 'constraint-default-preset',
         defaultChatMode: 'chat-mode-x',
-        fixedModel: null,
         fixedChatMode: 'fixed-chat-mode'
     }
 
@@ -76,7 +74,6 @@ it('ConversationService resolves routed constraints and preset lanes', async () 
     assert.equal(resolved.routeMode, 'custom')
     assert.equal(resolved.baseKey, 'custom:team-alpha')
     assert.equal(resolved.bindingKey, 'custom:team-alpha:preset:helper')
-    assert.equal(resolved.defaultModel, 'constraint/model')
     assert.equal(resolved.defaultPreset, 'helper')
     assert.equal(resolved.fixedPreset, 'fixed-preset')
     assert.equal(resolved.fixedChatMode, 'fixed-chat-mode')
@@ -232,7 +229,7 @@ it('ConversationService defaults resolveConversation mode to context and sets nu
     assert.equal(resolved.conversationId, null)
 })
 
-it('ConversationService skips unavailable models before using config default', async () => {
+it('ConversationService replaces persisted model with the main binding', async () => {
     const conversation = createConversation({
         model: 'missing-platform/old-model'
     })
@@ -246,21 +243,6 @@ it('ConversationService skips unavailable models before using config default', a
                     lastConversationId: null,
                     updatedAt: new Date()
                 }
-            ],
-            chatluna_constraint: [
-                {
-                    id: 1,
-                    name: 'unavailable-models',
-                    enabled: true,
-                    priority: 10,
-                    createdBy: 'admin',
-                    createdAt: new Date(),
-                    updatedAt: new Date(),
-                    users: null,
-                    excludeUsers: null,
-                    fixedModel: 'missing-platform/fixed-model',
-                    defaultModel: 'missing-platform/default-model'
-                } as unknown as TableRow
             ]
         }
     })
@@ -297,10 +279,8 @@ it('ConversationService resolveConversation uses explicit binding key constraint
                     excludeUsers: null,
                     routeMode: null,
                     routeKey: null,
-                    defaultModel: null,
                     defaultPreset: null,
                     defaultChatMode: null,
-                    fixedModel: null,
                     fixedPreset: null,
                     fixedChatMode: null,
                     lockConversation: false,
@@ -327,10 +307,8 @@ it('ConversationService resolveConversation uses explicit binding key constraint
                     excludeUsers: null,
                     routeMode: null,
                     routeKey: null,
-                    defaultModel: null,
                     defaultPreset: null,
                     defaultChatMode: null,
-                    fixedModel: null,
                     fixedPreset: null,
                     fixedChatMode: null,
                     lockConversation: true,
@@ -849,10 +827,8 @@ it('ConversationService resolves active preset lane conversation for untargeted 
                     routeMode: null,
                     routeKey: null,
                     activePresetLane: 'helper',
-                    defaultModel: null,
                     defaultPreset: null,
                     defaultChatMode: null,
-                    fixedModel: null,
                     fixedPreset: null,
                     fixedChatMode: null,
                     lockConversation: false,
@@ -1364,7 +1340,7 @@ it('ConversationService keeps local archived matches ahead of global active matc
     assert.equal(resolved?.id, local.id)
 })
 
-it('ConversationService records compression metadata and use rejects fixed fields', async () => {
+it('ConversationService records compression metadata', async () => {
     const conversation = createConversation()
     const message = createMessage({
         id: 'summary',
@@ -1384,39 +1360,7 @@ it('ConversationService records compression metadata and use rejects fixed field
                     updatedAt: new Date()
                 }
             ],
-            chatluna_message: [message as unknown as TableRow],
-            chatluna_constraint: [
-                {
-                    id: 1,
-                    name: 'managed:discord:bot:guild:guild',
-                    enabled: true,
-                    priority: 1000,
-                    createdBy: 'admin',
-                    createdAt: new Date(),
-                    updatedAt: new Date(),
-                    platform: 'discord',
-                    selfId: 'bot',
-                    guildId: 'guild',
-                    channelId: null,
-                    direct: false,
-                    users: null,
-                    excludeUsers: null,
-                    routeMode: null,
-                    routeKey: null,
-                    defaultModel: null,
-                    defaultPreset: null,
-                    defaultChatMode: null,
-                    fixedModel: 'fixed-model',
-                    fixedPreset: null,
-                    fixedChatMode: null,
-                    lockConversation: false,
-                    allowNew: true,
-                    allowSwitch: true,
-                    allowArchive: true,
-                    allowExport: true,
-                    manageMode: 'anyone'
-                } as unknown as TableRow
-            ]
+            chatluna_message: [message as unknown as TableRow]
         }
     })
 
@@ -1437,12 +1381,6 @@ it('ConversationService records compression metadata and use rejects fixed field
     assert.equal(compression.originalMessageCount, 8)
     assert.equal(compression.remainingMessageCount, 1)
 
-    await expectRejected(
-        service.updateConversationUsage(createSession(), {
-            model: 'other-model'
-        }),
-        /fixed to fixed-model/
-    )
 })
 
 it('ConversationService blocks raw id access outside route without ACL and allows manage ACL', async () => {

@@ -3,8 +3,6 @@ import fs from 'fs/promises'
 import path from 'path'
 import type { Context, Session } from 'koishi'
 import type { PlatformService } from 'koishi-plugin-chatluna/llm-core/platform/service'
-import { ModelType } from 'koishi-plugin-chatluna/llm-core/platform/types'
-import { parseRawModelName } from 'koishi-plugin-chatluna/llm-core/utils/count_tokens'
 import { PresetError, PresetService } from 'koishi-plugin-chatluna/preset'
 import type { Config } from '../config'
 import {
@@ -70,13 +68,11 @@ import {
 } from './types'
 import type { ConversationRuntime } from './conversation_runtime'
 
-const EMPTY_MODEL_NAMES = new Set(['', '无', 'empty'])
-
 function checkPresetId(preset: PresetService, id?: string | null) {
     if (id == null) {
         return
     }
-    if (preset.getPreset(id, false).value == null) {
+    if (preset.getContextPreset(id, false).value == null) {
         throw new PresetError(
             'not_found',
             'load',
@@ -88,14 +84,13 @@ function checkPresetId(preset: PresetService, id?: string | null) {
 }
 
 const FIXED_FIELDS: readonly {
-    key: 'model' | 'preset' | 'chatMode'
+    key: 'preset' | 'chatMode'
     constraintKey: keyof Pick<
         ConstraintRecord,
-        'fixedModel' | 'fixedPreset' | 'fixedChatMode'
+        'fixedPreset' | 'fixedChatMode'
     >
     label: ConstraintFixedField
 }[] = [
-    { key: 'model', constraintKey: 'fixedModel', label: 'model' },
     { key: 'preset', constraintKey: 'fixedPreset', label: 'preset' },
     { key: 'chatMode', constraintKey: 'fixedChatMode', label: 'chatMode' }
 ]
@@ -207,17 +202,13 @@ export class ConversationService {
             bindingKey,
             constraints,
             activePresetLane,
-            defaultModel:
-                firstDefined(constraints, 'defaultModel') ??
-                this.config.defaultModel,
             defaultPreset:
                 lane ??
                 firstDefined(constraints, 'defaultPreset') ??
-                this.preset.getGlobalDefaultPresetId().value,
+                this.preset.getGlobalDefaultContextPresetId().value,
             defaultChatMode:
                 firstDefined(constraints, 'defaultChatMode') ??
                 this.config.defaultChatMode,
-            fixedModel: firstDefined(constraints, 'fixedModel'),
             fixedPreset: firstDefined(constraints, 'fixedPreset'),
             fixedChatMode: firstDefined(constraints, 'fixedChatMode'),
             lockConversation: firstBoolean(
@@ -282,6 +273,7 @@ export class ConversationService {
                 : null
 
         return this.buildContext(
+            session,
             constraint,
             bindingKey,
             binding ?? null,
@@ -337,7 +329,8 @@ export class ConversationService {
                     current.bindingKey
                 ))
             ) {
-                current = this.buildContext(
+                current = await this.buildContext(
+                    session,
                     current.constraint,
                     current.bindingKey,
                     current.binding,
@@ -363,7 +356,8 @@ export class ConversationService {
             const restored = await this.restoreConversation(session, {
                 conversationId: current.conversation.id
             })
-            const refreshed = this.buildContext(
+            const refreshed = await this.buildContext(
+                session,
                 current.constraint,
                 current.bindingKey,
                 current.binding,
@@ -506,19 +500,29 @@ export class ConversationService {
         return finalize(null)
     }
 
-    private buildContext(
+    private async buildContext(
+        session: Session,
         constraint: ResolvedConstraint,
         bindingKey: string,
         binding: BindingRecord | null,
         conversation: ConversationRecord | null
-    ): ResolvedConversationContext {
-        const effectiveModel = this.pickModel(constraint, conversation)
+    ): Promise<ResolvedConversationContext> {
+        const bindingModel = await this.platform.resolveModelBinding({
+            workload: 'main.chat',
+            session,
+            conversation: conversation ?? undefined
+        })
+        if (bindingModel.mode !== 'dedicated') {
+            throw new Error(`Invalid main.chat mode: ${bindingModel.mode}`)
+        }
+        const effectiveModel = bindingModel.model
         const presetLane = getPresetLane(bindingKey)
         const constraintDefaultPreset = firstDefined(
             constraint.constraints,
             'defaultPreset'
         )
-        const globalDefaultPreset = this.preset.getGlobalDefaultPresetId().value
+        const globalDefaultPreset =
+            this.preset.getGlobalDefaultContextPresetId().value
         const effectivePreset =
             constraint.fixedPreset ??
             conversation?.preset ??
@@ -549,9 +553,7 @@ export class ConversationService {
                 ? conversation
                 : {
                       ...conversation,
-                      ...(effectiveModel == null
-                          ? {}
-                          : { model: effectiveModel }),
+                      model: effectiveModel,
                       preset: effectivePreset,
                       chatMode: effectiveChatMode
                   }
@@ -1497,7 +1499,6 @@ export class ConversationService {
     async updateConversationUsage(
         session: Session,
         options: ResolveConversationOptions & {
-            model?: string
             preset?: string
             chatMode?: string
         }
@@ -1540,7 +1541,6 @@ export class ConversationService {
         checkPresetId(this.preset, options.preset)
 
         const updated = await this.touchConversation(conversation.id, {
-            model: options.model,
             preset: options.preset,
             chatMode: options.chatMode
         })
@@ -1675,10 +1675,8 @@ export class ConversationService {
             routeMode: null,
             routeKey: null,
             activePresetLane: null,
-            defaultModel: null,
             defaultPreset: null,
             defaultChatMode: null,
-            fixedModel: null,
             fixedPreset: null,
             fixedChatMode: null,
             lockConversation: null,
@@ -1694,37 +1692,6 @@ export class ConversationService {
 
         await this.ctx.database.upsert('chatluna_constraint', [record])
         return (await this.getManagedConstraint(session)) ?? record
-    }
-
-    pickModel(
-        constraint: ResolvedConstraint,
-        conversation?: ConversationRecord | null
-    ) {
-        const candidates = [
-            constraint.fixedModel,
-            conversation?.model,
-            constraint.defaultModel,
-            this.config.defaultModel
-        ]
-
-        for (const model of candidates) {
-            if (model == null) continue
-            const trimmed = model.trim()
-            if (EMPTY_MODEL_NAMES.has(trimmed)) continue
-
-            const [platform, name] = parseRawModelName(model)
-            if (platform == null || name == null) continue
-
-            const models = this.platform.listPlatformModels(
-                platform,
-                ModelType.llm
-            ).value
-            if (models.length > 0 && models.some((m) => m.name === name)) {
-                return model
-            }
-        }
-
-        return null
     }
 
     private async firstRow(

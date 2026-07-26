@@ -15,7 +15,8 @@ import {
     ChatLunaError,
     ChatLunaErrorCode
 } from 'koishi-plugin-chatluna/utils/error'
-import { Config, logger } from '.'
+import { createLogger } from 'koishi-plugin-chatluna/utils/logger'
+import { Config } from '.'
 import { OpenAIRequester } from './requester'
 import { ChatLunaPlugin } from 'koishi-plugin-chatluna/services/chat'
 import {
@@ -36,6 +37,7 @@ export class OpenAIClient extends PlatformModelEmbeddingsAndRerankerClient {
     platform = 'openai'
 
     private _requester: OpenAIRequester
+    private readonly _logger
 
     constructor(
         ctx: Context,
@@ -44,6 +46,7 @@ export class OpenAIClient extends PlatformModelEmbeddingsAndRerankerClient {
     ) {
         super(ctx, plugin.platformConfigPool)
         this.platform = _config.platform
+        this._logger = createLogger(ctx, `chatluna-${this.platform}-adapter`)
         this._requester = new OpenAIRequester(
             ctx,
             plugin.platformConfigPool,
@@ -158,7 +161,7 @@ export class OpenAIClient extends PlatformModelEmbeddingsAndRerankerClient {
         const info = this._modelInfos[model]
 
         if (info == null) {
-            logger.warn(
+            this._logger.warn(
                 `Model ${model} not found`,
                 JSON.stringify(this._modelInfos)
             )
@@ -171,28 +174,54 @@ export class OpenAIClient extends PlatformModelEmbeddingsAndRerankerClient {
         }
 
         if (info.type === ModelType.llm) {
+            const profile = this._config.additionalModels.find(
+                (item) => item.model === model
+            )
             const modelMaxContextSize = getModelMaxContextSize(info)
             return new ChatLunaChatModel({
                 usageReporter: report,
                 modelInfo: info,
                 requester: this._requester,
-                model,
+                model: profile?.transportModel ?? model,
                 maxTokenLimit: Math.floor(
                     (info.maxTokens || modelMaxContextSize || 128_000) *
                         this._config.maxContextRatio
                 ),
                 modelMaxContextSize,
-                frequencyPenalty: this._config.frequencyPenalty,
-                presencePenalty: this._config.presencePenalty,
-                timeout: this._config.timeout,
-                temperature: this._config.temperature,
+                frequencyPenalty:
+                    profile?.requestDefaults?.frequencyPenalty ??
+                    this._config.frequencyPenalty,
+                presencePenalty:
+                    profile?.requestDefaults?.presencePenalty ??
+                    this._config.presencePenalty,
+                reasoningEffort: profile?.requestDefaults?.reasoningEffort,
+                thinkingMode: profile?.requestDefaults?.thinkingMode,
+                topP: profile?.requestDefaults?.topP,
+                maxTokens: profile?.requestDefaults?.maxTokens,
+                timeout: profile?.timeoutMs ?? this._config.timeout,
+                temperature:
+                    profile?.requestDefaults?.temperature ??
+                    this._config.temperature,
                 maxRetries: this._config.maxRetries,
                 llmType: 'openai',
-                fileHandlingConfig: getOpenAIFileHandlingConfig(model),
+                overrideRequestParams:
+                    profile == null
+                        ? undefined
+                        : {
+                              qqbot_canonical_model: `${this.platform}/${model}`,
+                              qqbot_transport_model: profile.transportModel,
+                              qqbot_request_mode:
+                                  profile.requestMode === 'responses'
+                                      ? 'responses'
+                                      : 'chatCompletions'
+                          },
+                fileHandlingConfig: getOpenAIFileHandlingConfig(
+                    profile?.transportModel ?? model
+                ),
                 isThinkModel:
-                    model.includes('reasoner') ||
-                    model.includes('r1') ||
-                    model.includes('thinking')
+                    (profile?.transportModel ?? model).includes('reasoner') ||
+                    (profile?.transportModel ?? model).includes('r1') ||
+                    (profile?.transportModel ?? model).includes('thinking')
             })
         }
 
@@ -209,7 +238,10 @@ export class OpenAIClient extends PlatformModelEmbeddingsAndRerankerClient {
         return new ChatLunaEmbeddings({
             usageReporter: report,
             client: this._requester,
-            model,
+            model:
+                this._config.additionalModels.find(
+                    (item) => item.model === model
+                )?.transportModel ?? model,
             maxRetries: this._config.maxRetries
         })
     }

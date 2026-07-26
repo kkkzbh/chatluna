@@ -3,7 +3,8 @@ import { Document } from '@langchain/core/documents'
 import {
     BaseMessage,
     HumanMessage,
-    MessageContent
+    MessageContent,
+    SystemMessage
 } from '@langchain/core/messages'
 import {
     BaseChatPromptTemplate,
@@ -12,25 +13,36 @@ import {
 } from '@langchain/core/prompts'
 import { ChainValues, PartialValues } from '@langchain/core/utils/types'
 import {
+    allocateBlockBudgets,
+    assembleContextMessages,
+    AuthorsNote,
     ChatLunaContextManagerService,
     CompiledPreset,
-    createContextTrace,
+    ContextPresetCompileError,
     getLongMemoryQueryTrace,
     PromptContextRuntime,
     PromptDocumentCollection,
+    prepareLoreBooks,
     registerAfterUserMessageMiddleware,
     registerAuthorsNoteMiddleware,
     registerChatHistoryMiddleware,
-    registerContextTrace,
     registerInjectionsMiddleware,
+    registerInputBoundaryMiddleware,
     registerLongHistoryMiddleware,
     registerLoreBooksMiddleware,
     registerReadFilesContextMiddleware,
     registerSystemPromptsMiddleware,
-    releaseContextTrace,
+    measureDocumentCollectionDemand,
+    MatchedLoreEntry,
     traceDocument,
     traceMessage
 } from 'koishi-plugin-chatluna/llm-core/prompt'
+import {
+    createContextTrace,
+    registerContextTrace,
+    releaseContextTrace
+} from 'koishi-plugin-chatluna/context-trace'
+import { countMessageTokens } from '../prompt/system_prompts'
 import { logger } from 'koishi-plugin-chatluna'
 import { SystemPrompts } from 'koishi-plugin-chatluna/llm-core/chain/base'
 import { Logger } from 'koishi'
@@ -46,6 +58,7 @@ import type { PresetResolution } from '../../types'
 import {
     attachPresetKnowledgeDocuments,
     getPresetKnowledgeDocuments,
+    getPresetKnowledgeMetadata,
     hasPresetKnowledgeDocuments,
     PresetKnowledgeError,
     PresetKnowledgeService
@@ -83,6 +96,22 @@ export const DEFAULT_KNOWLEDGE_PROMPT =
     `<knowledge>{knowledge}</knowledge>\n\n` +
     `Use relevant knowledge as supporting material and ignore unrelated ` +
     `material.</system>`
+
+function cloneMessageForModelTrace(
+    message: BaseMessage,
+    traceId: string
+): BaseMessage {
+    const cloned = Object.assign(
+        Object.create(Object.getPrototypeOf(message)),
+        message
+    ) as BaseMessage
+    cloned.additional_kwargs = { ...(message.additional_kwargs ?? {}) }
+    cloned.response_metadata = {
+        ...(message.response_metadata ?? {}),
+        chatluna_context_trace: traceId
+    }
+    return cloned
+}
 
 export class ChatLunaChatPrompt
     extends BaseChatPromptTemplate<ChatLunaChatPromptFormat>
@@ -163,6 +192,7 @@ export class ChatLunaChatPrompt
             registerChatHistoryMiddleware(cm)
             registerLongHistoryMiddleware(cm)
             registerInjectionsMiddleware(cm)
+            registerInputBoundaryMiddleware(cm)
 
             // Injection middlewares (per-name, triggered during 'injections' stage)
             registerLoreBooksMiddleware(cm)
@@ -198,6 +228,10 @@ export class ChatLunaChatPrompt
 
         const preset = this.preset.value
         const runtimeVariables = variables ?? {}
+        const renderConfigurable = {
+            ...(configurable ?? {}),
+            contextPreset: preset
+        }
         const built = runtimeVariables['built'] as
             | {
                   requestId?: string
@@ -209,8 +243,9 @@ export class ChatLunaChatPrompt
             const conversationId =
                 configurable?.conversationId ?? built?.conversationId
             if (
-                preset.knowledge != null &&
-                preset.knowledge.sources.length > 0 &&
+                preset.knowledgeBlocks.some(
+                    (block) => block.enabled && block.sources.length > 0
+                ) &&
                 conversationId == null
             ) {
                 throw new PresetKnowledgeError(
@@ -246,42 +281,62 @@ export class ChatLunaChatPrompt
         const longMemoryPrompt = HumanMessagePromptTemplate.fromTemplate(
             preset.promptConfig.longMemoryPrompt ?? DEFAULT_LONG_MEMORY_PROMPT
         )
-        const documentCollections: PromptDocumentCollection[] = [
-            {
-                documents: longHistory,
-                source: 'long_memory',
-                prompt: longMemoryPrompt,
-                promptVariable: 'long_history',
-                promptPath:
-                    preset.promptConfig.longMemoryPrompt == null
-                        ? 'runtimeDefaults.longMemoryPrompt'
-                        : 'promptConfig.longMemoryPrompt'
-            },
-            {
-                documents: knowledge,
-                source: 'knowledge',
-                prompt: HumanMessagePromptTemplate.fromTemplate(
-                    preset.knowledge?.prompt ?? DEFAULT_KNOWLEDGE_PROMPT
-                ),
-                promptVariable: 'knowledge',
-                promptPath:
-                    preset.knowledge?.prompt == null
-                        ? 'runtimeDefaults.knowledgePrompt'
-                        : 'knowledge.prompt'
-            },
-            ...additionalDocumentCollections.map(
-                (documents, idx): PromptDocumentCollection => ({
-                    documents,
-                    source: `documents.${idx}`,
-                    prompt: longMemoryPrompt,
-                    promptVariable: 'long_history',
-                    promptPath:
-                        preset.promptConfig.longMemoryPrompt == null
-                            ? 'runtimeDefaults.longMemoryPrompt'
-                            : 'promptConfig.longMemoryPrompt'
-                })
-            )
-        ]
+        const documentCollections: PromptDocumentCollection[] =
+            preset.definition.blocks.flatMap((block) => {
+                if (block.type === 'longMemory' && block.enabled) {
+                    return [
+                        {
+                            blockId: block.id,
+                            documents: longHistory,
+                            source: 'long_memory' as const,
+                            prompt: longMemoryPrompt,
+                            promptVariable: 'long_history' as const,
+                            promptPath:
+                                block.prompt == null
+                                    ? ('runtimeDefaults.longMemoryPrompt' as const)
+                                    : ('promptConfig.longMemoryPrompt' as const)
+                        }
+                    ]
+                }
+                if (block.type === 'knowledge' && block.enabled) {
+                    const index = preset.knowledgeBlocks.indexOf(block)
+                    return [
+                        {
+                            blockId: block.id,
+                            documents: knowledge.filter(
+                                (document) =>
+                                    getPresetKnowledgeMetadata(document)
+                                        ?.blockId === block.id
+                            ),
+                            source: `knowledge.${block.id}` as const,
+                            prompt: HumanMessagePromptTemplate.fromTemplate(
+                                block.prompt ?? DEFAULT_KNOWLEDGE_PROMPT
+                            ),
+                            promptVariable: 'knowledge' as const,
+                            promptPath:
+                                block.prompt == null
+                                    ? ('runtimeDefaults.knowledgePrompt' as const)
+                                    : (`knowledgeBlocks.${index}.prompt` as const)
+                        }
+                    ]
+                }
+                if (block.type !== 'requestDocuments' || !block.enabled) {
+                    return []
+                }
+                return additionalDocumentCollections.map(
+                    (documents, idx): PromptDocumentCollection => ({
+                        blockId: block.id,
+                        documents,
+                        source: `documents.${idx}`,
+                        prompt: longMemoryPrompt,
+                        promptVariable: 'long_history',
+                        promptPath:
+                            preset.promptConfig.longMemoryPrompt == null
+                                ? 'runtimeDefaults.longMemoryPrompt'
+                                : 'promptConfig.longMemoryPrompt'
+                    })
+                )
+            })
         const presetMeta = this.preset.value as CompiledPreset & {
             id?: string
             revision?: string
@@ -313,19 +368,228 @@ export class ChatLunaChatPrompt
             : typeof chatHistory === 'string'
               ? [new HumanMessage(chatHistory)]
               : []
+        const scratchCandidate = preset.definition.blocks.find(
+            (block) => block.type === 'agentScratchpad'
+        )
+        const scratchBlock =
+            scratchCandidate?.type === 'agentScratchpad' &&
+            scratchCandidate.enabled
+                ? scratchCandidate
+                : undefined
+        if (scratchBlock == null) {
+            agentScratchpad = undefined
+        }
+        const rendered = await this.promptRenderService.renderCompiledPreset(
+            preset,
+            runtimeVariables,
+            { configurable: renderConfigurable }
+        )
+        const preparedSystemPrompts = [
+            ...(rendered.messages ?? []),
+            ...(instructions == null ? [] : [new SystemMessage(instructions)])
+        ]
+        const roleTokens = (
+            await Promise.all(
+                preparedSystemPrompts.map((message) =>
+                    countMessageTokens(message, this.tokenCounter)
+                )
+            )
+        ).reduce((total, tokens) => total + tokens, 0)
+        const inputTokens = await countMessageTokens(input, this.tokenCounter)
+        const scratchMessages =
+            agentScratchpad == null
+                ? []
+                : Array.isArray(agentScratchpad)
+                  ? agentScratchpad
+                  : [agentScratchpad]
+        const scratchTokens = (
+            await Promise.all(
+                scratchMessages.map((message) =>
+                    countMessageTokens(message, this.tokenCounter)
+                )
+            )
+        ).reduce((total, tokens) => total + tokens, 0)
+        const modelLimit = this.sendTokenLimit ?? 4096
+        const outputBlock = preset.definition.blocks.find(
+            (block) => block.type === 'modelOutput'
+        )!
+        const inputLimit = modelLimit - outputBlock.maxOutputTokens
+        if (inputLimit < 0) {
+            throw new ContextPresetCompileError(
+                'required_block_over_limit',
+                'budget',
+                `Output reservation ${outputBlock.maxOutputTokens} exceeds the model limit ${modelLimit}.`,
+                outputBlock.id,
+                modelLimit
+            )
+        }
+        const roleBlock = preset.definition.blocks.find(
+            (block) => block.type === 'role'
+        )!
+        if (roleTokens > inputLimit) {
+            throw new ContextPresetCompileError(
+                'required_block_over_limit',
+                'budget',
+                `Role prompt requires ${roleTokens} tokens with an input limit of ${inputLimit}.`,
+                roleBlock.id,
+                inputLimit
+            )
+        }
+        const inputBlock = preset.definition.blocks.find(
+            (block) => block.type === 'currentInput'
+        )!
+        if (roleTokens + inputTokens > inputLimit) {
+            throw new ContextPresetCompileError(
+                'required_block_over_limit',
+                'budget',
+                `Current input requires ${inputTokens} tokens after the role prompt.`,
+                inputBlock.id,
+                inputLimit - roleTokens
+            )
+        }
+        if (
+            scratchBlock != null &&
+            scratchBlock.maxTokens != null &&
+            scratchTokens > scratchBlock.maxTokens
+        ) {
+            throw new ContextPresetCompileError(
+                'required_block_over_limit',
+                'budget',
+                `Agent scratchpad requires ${scratchTokens} tokens.`,
+                scratchBlock.id,
+                scratchBlock.maxTokens
+            )
+        }
+        if (roleTokens + inputTokens + scratchTokens > inputLimit) {
+            throw new ContextPresetCompileError(
+                'required_block_over_limit',
+                'budget',
+                `Agent protocol boundary exceeds the remaining input budget.`,
+                scratchBlock?.id ?? inputBlock.id,
+                inputLimit - roleTokens - inputTokens
+            )
+        }
+        const injections = this.contextManager.collectInjections({
+            traceId: trace.traceId,
+            configurable,
+            afterUserMessage: agentScratchpad ? afterUserMessage : undefined,
+            currentMessages: preparedSystemPrompts
+        })
+        const demands = new Map<string, number>()
+        const preparedInjections = new Map<string, unknown>()
+        const historyBlock = preset.definition.blocks.find(
+            (block) => block.type === 'chatHistory' && block.enabled
+        )
+        if (historyBlock != null) {
+            const tokens = await Promise.all(
+                normalizedChatHistory.map((message) =>
+                    countMessageTokens(message, this.tokenCounter)
+                )
+            )
+            demands.set(
+                historyBlock.id,
+                tokens.reduce((total, value) => total + value, 0)
+            )
+        }
+        for (const collection of documentCollections) {
+            const tokens = await measureDocumentCollectionDemand(
+                collection,
+                normalizedChatHistory,
+                this.tokenCounter
+            )
+            demands.set(
+                collection.blockId,
+                (demands.get(collection.blockId) ?? 0) + tokens
+            )
+        }
+        for (const injection of injections.beforeScratchpad) {
+            if (injection.name === 'lore_books') {
+                const prepared = await prepareLoreBooks(
+                    injection.value as MatchedLoreEntry[],
+                    {
+                        preset,
+                        tokenCounter: this.tokenCounter,
+                        promptRenderService: this.promptRenderService,
+                        variables: runtimeVariables,
+                        configurable: renderConfigurable
+                    }
+                )
+                preparedInjections.set(injection.id, prepared)
+                for (const group of prepared.groups) {
+                    demands.set(
+                        group.blockId,
+                        (demands.get(group.blockId) ?? 0) + group.tokenCount
+                    )
+                }
+            }
+            if (injection.name === 'authors_note') {
+                const note = injection.value as AuthorsNote
+                const renderedNote = await this.promptRenderService
+                    .renderTemplate(note.content, runtimeVariables, {
+                        configurable: renderConfigurable
+                    })
+                    .then((value) => value.text)
+                demands.set(
+                    note.blockId,
+                    (demands.get(note.blockId) ?? 0) +
+                        (await countMessageTokens(
+                            new HumanMessage(renderedNote),
+                            this.tokenCounter
+                        ))
+                )
+            }
+        }
+        const { budgets: blockBudgets } = allocateBlockBudgets(
+            preset.definition,
+            demands,
+            inputLimit - roleTokens - inputTokens - scratchTokens
+        )
+        traceMessage(trace, input, {
+            stage: 'input',
+            source: {
+                kind: 'input',
+                name: 'current user input',
+                path: `blocks.${inputBlock.id}`
+            },
+            tokenEstimate: inputTokens,
+            status: 'candidate'
+        })
+        for (const message of scratchMessages) {
+            traceMessage(trace, message, {
+                stage: 'scratchpad',
+                source: {
+                    kind: 'scratchpad',
+                    name: 'agent scratchpad',
+                    path: `blocks.${scratchBlock!.id}`
+                },
+                tokenEstimate: await countMessageTokens(
+                    message,
+                    this.tokenCounter
+                ),
+                status: 'candidate'
+            })
+        }
 
         // Build the runtime that flows through the entire pipeline
         const runtime: PromptContextRuntime = {
             result: [],
             variables: runtimeVariables,
-            configurable,
+            configurable: renderConfigurable,
             usedTokens: 0,
-            sendTokenLimit: this.sendTokenLimit ?? 4096,
+            sendTokenLimit: inputLimit,
+            requiredTailTokens: inputTokens + scratchTokens,
+            blockBudgets,
+            blockUsage: new Map(),
+            preparedSystemPrompts,
+            injections,
             tokenCounter: this.tokenCounter,
             promptRenderService: this.promptRenderService,
             preset,
             trace,
             systemPrompts: [],
+            blockSegments: new Map(),
+            runtimeInjectionSegments: [],
+            preparedInjections,
             input,
             chatHistory: normalizedChatHistory,
             documentCollections,
@@ -341,6 +605,7 @@ export class ChatLunaChatPrompt
 
         try {
             await this.contextManager.runPipeline(runtime)
+            assembleContextMessages(runtime)
 
             for (const [idx, msg] of runtime.result.entries()) {
                 const entry =
@@ -403,14 +668,11 @@ export class ChatLunaChatPrompt
                 )
             }
 
-            for (const message of runtime.result) {
-                message.response_metadata = {
-                    ...message.response_metadata,
-                    chatluna_context_trace: trace.traceId
-                }
-            }
+            const resultWithTrace = runtime.result.map((message) =>
+                cloneMessageForModelTrace(message, trace.traceId)
+            )
             registerContextTrace(trace)
-            return runtime.result
+            return resultWithTrace
         } catch (error) {
             releaseContextTrace(trace)
             throw error

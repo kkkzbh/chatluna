@@ -2,7 +2,6 @@ import { Embeddings } from '@langchain/core/embeddings'
 import { AIMessage } from '@langchain/core/messages'
 import { computed, ComputedRef } from '@vue/reactivity'
 import { logger } from 'koishi-plugin-chatluna'
-import { emptyEmbeddings } from 'koishi-plugin-chatluna/llm-core/model/in_memory'
 import {
     PlatformEmbeddingsClient,
     PlatformModelAndEmbeddingsClient,
@@ -11,7 +10,8 @@ import {
 } from 'koishi-plugin-chatluna/llm-core/platform/client'
 import {
     ChatLunaBaseEmbeddings,
-    ChatLunaChatModel
+    ChatLunaChatModel,
+    emptyEmbeddings
 } from 'koishi-plugin-chatluna/llm-core/platform/model'
 import { PlatformService } from 'koishi-plugin-chatluna/llm-core/platform/service'
 import {

@@ -27,14 +27,6 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             })
         })
 
-    ctx.command('chatluna.embeddings.set <embeddings:string>', {
-        authority: 3
-    }).action(async ({ session }, embeddings) => {
-        await chain.receiveCommand(session, 'set_embeddings', {
-            setEmbeddings: embeddings
-        })
-    })
-
     ctx.command('chatluna.vectorstore.set <vectorStore:string>', {
         authority: 3
     }).action(async ({ session }, vectorStore) => {

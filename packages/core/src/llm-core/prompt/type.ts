@@ -6,9 +6,8 @@ import { z } from 'zod'
 import type { PostHandler } from '../../utils/types'
 
 export const PresetIdSchema = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
-
+export const ContextPresetBlockIdSchema = PresetIdSchema
 export const PresetMessageRoleSchema = z.enum(['system', 'user', 'assistant'])
-
 export const PresetMessagePurposeSchema = z.enum([
     'description',
     'personality',
@@ -23,12 +22,7 @@ const PromptTextSchema = z.string().refine((value) => value.trim().length > 0, {
 })
 
 export const PresetContentBlockSchema = z.discriminatedUnion('type', [
-    z
-        .object({
-            type: z.literal('text'),
-            text: PromptTextSchema
-        })
-        .strict(),
+    z.object({ type: z.literal('text'), text: PromptTextSchema }).strict(),
     z
         .object({
             type: z.literal('image'),
@@ -68,7 +62,7 @@ export const PresetMessageSchema = z
             z.array(PresetContentBlockSchema).min(1)
         ])
     })
-    .strict()
+    .strict() as z.ZodType<PresetMessage>
 
 export const LoreInsertPositionSchema = z.enum([
     'beforeCharacterDefinitions',
@@ -78,22 +72,17 @@ export const LoreInsertPositionSchema = z.enum([
     'beforeExampleMessages',
     'afterExampleMessages'
 ])
-
 export const LoreDefaultsSchema = z
     .object({
         scanDepth: z.number().int().nonnegative().optional(),
-        tokenLimit: z.number().int().positive().optional(),
         recursiveScan: z.boolean().optional(),
-        maxRecursionDepth: z.number().int().nonnegative().optional(),
-        insertPosition: LoreInsertPositionSchema.optional()
+        maxRecursionDepth: z.number().int().nonnegative().optional()
     })
-    .strict()
-
+    .strict() as z.ZodType<LoreDefaults>
 export const LoreEntrySchema = z
     .object({
         keywords: z.array(z.string().trim().min(1)).min(1),
         content: PromptTextSchema,
-        insertPosition: LoreInsertPositionSchema.optional(),
         scanDepth: z.number().int().nonnegative().optional(),
         recursiveScan: z.boolean().optional(),
         maxRecursionDepth: z.number().int().nonnegative().optional(),
@@ -103,39 +92,7 @@ export const LoreEntrySchema = z
         enabled: z.boolean().optional(),
         order: z.number().int().optional()
     })
-    .strict()
-
-export const AuthorsNoteSchema = z
-    .object({
-        content: PromptTextSchema,
-        insertPosition: z
-            .enum(['afterCharacterDefinitions', 'inChat'])
-            .optional(),
-        insertDepth: z.number().int().nonnegative().optional(),
-        insertFrequency: z.number().int().nonnegative().optional()
-    })
-    .strict()
-
-export const KnowledgeConfigSchema = z
-    .object({
-        sources: z.array(z.string().trim().min(1)),
-        prompt: PromptTextSchema.optional()
-    })
-    .strict()
-    .superRefine((config, ctx) => {
-        const sources = new Set<string>()
-        for (const [index, source] of config.sources.entries()) {
-            if (sources.has(source)) {
-                ctx.addIssue({
-                    code: z.ZodIssueCode.custom,
-                    message: `Duplicate knowledge source: ${source}`,
-                    path: ['sources', index]
-                })
-            }
-            sources.add(source)
-        }
-    })
-
+    .strict() as z.ZodType<LoreEntry>
 export const PresetPostHandlerSchema = z
     .object({
         id: z.string().trim().min(1),
@@ -144,60 +101,261 @@ export const PresetPostHandlerSchema = z
         censor: z.boolean().optional(),
         variables: z.record(z.string())
     })
-    .strict()
+    .strict() as z.ZodType<PresetPostHandlerConfig>
+export const ContextAnchorSchema = z.discriminatedUnion('type', [
+    z
+        .object({
+            type: z.literal('role'),
+            position: LoreInsertPositionSchema
+        })
+        .strict(),
+    z
+        .object({
+            type: z.literal('block'),
+            blockId: ContextPresetBlockIdSchema,
+            position: z.enum(['before', 'after'])
+        })
+        .strict(),
+    z
+        .object({
+            type: z.literal('chatHistory'),
+            depth: z.number().int().nonnegative()
+        })
+        .strict()
+]) as z.ZodType<ContextAnchor>
 
-export const PresetPromptConfigSchema = z
+const BudgetSchema = {
+    enabled: z.boolean(),
+    budgetPriority: z.number().int().nonnegative(),
+    maxTokens: z.number().int().positive().nullable()
+}
+
+export const ContextPresetBlockSchema = z.discriminatedUnion('type', [
+    z
+        .object({
+            id: ContextPresetBlockIdSchema,
+            type: z.literal('role'),
+            rolePresetId: PresetIdSchema
+        })
+        .strict(),
+    z
+        .object({
+            id: ContextPresetBlockIdSchema,
+            type: z.literal('chatHistory'),
+            ...BudgetSchema
+        })
+        .strict(),
+    z
+        .object({
+            id: ContextPresetBlockIdSchema,
+            type: z.literal('longMemory'),
+            ...BudgetSchema,
+            prompt: PromptTextSchema.nullable(),
+            extractPrompt: PromptTextSchema.nullable(),
+            newQuestionPrompt: PromptTextSchema.nullable()
+        })
+        .strict(),
+    z
+        .object({
+            id: ContextPresetBlockIdSchema,
+            type: z.literal('requestDocuments'),
+            ...BudgetSchema
+        })
+        .strict(),
+    z
+        .object({
+            id: ContextPresetBlockIdSchema,
+            type: z.literal('lore'),
+            ...BudgetSchema,
+            anchor: ContextAnchorSchema,
+            prompt: PromptTextSchema.nullable(),
+            defaults: LoreDefaultsSchema,
+            entries: z.array(LoreEntrySchema)
+        })
+        .strict(),
+    z
+        .object({
+            id: ContextPresetBlockIdSchema,
+            type: z.literal('authorsNote'),
+            ...BudgetSchema,
+            anchor: ContextAnchorSchema,
+            content: PromptTextSchema,
+            insertFrequency: z.number().int().nonnegative()
+        })
+        .strict(),
+    z
+        .object({
+            id: ContextPresetBlockIdSchema,
+            type: z.literal('knowledge'),
+            ...BudgetSchema,
+            sources: z.array(z.string().trim().min(1)),
+            prompt: PromptTextSchema.nullable()
+        })
+        .strict(),
+    z
+        .object({
+            id: ContextPresetBlockIdSchema,
+            type: z.literal('currentInput'),
+            inputFormat: PromptTextSchema.nullable()
+        })
+        .strict(),
+    z
+        .object({
+            id: ContextPresetBlockIdSchema,
+            type: z.literal('agentScratchpad'),
+            ...BudgetSchema,
+            reActInstruction: PromptTextSchema.nullable()
+        })
+        .strict(),
+    z
+        .object({
+            id: ContextPresetBlockIdSchema,
+            type: z.literal('modelOutput'),
+            maxOutputTokens: z.number().int().positive(),
+            postHandler: PresetPostHandlerSchema.nullable()
+        })
+        .strict()
+]) as z.ZodType<ContextPresetBlock>
+
+export const RolePresetDefinitionV1Schema = z
     .object({
-        maxOutputToken: z.number().int().positive().optional(),
-        longMemoryPrompt: PromptTextSchema.optional(),
-        loreBooksPrompt: PromptTextSchema.optional(),
-        longMemoryExtractPrompt: PromptTextSchema.optional(),
-        longMemoryNewQuestionPrompt: PromptTextSchema.optional(),
-        postHandler: PresetPostHandlerSchema.optional(),
-        reActInstruction: PromptTextSchema.optional()
+        schemaVersion: z.literal(1),
+        id: PresetIdSchema,
+        displayName: z.string().trim().min(1),
+        messages: z.array(PresetMessageSchema)
     })
-    .strict()
+    .strict() as z.ZodType<RolePresetDefinitionV1>
 
-export const PresetDefinitionV2Schema = z
+export const ContextPresetDefinitionV1Schema = z
     .object({
-        schemaVersion: z.literal(2),
+        schemaVersion: z.literal(1),
         id: PresetIdSchema,
         displayName: z.string().trim().min(1),
         aliases: z.array(z.string().trim().min(1)),
-        messages: z.array(PresetMessageSchema),
-        inputFormat: PromptTextSchema.nullable(),
-        lore: z
-            .object({
-                defaults: LoreDefaultsSchema,
-                entries: z.array(LoreEntrySchema)
-            })
-            .strict(),
-        authorsNote: AuthorsNoteSchema.nullable(),
-        knowledge: KnowledgeConfigSchema.nullable(),
-        promptConfig: PresetPromptConfigSchema
+        blocks: z.array(ContextPresetBlockSchema).min(3)
     })
     .strict()
     .superRefine((preset, ctx) => {
         const aliases = new Set<string>()
-        for (const alias of preset.aliases) {
+        for (const [index, alias] of preset.aliases.entries()) {
             const key = alias.toLowerCase()
-            if (key === preset.id) {
+            if (key === preset.id || aliases.has(key)) {
                 ctx.addIssue({
                     code: z.ZodIssueCode.custom,
-                    message: 'Preset aliases must not repeat the canonical id.',
-                    path: ['aliases']
-                })
-            }
-            if (aliases.has(key)) {
-                ctx.addIssue({
-                    code: z.ZodIssueCode.custom,
-                    message: `Duplicate preset alias: ${alias}`,
-                    path: ['aliases']
+                    message: `Duplicate context preset identity: ${alias}`,
+                    path: ['aliases', index]
                 })
             }
             aliases.add(key)
         }
-    }) as z.ZodType<PresetDefinitionV2>
+        const ids = new Set<string>()
+        for (const [index, block] of preset.blocks.entries()) {
+            if (ids.has(block.id)) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: `Duplicate context block id: ${block.id}`,
+                    path: ['blocks', index, 'id']
+                })
+            }
+            ids.add(block.id)
+            if (block.type === 'knowledge') {
+                const sources = new Set<string>()
+                for (const [sourceIndex, source] of block.sources.entries()) {
+                    if (sources.has(source)) {
+                        ctx.addIssue({
+                            code: z.ZodIssueCode.custom,
+                            message: `Duplicate knowledge source: ${source}`,
+                            path: ['blocks', index, 'sources', sourceIndex]
+                        })
+                    }
+                    sources.add(source)
+                }
+            }
+        }
+        for (const type of ['role', 'currentInput', 'modelOutput'] as const) {
+            if (
+                preset.blocks.filter((block) => block.type === type).length !==
+                1
+            ) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: `Context preset requires exactly one ${type} block.`,
+                    path: ['blocks']
+                })
+            }
+        }
+        for (const type of [
+            'chatHistory',
+            'longMemory',
+            'requestDocuments',
+            'agentScratchpad'
+        ] as const) {
+            if (
+                preset.blocks.filter((block) => block.type === type).length > 1
+            ) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: `Context preset allows at most one ${type} block.`,
+                    path: ['blocks']
+                })
+            }
+        }
+        if (preset.blocks[0]?.type !== 'role') {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: 'The role block must be first.',
+                path: ['blocks', 0]
+            })
+        }
+        const output = preset.blocks.length - 1
+        if (preset.blocks[output]?.type !== 'modelOutput') {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: 'The modelOutput block must be last.',
+                path: ['blocks', output]
+            })
+        }
+        const scratch = preset.blocks.findIndex(
+            (block) => block.type === 'agentScratchpad'
+        )
+        const input = preset.blocks.findIndex(
+            (block) => block.type === 'currentInput'
+        )
+        if (input !== (scratch < 0 ? output - 1 : output - 2)) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message:
+                    'The currentInput block must immediately precede the agent/output boundary.',
+                path: ['blocks', input]
+            })
+        }
+        if (scratch >= 0 && scratch !== output - 1) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message:
+                    'The agentScratchpad block must immediately precede modelOutput.',
+                path: ['blocks', scratch]
+            })
+        }
+        for (const [index, block] of preset.blocks.entries()) {
+            if (
+                (block.type !== 'lore' && block.type !== 'authorsNote') ||
+                block.anchor.type !== 'block'
+            ) {
+                continue
+            }
+            if (
+                !ids.has(block.anchor.blockId) ||
+                block.anchor.blockId === block.id
+            ) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: `Invalid anchor target: ${block.anchor.blockId}`,
+                    path: ['blocks', index, 'anchor', 'blockId']
+                })
+            }
+        }
+    }) as z.ZodType<ContextPresetDefinitionV1>
 
 export type PresetMessageRole = 'system' | 'user' | 'assistant'
 export type PresetMessagePurpose =
@@ -207,26 +365,19 @@ export type PresetMessagePurpose =
     | 'firstMessage'
     | 'exampleStart'
     | 'exampleEnd'
-
 export type PresetContentBlock =
     | { type: 'text'; text: string }
-    | {
-          type: 'image'
-          url: string
-          detail?: 'auto' | 'low' | 'high'
-      }
+    | { type: 'image'; url: string; detail?: 'auto' | 'low' | 'high' }
     | {
           type: 'file' | 'audio' | 'video'
           url: string
           mimeType?: string
       }
-
 export interface PresetMessage {
     role: PresetMessageRole
     purpose?: PresetMessagePurpose
     content: string | PresetContentBlock[]
 }
-
 export type LoreInsertPosition =
     | 'beforeCharacterDefinitions'
     | 'afterCharacterDefinitions'
@@ -234,19 +385,14 @@ export type LoreInsertPosition =
     | 'afterScenario'
     | 'beforeExampleMessages'
     | 'afterExampleMessages'
-
 export interface LoreDefaults {
     scanDepth?: number
-    tokenLimit?: number
     recursiveScan?: boolean
     maxRecursionDepth?: number
-    insertPosition?: LoreInsertPosition
 }
-
 export interface LoreEntry {
     keywords: string[]
     content: string
-    insertPosition?: LoreInsertPosition
     scanDepth?: number
     recursiveScan?: boolean
     maxRecursionDepth?: number
@@ -256,24 +402,68 @@ export interface LoreEntry {
     enabled?: boolean
     order?: number
 }
-
-export interface MatchedLoreEntry {
-    entry: LoreEntry
-    presetEntryIndex: number
+export type ContextAnchor =
+    | { type: 'role'; position: LoreInsertPosition }
+    | { type: 'block'; blockId: string; position: 'before' | 'after' }
+    | { type: 'chatHistory'; depth: number }
+export interface ContextBudgetBlock {
+    id: string
+    enabled: boolean
+    budgetPriority: number
+    maxTokens: number | null
 }
-
-export interface AuthorsNote {
-    content: string
-    insertPosition?: 'afterCharacterDefinitions' | 'inChat'
-    insertDepth?: number
-    insertFrequency?: number
+export type ContextPresetBlock =
+    | { id: string; type: 'role'; rolePresetId: string }
+    | (ContextBudgetBlock & { type: 'chatHistory' })
+    | (ContextBudgetBlock & {
+          type: 'longMemory'
+          prompt: string | null
+          extractPrompt: string | null
+          newQuestionPrompt: string | null
+      })
+    | (ContextBudgetBlock & { type: 'requestDocuments' })
+    | (ContextBudgetBlock & {
+          type: 'lore'
+          anchor: ContextAnchor
+          prompt: string | null
+          defaults: LoreDefaults
+          entries: LoreEntry[]
+      })
+    | (ContextBudgetBlock & {
+          type: 'authorsNote'
+          anchor: ContextAnchor
+          content: string
+          insertFrequency: number
+      })
+    | (ContextBudgetBlock & {
+          type: 'knowledge'
+          sources: string[]
+          prompt: string | null
+      })
+    | { id: string; type: 'currentInput'; inputFormat: string | null }
+    | (ContextBudgetBlock & {
+          type: 'agentScratchpad'
+          reActInstruction: string | null
+      })
+    | {
+          id: string
+          type: 'modelOutput'
+          maxOutputTokens: number
+          postHandler: PresetPostHandlerConfig | null
+      }
+export interface RolePresetDefinitionV1 {
+    schemaVersion: 1
+    id: string
+    displayName: string
+    messages: PresetMessage[]
 }
-
-export interface KnowledgeConfig {
-    sources: string[]
-    prompt?: string
+export interface ContextPresetDefinitionV1 {
+    schemaVersion: 1
+    id: string
+    displayName: string
+    aliases: string[]
+    blocks: ContextPresetBlock[]
 }
-
 export interface PresetPostHandlerConfig {
     id: string
     prefix: string
@@ -282,56 +472,63 @@ export interface PresetPostHandlerConfig {
     variables: Record<string, string>
 }
 
-export interface PresetPromptConfig {
-    maxOutputToken?: number
-    longMemoryPrompt?: string
-    loreBooksPrompt?: string
-    longMemoryExtractPrompt?: string
-    longMemoryNewQuestionPrompt?: string
-    postHandler?: PresetPostHandlerConfig
-    reActInstruction?: string
+export interface MatchedLoreEntry {
+    entry: LoreEntry
+    presetEntryIndex: number
+    blockId: string
 }
-
-export interface PresetDefinitionV2 {
-    schemaVersion: 2
+export interface AuthorsNote {
+    blockId: string
+    content: string
+    anchor: ContextAnchor
+    maxTokens: number | null
+}
+export interface PresetKnowledgeMetadata {
+    blockId: string
+}
+export type PresetSource = 'bundled' | 'runtime' | 'ephemeral'
+export interface CompiledRolePreset {
     id: string
     displayName: string
-    aliases: string[]
-    messages: PresetMessage[]
-    inputFormat: string | null
-    lore: {
-        defaults: LoreDefaults
-        entries: LoreEntry[]
-    }
-    authorsNote: AuthorsNote | null
-    knowledge: KnowledgeConfig | null
-    promptConfig: PresetPromptConfig
+    definition: RolePresetDefinitionV1
+    messages: BaseMessage[]
+    source: PresetSource
+    revision: string
+    path?: string
 }
-
-export type PresetSource = 'bundled' | 'runtime' | 'ephemeral'
-
+export type CompiledLoreBlock = Extract<ContextPresetBlock, { type: 'lore' }>
+export type CompiledAuthorsNoteBlock = Extract<
+    ContextPresetBlock,
+    { type: 'authorsNote' }
+>
+export type CompiledKnowledgeBlock = Extract<
+    ContextPresetBlock,
+    { type: 'knowledge' }
+>
 export interface CompiledPreset {
     id: string
     displayName: string
     aliases: string[]
-    definition: PresetDefinitionV2
+    definition: ContextPresetDefinitionV1
+    role: CompiledRolePreset
     messages: BaseMessage[]
     inputFormat: string | null
-    lore: {
-        defaults: LoreDefaults
-        entries: LoreEntry[]
-    }
-    authorsNote: AuthorsNote | null
-    knowledge: KnowledgeConfig | null
-    promptConfig: Omit<PresetPromptConfig, 'postHandler'> & {
+    loreBlocks: CompiledLoreBlock[]
+    authorsNoteBlocks: CompiledAuthorsNoteBlock[]
+    knowledgeBlocks: CompiledKnowledgeBlock[]
+    promptConfig: {
+        maxOutputToken: number
+        longMemoryPrompt?: string
+        longMemoryExtractPrompt?: string
+        longMemoryNewQuestionPrompt?: string
+        reActInstruction?: string
         postHandler?: PostHandler
     }
     source: PresetSource
     revision: string
     path?: string
 }
-
-export interface PresetSummary {
+export interface ContextPresetSummary {
     id: string
     displayName: string
     aliases: string[]
@@ -340,10 +537,59 @@ export interface PresetSummary {
     revision: string
     isGlobalDefault: boolean
 }
-
+export interface RolePresetSummary {
+    id: string
+    displayName: string
+    source: Exclude<PresetSource, 'ephemeral'>
+    hasOverride: boolean
+    revision: string
+    referenceCount: number
+}
+export type RuntimeContextBlockType = 'qqbotFragments' | 'toolDefinitions'
+export interface ResolvedContextBlock {
+    id: string
+    type: ContextPresetBlock['type'] | RuntimeContextBlockType
+    source: 'stored' | 'runtime'
+    owner: 'context' | 'role' | 'runtime'
+    locked: boolean
+    movable: boolean
+    enabled: boolean
+    staticTokens: number | null
+    budget: { priority: number; maxTokens: number | null } | null
+    legalDropRange: { minIndex: number; maxIndex: number } | null
+}
+export interface ContextPresetPreview {
+    blocks: ResolvedContextBlock[]
+    inputBudgetTokens: number | null
+    outputBudgetTokens: number
+}
+export type ContextPresetCompileStage =
+    | 'schema'
+    | 'role'
+    | 'anchor'
+    | 'budget'
+    | 'structure'
+    | 'post_handler'
+export class ContextPresetCompileError extends Error {
+    constructor(
+        public readonly code:
+            | 'invalid_schema'
+            | 'missing_role'
+            | 'invalid_anchor'
+            | 'required_block_over_limit'
+            | 'unregistered_post_handler',
+        public readonly stage: ContextPresetCompileStage,
+        message: string,
+        public readonly blockId?: string,
+        public readonly limit?: number,
+        options?: ErrorOptions
+    ) {
+        super(message, options)
+        this.name = 'ContextPresetCompileError'
+    }
+}
 export type PresetPostHandlerRegistry = ReadonlyMap<
     string,
     PostHandler['handler']
 >
-
 export type CompiledMessageContent = string | MessageContentComplex[]

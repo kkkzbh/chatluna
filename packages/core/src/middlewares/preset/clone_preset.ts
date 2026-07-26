@@ -15,8 +15,8 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
 
             const presetService = ctx.chatluna.preset
 
-            const oldPreset = presetService.findPresetInput(name)
-            const newPreset = presetService.getPreset(newName, false)
+            const oldPreset = presetService.findContextPresetInput(name)
+            const newPreset = presetService.getContextPreset(newName, false)
 
             if (newPreset.value != null) {
                 await context.send(session.text('.conflict'))
@@ -42,8 +42,8 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 return ChainMiddlewareRunStatus.STOP
             }
 
-            await presetService.createPreset({
-                ...presetService.getDefinition(oldPreset.value.id),
+            await presetService.createContextPreset({
+                ...presetService.getContextPresetDefinition(oldPreset.value.id),
                 id: newName,
                 displayName: newName,
                 aliases: []

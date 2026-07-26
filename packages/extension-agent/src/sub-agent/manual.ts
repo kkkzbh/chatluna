@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto'
 import { Context } from 'koishi'
 import { createSubAgentItemConfig } from '../config/defaults'
 import { ManualSubAgentInput, SubAgentInfo } from '../types'
+import { assertManualAgentId } from '../utils/id'
 
 export function createManualAgent(
     ctx: Context,
@@ -25,7 +26,6 @@ export function createManualAgent(
         authority: input.authority,
         source: 'manual',
         format: input.format ?? 'chatluna',
-        model: input.model,
         maxTurns: input.maxTurns,
         hidden: input.hidden,
         promptMode: input.promptMode ?? (input.preset ? 'preset' : 'markdown'),
@@ -34,8 +34,11 @@ export function createManualAgent(
         permissions: input.permissions
     })
 
+    const id = input.id ?? `manual:${randomUUID()}`
+    assertManualAgentId(id)
+
     const base: SubAgentInfo = {
-        id: input.id?.trim() || `manual:${randomUUID()}`,
+        id,
         name: item.name,
         description: item.description,
         dedupeTools: item.dedupeTools,
@@ -55,7 +58,6 @@ export function createManualAgent(
         hidden: item.hidden ?? false,
         priority: input.priority ?? -10,
         promptContent: '',
-        model: item.model,
         maxTurns: item.maxTurns,
         permissions: item.permissions,
         allowKoishiMessageTransform: item.allowKoishiMessageTransform,
@@ -66,7 +68,7 @@ export function createManualAgent(
 
     if (item.promptMode === 'preset') {
         const preset = item.preset
-            ? ctx.chatluna.preset.getPreset(item.preset).value
+            ? ctx.chatluna.preset.getContextPreset(item.preset).value
             : undefined
 
         if (!preset) {

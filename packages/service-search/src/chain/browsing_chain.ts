@@ -37,7 +37,7 @@ import {
 } from 'koishi-plugin-chatluna/utils/error'
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
 import type { ChatLunaService } from 'koishi-plugin-chatluna/services/chat'
-import { ComputedRef, Ref } from 'koishi-plugin-chatluna'
+import { ComputedRef } from 'koishi-plugin-chatluna'
 import { BrowserManager } from '../tools/browser/manager'
 
 // github.com/langchain-ai/weblangchain/blob/main/nextjs/app/api/chat/stream_log/route.ts#L81
@@ -55,7 +55,7 @@ export interface ChatLunaBrowsingChainInput {
 
     thoughtMessage: boolean
 
-    summaryModel: Ref<ChatLunaChatModel>
+    chatluna: ChatLunaService
 
     searchPrompt: string
     newQuestionPrompt: string
@@ -80,10 +80,6 @@ export class ChatLunaBrowsingChain
 
     preset: ComputedRef<CompiledPreset>
 
-    formatQuestionChain: ChatLunaLLMChain
-
-    contextualCompressionChain?: ChatLunaLLMChain
-
     tools: ComputedRef<ChatLunaToolWrapper[]>
 
     newQuestionPrompt: string
@@ -91,8 +87,6 @@ export class ChatLunaBrowsingChain
     responsePrompt: PromptTemplate
 
     summaryType: SummaryType
-
-    summaryModel: Ref<ChatLunaChatModel>
 
     contextualCompressionPrompt?: string
 
@@ -108,6 +102,8 @@ export class ChatLunaBrowsingChain
 
     browserManager: BrowserManager
 
+    chatluna: ChatLunaService
+
     private _toolMask?: ToolMask
 
     constructor({
@@ -117,7 +113,6 @@ export class ChatLunaBrowsingChain
         chain,
         searchFailedPrompt,
         tools,
-        formatQuestionChain,
         summaryType,
         thoughtMessage,
         searchPrompt,
@@ -125,16 +120,13 @@ export class ChatLunaBrowsingChain
         newQuestionPrompt,
         variableService,
         knowledgeService,
+        chatluna,
         browserManager,
-        summaryModel,
-        contextualCompressionPrompt,
-        contextualCompressionChain
+        contextualCompressionPrompt
     }: ChatLunaBrowsingChainInput & {
         chain: ChatLunaLLMChain
-        formatQuestionChain: ChatLunaLLMChain
         tools: ComputedRef<ChatLunaToolWrapper[]>
         searchPrompt: string
-        contextualCompressionChain?: ChatLunaLLMChain
     }) {
         super()
         this.botName = botName
@@ -143,8 +135,6 @@ export class ChatLunaBrowsingChain
         this.embeddings = embeddings
         this.summaryType = summaryType
 
-        this.formatQuestionChain = formatQuestionChain
-
         this.historyMemory = historyMemory
         this.thoughtMessage = thoughtMessage
         this.searchFailedPrompt = searchFailedPrompt
@@ -152,15 +142,13 @@ export class ChatLunaBrowsingChain
         this.variableService = variableService
         this.knowledgeService = knowledgeService
         this.browserManager = browserManager
+        this.chatluna = chatluna
         this.searchPrompt = searchPrompt
         this.contextualCompressionPrompt = contextualCompressionPrompt
 
         this.responsePrompt = PromptTemplate.fromTemplate(searchPrompt)
         this.chain = chain
         this.tools = tools
-
-        this.contextualCompressionChain = contextualCompressionChain
-        this.summaryModel = summaryModel
     }
 
     static fromLLMAndTools(
@@ -169,7 +157,6 @@ export class ChatLunaBrowsingChain
         {
             botName,
             embeddings,
-            summaryModel,
             historyMemory,
             preset,
             thoughtMessage,
@@ -179,6 +166,7 @@ export class ChatLunaBrowsingChain
             searchFailedPrompt,
             variableService,
             knowledgeService,
+            chatluna,
             contextManager,
             browserManager,
             contextualCompressionPrompt
@@ -198,28 +186,13 @@ export class ChatLunaBrowsingChain
         })
 
         const chain = new ChatLunaLLMChain({ llm, prompt })
-        const formatQuestionChain = new ChatLunaLLMChain({
-            llm: summaryModel.value ?? llm,
-            prompt: PromptTemplate.fromTemplate(newQuestionPrompt)
-        })
-
-        const contextualCompressionChain = contextualCompressionPrompt
-            ? new ChatLunaLLMChain({
-                  llm: summaryModel.value ?? llm,
-                  prompt: PromptTemplate.fromTemplate(
-                      contextualCompressionPrompt
-                  )
-              })
-            : undefined
-
         return new ChatLunaBrowsingChain({
             variableService,
             knowledgeService,
+            chatluna,
             browserManager,
             botName,
-            formatQuestionChain,
             embeddings,
-            summaryModel,
             historyMemory,
             preset,
             thoughtMessage,
@@ -229,8 +202,7 @@ export class ChatLunaBrowsingChain
             chain,
             tools,
             summaryType,
-            contextualCompressionPrompt,
-            contextualCompressionChain
+            contextualCompressionPrompt
         })
     }
 
@@ -259,7 +231,8 @@ export class ChatLunaBrowsingChain
         variables,
         maxToken,
         signal,
-        toolMask
+        toolMask,
+        requestId
     }: ChatLunaLLMCallArg): Promise<ChainValues> {
         this._toolMask = toolMask
         const requests: ChainValues = {
@@ -281,9 +254,30 @@ export class ChatLunaBrowsingChain
 
         // recreate questions
 
+        const binding = await this.chatluna.resolveModelBinding({
+            workload: 'search.summary',
+            session,
+            requestId
+        })
+        let summaryModel: ChatLunaChatModel
+        if (binding.mode === 'inheritInvocation') {
+            summaryModel = this.model
+        } else if (binding.mode === 'dedicated') {
+            const ref = await this.chatluna.createChatModel(binding.model)
+            if (!ref.value) {
+                throw new Error(`Model not found: ${binding.model}`)
+            }
+            summaryModel = ref.value
+        } else {
+            throw new Error(`Invalid search.summary mode: ${binding.mode}`)
+        }
+
         const newQuestion = (
             await callChatLunaChain(
-                this.formatQuestionChain,
+                new ChatLunaLLMChain({
+                    llm: summaryModel,
+                    prompt: PromptTemplate.fromTemplate(this.newQuestionPrompt)
+                }),
                 {
                     chat_history: formatChatHistoryAsString(
                         chatHistory.slice(-6)
@@ -313,6 +307,7 @@ export class ChatLunaBrowsingChain
                 session,
                 events,
                 conversationId,
+                summaryModel,
                 signal
             )
         }
@@ -359,6 +354,7 @@ export class ChatLunaBrowsingChain
         session: Session,
         events: ChatLunaLLMCallArg['events'],
         conversationId: string,
+        summaryModel: ChatLunaChatModel,
         signal: AbortSignal
     ) {
         if (!Array.isArray(action.content)) {
@@ -395,6 +391,7 @@ export class ChatLunaBrowsingChain
             chatHistory,
             results,
             events,
+            summaryModel,
             signal
         )
     }
@@ -484,6 +481,7 @@ export class ChatLunaBrowsingChain
         chatHistory: BaseMessage[],
         results: SearchResultLike[],
         events: ChatLunaLLMCallArg['events'],
+        summaryModel: ChatLunaChatModel,
         signal: AbortSignal
     ) {
         let context = formatSearchResults(results)
@@ -502,11 +500,16 @@ export class ChatLunaBrowsingChain
             return ''
         }
 
-        if (this.contextualCompressionChain) {
+        if (this.contextualCompressionPrompt) {
             try {
                 context = (
                     await callChatLunaChain(
-                        this.contextualCompressionChain,
+                        new ChatLunaLLMChain({
+                            llm: summaryModel,
+                            prompt: PromptTemplate.fromTemplate(
+                                this.contextualCompressionPrompt
+                            )
+                        }),
                         {
                             action: JSON.stringify(action),
                             context,

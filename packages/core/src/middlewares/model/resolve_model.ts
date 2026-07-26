@@ -19,18 +19,15 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             }
 
             try {
-                const modelName =
-                    ctx.chatluna.conversation.pickModel(
-                        resolved.constraint,
-                        resolved.conversation
-                    ) ?? 'empty'
+                const modelName = resolved.effectiveModel
                 const presetName =
                     resolved.effectivePreset ??
                     resolved.conversation?.preset ??
-                    ctx.chatluna.preset.getGlobalDefaultPresetId().value
+                    ctx.chatluna.preset.getGlobalDefaultContextPresetId().value
                 const presetExists =
                     presetName != null &&
-                    ctx.chatluna.preset.getPreset(presetName, false).value !=
+                    ctx.chatluna.preset.getContextPreset(presetName, false)
+                        .value !=
                         null
 
                 if (!presetExists) {

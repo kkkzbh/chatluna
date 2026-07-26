@@ -283,11 +283,12 @@ export function createSession(overrides: Partial<BindingSessionShape> = {}) {
 
 export function createConfig(overrides: Record<string, unknown> = {}) {
     return {
-        defaultModel: 'test-platform/test-model',
         defaultChatMode: 'plugin',
         defaultGroupRouteMode: 'shared',
-        bundledPresetDir: 'presets/bundled',
-        runtimePresetDir: 'presets/runtime',
+        bundledContextPresetDir: 'presets/context/bundled',
+        runtimeContextPresetDir: 'presets/context/runtime',
+        bundledRolePresetDir: 'presets/role/bundled',
+        runtimeRolePresetDir: 'presets/role/runtime',
         archiveDir: 'data/chatluna/archive',
         ...overrides
     } as never
@@ -317,15 +318,20 @@ export async function createService(
     }
     const chatluna = {
         preset: {
-            getPreset: (id: string) => ({
+            getContextPreset: (id: string) => ({
                 value: { id }
             }),
-            getGlobalDefaultPresetId: () => ({
+            getGlobalDefaultContextPresetId: () => ({
                 value: 'default-preset'
             }),
             runReferenceMutation: <T>(mutation: () => Promise<T>) => mutation()
         },
         platform: {
+            resolveModelBinding: async () => ({
+                mode: 'dedicated' as const,
+                model: 'test-platform/test-model',
+                revision: 1
+            }),
             chatChains: {
                 value: [{ name: 'plugin' }]
             },
@@ -412,32 +418,60 @@ export async function createMemoryService(
     app.baseDir =
         options.baseDir ??
         (await fs.mkdtemp(path.join(os.tmpdir(), 'chatluna-core-test-')))
-    await fs.mkdir(path.join(app.baseDir, 'presets/bundled'), {
+    await fs.mkdir(path.join(app.baseDir, 'presets/context/bundled'), {
         recursive: true
     })
-    await fs.mkdir(path.join(app.baseDir, 'presets/runtime'), {
+    await fs.mkdir(path.join(app.baseDir, 'presets/context/runtime'), {
+        recursive: true
+    })
+    await fs.mkdir(path.join(app.baseDir, 'presets/role/bundled'), {
+        recursive: true
+    })
+    await fs.mkdir(path.join(app.baseDir, 'presets/role/runtime'), {
         recursive: true
     })
     for (const id of ['default-preset', 'helper', 'writer']) {
         await fs.writeFile(
-            path.join(app.baseDir, `presets/bundled/${id}.yml`),
+            path.join(app.baseDir, `presets/role/bundled/${id}.yml`),
             JSON.stringify({
-                schemaVersion: 2,
+                schemaVersion: 1,
+                id,
+                displayName: id,
+                messages: []
+            })
+        )
+        await fs.writeFile(
+            path.join(app.baseDir, `presets/context/bundled/${id}.yml`),
+            JSON.stringify({
+                schemaVersion: 1,
                 id,
                 displayName: id,
                 aliases: [],
-                messages: [],
-                inputFormat: null,
-                lore: { defaults: {}, entries: [] },
-                authorsNote: null,
-                knowledge: null,
-                promptConfig: {}
+                blocks: [
+                    { id: 'role', type: 'role', rolePresetId: id },
+                    {
+                        id: 'input',
+                        type: 'currentInput',
+                        inputFormat: null
+                    },
+                    {
+                        id: 'output',
+                        type: 'modelOutput',
+                        maxOutputTokens: 1024,
+                        postHandler: null
+                    }
+                ]
             })
         )
     }
     app.plugin(memory)
     app.plugin(ChatLunaService, createConfig(options.config))
     await app.start()
+    app.chatluna.registerModelBindingResolver(() => ({
+        mode: 'dedicated',
+        model: 'test-platform/test-model',
+        revision: 1
+    }))
     await app.database.upsert('chatluna_meta', [
         {
             key: 'globalDefaultPresetId',

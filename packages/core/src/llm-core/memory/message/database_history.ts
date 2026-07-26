@@ -15,7 +15,7 @@ import {
     gzipEncode
 } from 'koishi-plugin-chatluna/utils/string'
 import { randomUUID } from 'crypto'
-import { observationToMessageContent } from '../../agent/legacy-executor'
+import { observationToMessageContent } from '../../agent/observation'
 import type { AgentStep } from '../../agent/types'
 import {
     type ChatLunaMessageMeta,
@@ -48,6 +48,10 @@ const TRANSIENT_ADDITIONAL_KWARG_KEYS = [
     'qqbot_reply_mode',
     'qqbot_request_budget_policy',
     'overrideRequestParams'
+] as const
+
+const TRANSIENT_RESPONSE_METADATA_KEYS = [
+    'chatluna_context_trace'
 ] as const
 
 export class KoishiChatMessageHistory extends BaseChatMessageHistory {
@@ -613,6 +617,9 @@ async function serializeMessage(
     }
 
     let responseMetadata = Object.assign({}, message.response_metadata)
+    for (const key of TRANSIENT_RESPONSE_METADATA_KEYS) {
+        delete responseMetadata[key]
+    }
 
     if (Object.keys(responseMetadata).length === 0) {
         responseMetadata = null

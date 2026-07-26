@@ -262,6 +262,8 @@ export async function buildChatCompletionParams(
 ) {
     const parsedModel = parseOpenAIModelNameWithReasoningEffort(params.model)
     const normalizedModel = parsedModel.model
+    const reasoningEffort =
+        params.reasoningEffort ?? parsedModel.reasoningEffort
 
     const base = {
         model: normalizedModel,
@@ -282,7 +284,7 @@ export async function buildChatCompletionParams(
         max_tokens: normalizedModel.includes('vision')
             ? undefined
             : params.maxTokens,
-        temperature: params.temperature === 0 ? undefined : params.temperature,
+        temperature: params.temperature,
         presence_penalty:
             params.presencePenalty === 0 ? undefined : params.presencePenalty,
         frequency_penalty:
@@ -292,7 +294,11 @@ export async function buildChatCompletionParams(
         prompt_cache_key: params.id,
         prompt_cache_retention: undefined,
         prediction: undefined,
-        reasoning_effort: parsedModel.reasoningEffort,
+        reasoning_effort: reasoningEffort,
+        thinking:
+            params.thinkingMode == null
+                ? undefined
+                : { type: params.thinkingMode },
         response_format: undefined,
         safety_identifier: undefined,
         service_tier: undefined,
@@ -342,6 +348,8 @@ export async function buildResponseParams(
 ) {
     const parsedModel = parseOpenAIModelNameWithReasoningEffort(params.model)
     const normalizedModel = parsedModel.model
+    const reasoningEffort =
+        params.reasoningEffort ?? parsedModel.reasoningEffort
 
     const base = {
         model: normalizedModel,
@@ -364,14 +372,15 @@ export async function buildResponseParams(
         max_output_tokens: normalizedModel.includes('vision')
             ? undefined
             : params.maxTokens,
-        temperature: params.temperature === 0 ? undefined : params.temperature,
+        temperature: params.temperature,
         top_p: params.topP,
         prompt_cache_key: params.id,
         reasoning:
-            parsedModel.reasoningEffort == null ||
-            parsedModel.reasoningEffort === 'none'
+            reasoningEffort == null ? undefined : { effort: reasoningEffort },
+        thinking:
+            params.thinkingMode == null
                 ? undefined
-                : { effort: parsedModel.reasoningEffort },
+                : { type: params.thinkingMode },
         stream: true,
         stream_options: {
             include_obfuscation: false
@@ -724,6 +733,12 @@ export async function responseToChatGeneration(
     })
 }
 
+function isJsonResponse(response: Response): boolean {
+    return (response.headers.get('content-type') ?? '')
+        .toLowerCase()
+        .includes('application/json')
+}
+
 export async function processResponseApiResponse(
     response: Response,
     imageProvider?: ResponseImageProvider
@@ -771,6 +786,7 @@ export async function* processResponseApiStream<
         { name?: string; callId?: string; itemId?: string }
     >()
     let errorCount = 0
+    let sentText = false
     let sentConversation = false
 
     for await (const event of iterator) {
@@ -782,6 +798,7 @@ export async function* processResponseApiStream<
             const data = JSON.parse(chunk) as ResponseStreamEvent
 
             if (data.type === 'response.output_text.delta' && data.delta) {
+                sentText = true
                 yield new ChatGenerationChunk({
                     message: new AIMessageChunk(data.delta),
                     text: data.delta
@@ -850,6 +867,17 @@ export async function* processResponseApiStream<
                           )
                       )
                     : []
+
+                if (!sentText) {
+                    const outputText = responseOutputText(data.response)
+                    if (outputText.length > 0) {
+                        sentText = true
+                        yield new ChatGenerationChunk({
+                            message: new AIMessageChunk(outputText),
+                            text: outputText
+                        })
+                    }
+                }
 
                 if (images.length > 0) {
                     yield new ChatGenerationChunk({
@@ -1032,6 +1060,11 @@ export async function* responseApiCompletionStream<
         const response = await modelRequester.post('responses', request, {
             signal: params.signal
         })
+
+        if (isJsonResponse(response)) {
+            yield await processResponseApiResponse(response, imageProvider)
+            return
+        }
 
         yield* processResponseApiStream(
             requestContext,

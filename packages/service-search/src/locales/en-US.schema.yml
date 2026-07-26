@@ -11,7 +11,6 @@ $inner:
       browserMaxPages: 'Maximum browser pages per conversation'
       browserOutputLimit: 'Maximum browser tool output length before saving to file'
       contextualCompression: 'Enable contextual compression. Will compress the search results based on the selected summary model.'
-      summaryModel: 'Model used for generating summaries. Opting for a smaller and faster model can yield quicker responses.'
       summaryType:
           $desc: 'Summary mode. Different summary modes can improve the quality of information.'
           $inner:

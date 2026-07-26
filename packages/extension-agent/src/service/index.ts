@@ -10,6 +10,7 @@ import { truncateOutput } from '../computer/backends/types'
 import type { ComputerSessionApi } from '../computer/types'
 import { createSubAgentItemConfig } from '../config/defaults'
 import { getSubAgentsRootPath } from '../config/path'
+import { createPresetAgentId } from '../utils/id'
 import { readConfig } from '../config/read'
 import { writeConfig } from '../config/write'
 import {
@@ -325,7 +326,7 @@ export class ChatLunaAgentService extends Service {
         if (info.source === 'builtin') {
             subAgent.builtin[info.name] = itemFromInfo(info, enabled)
         } else if (info.source === 'preset') {
-            subAgent.presetAgents[info.name] = itemFromInfo(info, enabled)
+            subAgent.presetAgents[info.id] = itemFromInfo(info, enabled)
         } else {
             subAgent.items[id] = itemFromInfo(info, enabled)
         }
@@ -418,7 +419,6 @@ export class ChatLunaAgentService extends Service {
                     input.characterPrivateIds ?? info.characterPrivateIds,
                 authority: input.authority ?? info.authority,
                 dedupeTools: input.dedupeTools ?? info.dedupeTools,
-                model: input.model ?? info.model,
                 maxTurns: input.maxTurns ?? info.maxTurns,
                 hidden: input.hidden ?? info.hidden,
                 enabled: input.enabled ?? info.enabled,
@@ -471,7 +471,6 @@ export class ChatLunaAgentService extends Service {
                 authority: info.authority,
                 dedupeTools: info.dedupeTools,
                 promptContent: info.promptContent,
-                model: info.model,
                 maxTurns: info.maxTurns,
                 hidden: info.hidden,
                 enabled: info.enabled,
@@ -491,7 +490,11 @@ export class ChatLunaAgentService extends Service {
         config: Partial<SubAgentItemConfig>
     ) {
         const subAgent = structuredClone(this.args.config.subAgent)
-        subAgent.presetAgents[name] = createSubAgentItemConfig({
+        const id = createPresetAgentId(name)
+        if (subAgent.presetAgents[id] != null) {
+            throw new Error(`Preset sub-agent already exists: ${id}`)
+        }
+        subAgent.presetAgents[id] = createSubAgentItemConfig({
             enabled: config.enabled ?? true,
             dedupeTools: config.dedupeTools,
             name,
@@ -507,7 +510,6 @@ export class ChatLunaAgentService extends Service {
             authority: config.authority,
             source: 'preset',
             format: 'chatluna',
-            model: config.model,
             maxTurns: config.maxTurns,
             hidden: config.hidden,
             promptMode: 'preset',
@@ -531,7 +533,7 @@ export class ChatLunaAgentService extends Service {
 
         if (info.source === 'preset') {
             const subAgent = structuredClone(this.args.config.subAgent)
-            delete subAgent.presetAgents[info.name]
+            delete subAgent.presetAgents[info.id]
             await this.updateConfig('subAgent', subAgent, async () => {
                 await this.subAgent.reload()
             })
@@ -611,7 +613,7 @@ export class ChatLunaAgentService extends Service {
 
     async getPresetNames() {
         return this.ctx.chatluna.preset
-            .listPresets()
+            .listContextPresets()
             .value.map((preset) => preset.id)
     }
 
@@ -791,7 +793,6 @@ function itemFromInfo(info: SubAgentInfo, enabled: boolean) {
         authority: info.authority,
         source: info.source,
         format: info.format,
-        model: info.model,
         maxTurns: info.maxTurns,
         hidden: info.hidden,
         promptMode: info.promptMode,
