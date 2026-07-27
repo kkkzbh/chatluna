@@ -283,6 +283,10 @@ export class SearchSessionStore {
 
     async assembleCitations(sessionId: string, text: string) {
         text = text.replace(
+            /\[[^\]\n]+\]\((turn\d+(?:search|image|view|find|screenshot|weather)\d+)\)/g,
+            '[$1]'
+        )
+        text = text.replace(
             /cite((?:turn\d+(?:search|image|view|find|screenshot|weather)\d+)(?:turn\d+(?:search|image|view|find|screenshot|weather)\d+)*)/g,
             (_match, refs: string) =>
                 refs

@@ -947,7 +947,7 @@ describe('PDF, multimodal output, and citations', () => {
 
             const assembled = await runtime.store.assembleCitations(
                 'citation-session',
-                'Answer [turn0search0] citeturn0search0turn99search0'
+                'Answer [turn0search0] [Named](turn0search0) citeturn0search0turn99search0'
             )
             expect(assembled.text).to.include(
                 '[Verified source](https://8.8.8.8/source)'
