@@ -451,6 +451,12 @@ describe('web boundary and providers', () => {
                             content: 'second',
                             score: 0.6
                         }
+                    ],
+                    images: [
+                        {
+                            url: 'https://one.example/image.png',
+                            description: null
+                        }
                     ]
                 })
             )
@@ -649,7 +655,7 @@ describe('web.run orchestration', () => {
                     images: [
                         {
                             url: 'https://8.8.8.8/image.png',
-                            description: 'Image'
+                            description: null
                         }
                     ]
                 })
@@ -703,6 +709,10 @@ describe('web.run orchestration', () => {
                 'image',
                 'weather'
             ])
+            expect(response.results[0]).to.include({
+                title: 'Image result for image'
+            })
+            expect(response.results[0]).not.to.have.property('description')
         } finally {
             await runtime.close()
         }

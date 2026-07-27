@@ -25,7 +25,7 @@ const tavilyResponseSchema = z.object({
                 z.string(),
                 z.object({
                     url: z.string(),
-                    description: z.string().optional()
+                    description: z.string().nullish()
                 })
             ])
         )
@@ -131,7 +131,9 @@ export class TavilySearchProvider {
                             : item.description || `Image result for ${query.q}`,
                     imageUrl,
                     description:
-                        typeof item === 'string' ? undefined : item.description,
+                        typeof item === 'string'
+                            ? undefined
+                            : (item.description ?? undefined),
                     source: this.name
                 }
                 return [artifact]
