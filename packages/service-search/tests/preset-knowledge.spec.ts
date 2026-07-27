@@ -2,8 +2,10 @@
 
 import { assert } from 'chai'
 import {
-    compilePreset,
-    type PresetDefinitionV2
+    compileContextPreset,
+    compileRolePreset,
+    type ContextPresetDefinitionV1,
+    type RolePresetDefinitionV1
 } from '../../core/src/llm-core/prompt'
 import {
     getPresetKnowledgeMetadata,
@@ -65,19 +67,50 @@ function searchContext() {
 }
 
 function knowledgePreset(source = WEB_SEARCH_PRESET_KNOWLEDGE_SOURCE) {
-    const definition: PresetDefinitionV2 = {
-        schemaVersion: 2,
+    const roleDefinition: RolePresetDefinitionV1 = {
+        schemaVersion: 1,
+        id: 'search-role',
+        displayName: 'Search Role',
+        messages: []
+    }
+    const role = compileRolePreset(roleDefinition, {
+        source: 'runtime',
+        raw: JSON.stringify(roleDefinition)
+    })
+    const definition: ContextPresetDefinitionV1 = {
+        schemaVersion: 1,
         id: 'search-knowledge',
         displayName: 'Search Knowledge',
         aliases: [],
-        messages: [],
-        inputFormat: null,
-        lore: { defaults: {}, entries: [] },
-        authorsNote: null,
-        knowledge: { sources: [source] },
-        promptConfig: {}
+        blocks: [
+            {
+                id: 'role',
+                type: 'role',
+                rolePresetId: role.id
+            },
+            {
+                id: 'knowledge',
+                type: 'knowledge',
+                enabled: true,
+                budgetPriority: 100,
+                maxTokens: null,
+                sources: [source],
+                prompt: null
+            },
+            {
+                id: 'current-input',
+                type: 'currentInput',
+                inputFormat: null
+            },
+            {
+                id: 'model-output',
+                type: 'modelOutput',
+                maxOutputTokens: 1024,
+                postHandler: null
+            }
+        ]
     }
-    return compilePreset(definition, {
+    return compileContextPreset(definition, role, {
         source: 'runtime',
         raw: JSON.stringify(definition)
     })
@@ -126,9 +159,10 @@ it('registers web-search as a production preset knowledge source', async () => {
         '[primary-1](https://example.com/primary-1)'
     )
     assert.deepEqual(getPresetKnowledgeMetadata(documents[0]), {
+        blockId: 'knowledge',
         source: WEB_SEARCH_PRESET_KNOWLEDGE_SOURCE,
         sourceIndex: 0,
-        fieldPath: 'knowledge.sources.0'
+        fieldPath: 'knowledgeBlocks.0.sources.0'
     })
 
     unregister()

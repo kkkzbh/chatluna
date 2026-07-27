@@ -36,8 +36,7 @@ subagents` so the local ChatLuna path is updated.
     - Read-only agents usually need `file_read`, `glob`, and `grep`.
     - Focused coding agents usually need `file_read`, `file_edit`, `file_write`,
       `glob`, `grep`, and sometimes `bash`.
-    - Web research agents may need `browser_open`, `web_search`,
-      `browser_read_text`, and `browser_summarize`.
+    - Web research agents need `web_run`.
     - Keep computer access denied unless the task truly needs desktop control.
 
 3. Choose the turn budget.
@@ -157,8 +156,7 @@ way to restrict behavior.
 Use the right names:
 
 - `permissions.tools`: Tool names such as `file_read`, `file_edit`,
-  `file_write`, `glob`, `grep`, `bash`, `web_search`, `browser_read_text`,
-  and `browser_summarize`.
+  `file_write`, `glob`, `grep`, `bash`, and `web_run`.
 - `permissions.skills`: Skill names.
 - `permissions.mcp`: MCP server names.
 - `permissions.computer`: Backend names such as `local`, `e2b`, and
@@ -235,7 +233,7 @@ permissions:
         deny: []
     tools:
         mode: allow
-        allow: [web_search, browser_open, browser_read_text, browser_summarize]
+        allow: [web_run]
         deny: []
     computer:
         mode: allow
