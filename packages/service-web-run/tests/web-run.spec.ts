@@ -960,6 +960,66 @@ describe('PDF, multimodal output, and citations', () => {
         }
     })
 
+    it('does not duplicate an adjacent verified markdown source', async () => {
+        const runtime = await createRuntime(
+            fakeFetch(() => jsonResponse({ results: [] })),
+            []
+        )
+        try {
+            const draft: WebArtifactDraft = {
+                type: 'search',
+                query: 'query',
+                title: 'Verified source',
+                url: 'https://8.8.8.8/source?utm_source=test',
+                canonicalUrl: 'https://8.8.8.8/source',
+                snippet: 'snippet',
+                source: 'tavily'
+            }
+            const execution = {
+                requestId: 'deduplicated-citation-request',
+                sessionId: 'deduplicated-citation-session',
+                turn: 0,
+                status: 'started' as const,
+                startedAt: '2026-07-28T00:00:00.000Z',
+                commands: []
+            }
+            const webRequest = request(
+                'deduplicated-citation-request',
+                'deduplicated-citation-session',
+                {
+                    search_query: [{ q: 'query' }]
+                }
+            )
+            await runtime.store.begin(webRequest, execution)
+            await runtime.store.complete(webRequest, execution, [
+                { artifact: draft }
+            ])
+
+            const assembled = await runtime.store.assembleCitations(
+                'deduplicated-citation-session',
+                'Source: [Model label](https://8.8.8.8/source) [turn0search0]'
+            )
+
+            expect(assembled.text).to.equal(
+                'Source: [Model label](https://8.8.8.8/source)'
+            )
+            expect(
+                assembled.text.match(/https:\/\/8\.8\.8\.8\/source/g)
+            ).to.have.length(1)
+            expect(assembled.invalidRefs).to.deep.equal([])
+
+            const reversed = await runtime.store.assembleCitations(
+                'deduplicated-citation-session',
+                'Source: [turn0search0] [Model label](https://8.8.8.8/source)'
+            )
+            expect(reversed.text).to.equal(
+                'Source: [Model label](https://8.8.8.8/source)'
+            )
+        } finally {
+            await runtime.close()
+        }
+    })
+
     it('removes persisted artifacts and files when a session is cleared', async () => {
         const runtime = await createRuntime(
             fakeFetch(() => jsonResponse({ results: [] })),

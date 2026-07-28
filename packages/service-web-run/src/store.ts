@@ -4,6 +4,7 @@ import { dirname, isAbsolute, resolve } from 'path'
 import type { Context } from 'koishi'
 import type { Config } from './config'
 import { webError } from './error'
+import { canonicalUrl } from './security'
 import type {
     SearchExecution,
     StagedArtifact,
@@ -22,6 +23,14 @@ const refNames: Record<WebArtifact['type'], string> = {
     find: 'find',
     screenshot: 'screenshot',
     weather: 'weather'
+}
+
+function sameUrl(left: string, right: string) {
+    try {
+        return canonicalUrl(left) === canonicalUrl(right)
+    } catch {
+        return false
+    }
 }
 
 export class SearchSessionStore {
@@ -349,10 +358,37 @@ export class SearchSessionStore {
                         : undefined
 
             if (link) {
-                result = result.replaceAll(
-                    `[${refId}]`,
-                    `[${link.title.replaceAll('[', '').replaceAll(']', '')}](${link.url})`
-                )
+                const token = `[${refId}]`
+                const resolved = `[${link.title.replaceAll('[', '').replaceAll(']', '')}](${link.url})`
+                let offset = 0
+                while (true) {
+                    const idx = result.indexOf(token, offset)
+                    if (idx < 0) break
+
+                    const before = result.slice(0, idx)
+                    const after = result.slice(idx + token.length)
+                    const prior = before.match(
+                        /(\[[^\]\n]+\]\((https?:\/\/[^\s)\n]+)\))\s*$/
+                    )
+                    if (prior && sameUrl(prior[2], link.url)) {
+                        const start = before.length - prior[0].length
+                        result = before.slice(0, start) + prior[1] + after
+                        offset = start + prior[1].length
+                        continue
+                    }
+
+                    const next = after.match(
+                        /^\s*(\[[^\]\n]+\]\((https?:\/\/[^\s)\n]+)\))/
+                    )
+                    if (next && sameUrl(next[2], link.url)) {
+                        result = before + next[1] + after.slice(next[0].length)
+                        offset = before.length + next[1].length
+                        continue
+                    }
+
+                    result = before + resolved + after
+                    offset = before.length + resolved.length
+                }
                 continue
             }
 
