@@ -192,6 +192,7 @@ export interface ModelContextMessage {
     toolCalls?: {
         id?: string
         name: string
+        args?: unknown
     }[]
 }
 
@@ -204,6 +205,7 @@ export interface ModelContextTool {
 export interface ModelContextToolCall {
     id?: string
     name: string
+    args?: unknown
 }
 
 export interface ModelContextPayload {
@@ -724,11 +726,15 @@ export function redactContextToolCalls<
     T extends {
         id?: string
         name: string
+        args?: unknown
     }
 >(calls?: readonly T[]): ModelContextToolCall[] | undefined {
     return calls?.map((call) => ({
         id: call.id,
-        name: call.name
+        name: call.name,
+        ...(call.args === undefined
+            ? {}
+            : { args: redactContextValue(call.args) })
     }))
 }
 

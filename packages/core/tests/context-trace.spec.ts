@@ -203,10 +203,23 @@ it('removes internal metadata and redacts inline data for model context', () => 
             {
                 id: 'call-1',
                 name: 'lookup',
-                args: { apiKey: 'secret' }
+                args: {
+                    apiKey: 'secret',
+                    query: 'visible',
+                    url: 'https://example.com/search?token=secret'
+                }
             }
         ]),
-        [{ id: 'call-1', name: 'lookup' }]
+        [
+            {
+                id: 'call-1',
+                name: 'lookup',
+                args: {
+                    query: 'visible',
+                    url: 'https://example.com/search?token=%5Bredacted%5D'
+                }
+            }
+        ]
     )
     assert.deepEqual(
         redactContextSchema({
