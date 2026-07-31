@@ -80,7 +80,13 @@ function artifactText(artifact: WebArtifact, length: WebResponseLength) {
         lines.push(`Source: ${artifact.url}`)
         if (artifact.current) {
             lines.push(
-                `Current: ${artifact.current.temperature}°C, apparent ${artifact.current.apparentTemperature}°C, precipitation ${artifact.current.precipitation} mm, wind ${artifact.current.windSpeed} km/h, code ${artifact.current.weatherCode}`
+                `Current: ${artifact.current.temperature}°C, apparent ${
+                    artifact.current.apparentTemperature
+                }°C, precipitation ${
+                    artifact.current.precipitation
+                } mm, wind ${artifact.current.windSpeed} km/h, code ${
+                    artifact.current.weatherCode
+                }`
             )
         }
         const limit =

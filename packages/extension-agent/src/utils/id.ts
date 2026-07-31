@@ -10,8 +10,7 @@ export function createHashId(path: string): string {
     return createHash('sha1').update(path).digest('hex').slice(0, 16)
 }
 
-export const CANONICAL_AGENT_ID_PATTERN =
-    /^[a-z0-9](?:[a-z0-9._:-]*[a-z0-9])?$/
+export const CANONICAL_AGENT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._:-]*[a-z0-9])?$/
 
 export function assertCanonicalAgentId(id: string): void {
     if (!CANONICAL_AGENT_ID_PATTERN.test(id)) {

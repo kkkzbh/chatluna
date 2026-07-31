@@ -190,10 +190,10 @@ export interface PromptContextRuntime {
     blockSegments: Map<string, BaseMessage[]>
 
     /** Runtime-owned message segments emitted by generic injections. */
-    runtimeInjectionSegments: Array<{
+    runtimeInjectionSegments: {
         injection: AnchoredInjection
         messages: BaseMessage[]
-    }>
+    }[]
 
     /** Request-local prepared injection payloads. */
     preparedInjections: Map<string, unknown>
@@ -266,16 +266,13 @@ export function appendBlockMessages(
 
 export function assembleContextMessages(runtime: PromptContextRuntime) {
     const definition = runtime.preset.definition
-    const blocks = new Map(
-        definition.blocks.map((block) => [block.id, block] as const)
-    )
     const definitionIndex = new Map(
         definition.blocks.map((block, index) => [block.id, index] as const)
     )
     const before = new Map<string, string[]>()
     const after = new Map<string, string[]>()
-    const roleAnchors: Array<{ blockId: string; anchor: ContextAnchor }> = []
-    const historyAnchors: Array<{ blockId: string; anchor: ContextAnchor }> = []
+    const roleAnchors: { blockId: string; anchor: ContextAnchor }[] = []
+    const historyAnchors: { blockId: string; anchor: ContextAnchor }[] = []
     const anchored = new Set<string>()
 
     for (const block of definition.blocks) {
@@ -289,8 +286,7 @@ export function assembleContextMessages(runtime: PromptContextRuntime) {
             historyAnchors.push({ blockId: block.id, anchor: block.anchor })
             continue
         }
-        const target =
-            block.anchor.position === 'before' ? before : after
+        const target = block.anchor.position === 'before' ? before : after
         const children = target.get(block.anchor.blockId) ?? []
         children.push(block.id)
         target.set(block.anchor.blockId, children)
@@ -370,9 +366,7 @@ export function assembleContextMessages(runtime: PromptContextRuntime) {
     const inputMessages = new Set(
         runtime.blockSegments.get(inputBlock.id) ?? []
     )
-    const roleSegment = new Set(
-        runtime.blockSegments.get(roleBlock.id) ?? []
-    )
+    const roleSegment = new Set(runtime.blockSegments.get(roleBlock.id) ?? [])
     const afterAnchorOffsets = new Map<string, number>()
     let afterRoleOffset = 0
 
@@ -382,9 +376,9 @@ export function assembleContextMessages(runtime: PromptContextRuntime) {
             const anchorIndex = result.findIndex(
                 (message) => message.id === injection.afterMessageId
             )
-            const offset =
-                afterAnchorOffsets.get(injection.afterMessageId) ?? 0
-            const index = anchorIndex < 0 ? result.length : anchorIndex + 1 + offset
+            const offset = afterAnchorOffsets.get(injection.afterMessageId) ?? 0
+            const index =
+                anchorIndex < 0 ? result.length : anchorIndex + 1 + offset
             result.splice(index, 0, ...messages)
             afterAnchorOffsets.set(
                 injection.afterMessageId,
@@ -422,7 +416,11 @@ export function assembleContextMessages(runtime: PromptContextRuntime) {
         const inputIndex = result.findIndex((message) =>
             inputMessages.has(message)
         )
-        result.splice(inputIndex < 0 ? result.length : inputIndex, 0, ...messages)
+        result.splice(
+            inputIndex < 0 ? result.length : inputIndex,
+            0,
+            ...messages
+        )
     }
 
     runtime.result = result
@@ -1160,11 +1158,12 @@ export class ChatLunaContextManagerService {
             }
         }
 
-        const addedMessages = runtime.result.filter((message) => !before.has(message))
+        const addedMessages = runtime.result.filter(
+            (message) => !before.has(message)
+        )
         const tokenEstimates = new Map<BaseMessage, number>()
         const blockOwned =
-            injection.name === 'lore_books' ||
-            injection.name === 'authors_note'
+            injection.name === 'lore_books' || injection.name === 'authors_note'
         if (!blockOwned && addedMessages.length > 0) {
             const tokenCounts = await Promise.all(
                 addedMessages.map((message) =>
@@ -1220,8 +1219,7 @@ export class ChatLunaContextManagerService {
             if (
                 runtime.trace.entries.some(
                     (entry) =>
-                        entry.messageId === msg.id &&
-                        entry.role !== 'document'
+                        entry.messageId === msg.id && entry.role !== 'document'
                 )
             ) {
                 continue

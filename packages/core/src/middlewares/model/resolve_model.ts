@@ -27,8 +27,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 const presetExists =
                     presetName != null &&
                     ctx.chatluna.preset.getContextPreset(presetName, false)
-                        .value !=
-                        null
+                        .value != null
 
                 if (!presetExists) {
                     await context.send(

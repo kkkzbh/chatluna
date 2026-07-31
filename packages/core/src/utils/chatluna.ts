@@ -3,8 +3,8 @@ import type { Context } from 'koishi'
 import { ChatLunaChatPrompt } from 'koishi-plugin-chatluna/llm-core/chain/prompt'
 import type { ChatLunaChatModel } from 'koishi-plugin-chatluna/llm-core/platform/model'
 import {
-    type CompiledPreset,
     compileContextPreset,
+    type CompiledPreset,
     compileRolePreset
 } from 'koishi-plugin-chatluna/llm-core/prompt'
 

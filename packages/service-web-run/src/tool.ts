@@ -111,7 +111,15 @@ export class WebRunTool extends StructuredTool {
     name = 'web_run'
     description = `Access the internet through one structured tool.
 
-Commands may be mixed in one call and each command accepts an array. Use prior refIds with open, click, find, and screenshot. Newly returned refIds are available from the next call. Use response_length only to control the text projection. In final answers cite sources with their exact [turnNtypeN] refId; the runtime resolves those markers to verified URLs.`
+${
+    'Commands may be mixed in one call and each command accepts an array. ' +
+    'Use prior refIds with open, click, find, and screenshot. ' +
+    'Newly returned refIds are available from the next call. ' +
+    'Use response_length only to control the text projection. ' +
+    'In final answers cite sources with their exact [turnNtypeN] refId; ' +
+    'the runtime resolves those markers to verified URLs.'
+}`
+
     schema
 
     constructor(

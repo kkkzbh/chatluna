@@ -76,9 +76,7 @@ export function apply(ctx: Context, config: Config) {
             if (timer) clearTimeout(timer)
             if (result.ready) return
             if (result.error) throw result.error
-            throw new Error(
-                'Required web.run page capabilities need Puppeteer'
-            )
+            throw new Error('Required web.run page capabilities need Puppeteer')
         })
     }
 }

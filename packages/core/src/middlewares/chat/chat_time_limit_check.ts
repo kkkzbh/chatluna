@@ -36,7 +36,9 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
 
         // 为什么会是无
 
-        if (ctx.chatluna.platform.listAllModels(ModelType.all).value.length < 1) {
+        if (
+            ctx.chatluna.platform.listAllModels(ModelType.all).value.length < 1
+        ) {
             return session.text('chatluna.not_available_model')
         }
 

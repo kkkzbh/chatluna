@@ -85,10 +85,7 @@ function checkPresetId(preset: PresetService, id?: string | null) {
 
 const FIXED_FIELDS: readonly {
     key: 'preset' | 'chatMode'
-    constraintKey: keyof Pick<
-        ConstraintRecord,
-        'fixedPreset' | 'fixedChatMode'
-    >
+    constraintKey: keyof Pick<ConstraintRecord, 'fixedPreset' | 'fixedChatMode'>
     label: ConstraintFixedField
 }[] = [
     { key: 'preset', constraintKey: 'fixedPreset', label: 'preset' },

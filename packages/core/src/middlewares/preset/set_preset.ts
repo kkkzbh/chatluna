@@ -1,10 +1,7 @@
 import { Context } from 'koishi'
 import { Config } from '../../config'
 import { ChainMiddlewareRunStatus, ChatChain } from '../../chains/chain'
-import type {
-    PresetMessage,
-    RolePresetDefinitionV1
-} from '../../preset_schema'
+import type { PresetMessage, RolePresetDefinitionV1 } from '../../preset_schema'
 
 export type SetPresetCommandRejection = 'empty_messages' | 'multiple_messages'
 
@@ -59,8 +56,9 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
             const roleBlock = preset.definition.blocks.find(
                 (block) => block.type === 'role'
             )!
-            const role = presetService.getRolePreset(roleBlock.rolePresetId)
-                .value
+            const role = presetService.getRolePreset(
+                roleBlock.rolePresetId
+            ).value
             const definition = presetService.getRolePresetDefinition(role.id)
             let message: PresetMessage
             try {

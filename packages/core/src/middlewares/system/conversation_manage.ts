@@ -77,7 +77,8 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
         const requestedPreset =
             create?.preset == null
                 ? undefined
-                : ctx.chatluna.preset.findContextPresetInput(create.preset).value
+                : ctx.chatluna.preset.findContextPresetInput(create.preset)
+                      .value
         if (create?.preset != null && requestedPreset == null) {
             context.message = session.text(
                 'chatluna.conversation.messages.preset_unavailable',
@@ -233,11 +234,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
 
         context.message = [
             session.text('chatluna.conversation.messages.current_header'),
-            formatConversationLine(
-                session,
-                resolved.conversation,
-                resolved
-            )
+            formatConversationLine(session, resolved.conversation, resolved)
         ].join('\n')
         return ChainMiddlewareRunStatus.STOP
     })
@@ -356,7 +353,8 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 const input = context.options.conversation_use?.[field]
                 const value =
                     field === 'preset' && input != null
-                        ? ctx.chatluna.preset.findContextPresetInput(input).value?.id
+                        ? ctx.chatluna.preset.findContextPresetInput(input)
+                              .value?.id
                         : input
                 if (input != null && value == null) {
                     throw new Error(`Unknown preset: ${input}`)

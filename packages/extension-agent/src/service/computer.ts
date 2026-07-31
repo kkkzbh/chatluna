@@ -961,10 +961,9 @@ export class ChatLunaAgentComputerService {
         const localScopePath =
             this.config.computer.local.scopePath ||
             getComputerRootPath(this.ctx)
-        const cwd =
-            !/^[A-Za-z]:/.test(localScopePath)
-                ? localScopePath.replaceAll('\\', '/')
-                : undefined
+        const cwd = !/^[A-Za-z]:/.test(localScopePath)
+            ? localScopePath.replaceAll('\\', '/')
+            : undefined
 
         if (backend === 'local') {
             return new LocalComputerSession({

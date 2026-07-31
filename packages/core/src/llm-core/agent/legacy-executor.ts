@@ -42,8 +42,8 @@ import {
 } from './types'
 import { compressChunk } from '../chain/infinite_context_chain'
 import type { ChatLunaChatModel } from '../platform/model'
-export { observationToMessageContent } from './observation'
 import { observationToMessageContent } from './observation'
+export { observationToMessageContent } from './observation'
 
 async function executeTools(
     actions: AgentAction[],

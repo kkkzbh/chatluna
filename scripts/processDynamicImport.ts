@@ -1,4 +1,4 @@
-import { exec } from 'child_process'
+import { spawn } from 'child_process'
 import fs from 'fs/promises'
 import path from 'path'
 
@@ -64,33 +64,32 @@ async function main() {
     }
 
     if (needLint) {
-        // exec command 'yarn lint-fix‘
         await run('yarn', ['lint-fix'])
     }
 
     console.log('done process dynamic import')
-
-    process.exit(0)
 }
 
-export default async function run(exe: string, args: string[]) {
-    return new Promise((resolve, reject) => {
-        const env = Object.create(process.env)
-        const child = exec([exe, ...args].join(' '), {
-            env: {
-                ...env
-            }
+function run(exe: string, args: string[]) {
+    return new Promise<void>((resolve, reject) => {
+        const child = spawn(exe, args, {
+            env: process.env,
+            stdio: 'inherit'
         })
-        child.stdout.setEncoding('utf8')
-        child.stderr.setEncoding('utf8')
-        child.stdout.on('data', (data) => console.log(data))
-        child.stderr.on('data', (data) => console.error(data))
         child.on('error', (error) => reject(error))
         child.on('close', (exitCode) => {
             console.log(
                 `run ${[exe, ...args].join(' ')} exit with code ${exitCode}`
             )
-            resolve(exitCode)
+            if (exitCode === 0) {
+                resolve()
+                return
+            }
+            reject(
+                new Error(
+                    `${[exe, ...args].join(' ')} exited with code ${exitCode}`
+                )
+            )
         })
     })
 }
@@ -241,7 +240,10 @@ async function getFilesRecursively(
     return allImportFiles
 }
 
-main()
+main().catch((error) => {
+    console.error(error)
+    process.exitCode = 1
+})
 
 interface ImportFile {
     path: string

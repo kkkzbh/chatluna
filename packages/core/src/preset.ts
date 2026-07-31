@@ -5,9 +5,9 @@ import { computed, ComputedRef, shallowRef } from '@vue/reactivity'
 import { dump, load } from 'js-yaml'
 import { Context, Schema } from 'koishi'
 import {
+    compileContextPreset,
     CompiledPreset,
     CompiledRolePreset,
-    compileContextPreset,
     compileRolePreset,
     ContextPresetDefinitionV1,
     ContextPresetDefinitionV1Schema,
@@ -181,9 +181,11 @@ export class PresetService {
     private readonly _contexts = shallowRef<
         ReadonlyMap<string, CompiledPreset>
     >(new Map())
+
     private readonly _roles = shallowRef<
         ReadonlyMap<string, CompiledRolePreset>
     >(new Map())
+
     private readonly _globalDefaultId = shallowRef<string>()
     private readonly _handlers = new Map<string, PostHandler['handler']>()
     private _bundledContexts = new Map<string, CompiledPreset>()
@@ -447,6 +449,7 @@ export class PresetService {
         id: string,
         throwError: false
     ): ComputedRef<CompiledPreset | undefined>
+
     getContextPreset(id: string, throwError = true) {
         return computed(() => {
             const preset = this._contexts.value.get(id)
@@ -580,6 +583,7 @@ export class PresetService {
         id: string,
         throwError: false
     ): ComputedRef<CompiledRolePreset | undefined>
+
     getRolePreset(id: string, throwError = true) {
         return computed(() => {
             const role = this._roles.value.get(id)

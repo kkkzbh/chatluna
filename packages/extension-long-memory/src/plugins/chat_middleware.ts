@@ -30,9 +30,10 @@ export async function apply(ctx: Context, config: Config) {
             chatInterface,
             session
         ) => {
-            const longMemory = chatInterface.preset.value.definition.blocks.find(
-                (block) => block.type === 'longMemory'
-            )
+            const longMemory =
+                chatInterface.preset.value.definition.blocks.find(
+                    (block) => block.type === 'longMemory'
+                )
             if (longMemory?.type !== 'longMemory' || !longMemory.enabled) {
                 return
             }
@@ -139,9 +140,10 @@ export async function apply(ctx: Context, config: Config) {
             chatInterface,
             session
         ) => {
-            const longMemory = chatInterface.preset.value.definition.blocks.find(
-                (block) => block.type === 'longMemory'
-            )
+            const longMemory =
+                chatInterface.preset.value.definition.blocks.find(
+                    (block) => block.type === 'longMemory'
+                )
             if (longMemory?.type !== 'longMemory' || !longMemory.enabled) {
                 return
             }

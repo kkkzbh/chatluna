@@ -69,11 +69,7 @@ export function createAuthorsNoteMiddleware(): PromptContextMiddleware {
                         : 0)
             )
 
-            runtime.result.splice(
-                safeInsertPosition,
-                0,
-                message
-            )
+            runtime.result.splice(safeInsertPosition, 0, message)
         } else {
             runtime.result.splice(insertPosition, 0, message)
         }

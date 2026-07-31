@@ -1,5 +1,5 @@
 import { createCanvas, DOMMatrix, ImageData, Path2D } from '@napi-rs/canvas'
-import { WebRunError, webError } from './error'
+import { webError, WebRunError } from './error'
 import type { ScreenshotArtifact, StagedArtifact } from './types'
 
 Object.assign(globalThis, { DOMMatrix, ImageData, Path2D })

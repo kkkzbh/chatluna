@@ -26,7 +26,7 @@ export function formatQqbotSpeakerLine(
 }
 
 function resolveSpeakerFormat(
-    additionalKwargs?: Record<string, any>
+    additionalKwargs?: Record<string, unknown>
 ): QqbotSpeakerFormatMeta | null {
     const meta = additionalKwargs?.qqbot_speaker_format as
         | QqbotSpeakerFormatMeta
@@ -56,7 +56,7 @@ function resolveSpeakerFormat(
 
 export function serializeQqbotHumanMessageContent(
     content: MessageContent,
-    additionalKwargs?: Record<string, any>
+    additionalKwargs?: Record<string, unknown>
 ): MessageContent {
     const speakerFormat = resolveSpeakerFormat(additionalKwargs)
     if (speakerFormat == null) {

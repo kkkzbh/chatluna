@@ -59,7 +59,7 @@ export async function fetchPublic(
                 retryable: true
             })
         } finally {
-            void dispatcher.close()
+            await dispatcher.close()
         }
 
         if (

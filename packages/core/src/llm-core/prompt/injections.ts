@@ -69,8 +69,7 @@ export function createInputBoundaryMiddleware(
         const scratchpad = runtime.agentScratchpad
         if (scratchpad) {
             const scratchBlock = runtime.preset.definition.blocks.find(
-                (block) =>
-                    block.type === 'agentScratchpad' && block.enabled
+                (block) => block.type === 'agentScratchpad' && block.enabled
             )!
             if (Array.isArray(scratchpad)) {
                 runtime.result.push(...scratchpad)

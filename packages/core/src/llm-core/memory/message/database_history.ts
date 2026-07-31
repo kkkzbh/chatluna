@@ -50,9 +50,7 @@ const TRANSIENT_ADDITIONAL_KWARG_KEYS = [
     'overrideRequestParams'
 ] as const
 
-const TRANSIENT_RESPONSE_METADATA_KEYS = [
-    'chatluna_context_trace'
-] as const
+const TRANSIENT_RESPONSE_METADATA_KEYS = ['chatluna_context_trace'] as const
 
 export class KoishiChatMessageHistory extends BaseChatMessageHistory {
     // eslint-disable-next-line @typescript-eslint/naming-convention

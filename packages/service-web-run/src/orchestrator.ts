@@ -1,6 +1,6 @@
 import type { Context } from 'koishi'
 import type { Config } from './config'
-import { WebRunError, webError } from './error'
+import { webError, WebRunError } from './error'
 import { formatWebFailure, formatWebOutput } from './format'
 import { PageFetcher } from './page'
 import { PdfRenderer } from './pdf'
@@ -156,7 +156,6 @@ export class SearchOrchestrator {
                         while (cursor < commands.length) {
                             const current = cursor++
                             const command = commands[current]
-                            const state = execution.commands[current]
                             try {
                                 staged[current] = (
                                     await this.run(request, command)
@@ -764,8 +763,8 @@ export class SearchOrchestrator {
     private async lock<T>(sessionId: string, task: () => Promise<T>) {
         const previous = this.locks.get(sessionId) ?? Promise.resolve()
         let release: () => void = () => undefined
-        const current = new Promise<void>((done) => {
-            release = done
+        const current = new Promise<void>((resolve) => {
+            release = resolve
         })
         const tail = previous.then(() => current)
         this.locks.set(sessionId, tail)

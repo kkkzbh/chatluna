@@ -20,9 +20,11 @@ import {
     CompiledPreset,
     ContextPresetCompileError,
     getLongMemoryQueryTrace,
+    MatchedLoreEntry,
+    measureDocumentCollectionDemand,
+    prepareLoreBooks,
     PromptContextRuntime,
     PromptDocumentCollection,
-    prepareLoreBooks,
     registerAfterUserMessageMiddleware,
     registerAuthorsNoteMiddleware,
     registerChatHistoryMiddleware,
@@ -32,8 +34,6 @@ import {
     registerLoreBooksMiddleware,
     registerReadFilesContextMiddleware,
     registerSystemPromptsMiddleware,
-    measureDocumentCollectionDemand,
-    MatchedLoreEntry,
     traceDocument,
     traceMessage
 } from 'koishi-plugin-chatluna/llm-core/prompt'

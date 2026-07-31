@@ -45,15 +45,15 @@ export function createLoreBooksMiddleware(): PromptContextMiddleware {
 }
 
 export interface PreparedLoreBooks {
-    groups: Array<{
+    groups: {
         blockId: string
         message: BaseMessage
         tokenCount: number
-        entries: Array<{
+        entries: {
             matched: MatchedLoreEntry
             tokenCount: number
-        }>
-    }>
+        }[]
+    }[]
     emptyEntries: MatchedLoreEntry[]
 }
 
@@ -105,10 +105,9 @@ export async function prepareLoreBooks(
                 const block = preset.loreBlocks.find(
                     (candidate) => candidate.id === blockId
                 )!
-                const loreBooksPrompt =
-                    HumanMessagePromptTemplate.fromTemplate(
-                        block.prompt ?? '{input}'
-                    )
+                const loreBooksPrompt = HumanMessagePromptTemplate.fromTemplate(
+                    block.prompt ?? '{input}'
+                )
                 const message = await runtime.promptRenderService
                     .renderMessages(
                         [
