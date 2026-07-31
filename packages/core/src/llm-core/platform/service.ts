@@ -29,7 +29,7 @@ import { StructuredTool } from '@langchain/core/tools'
 import { computed, ComputedRef, reactive } from '@vue/reactivity'
 import { randomUUID } from 'crypto'
 import { RunnableConfig } from '@langchain/core/runnables'
-import { ToolMask } from '../agent'
+import { applyToolMask, ToolMask } from '../agent'
 import type { ConversationRecord } from '../../types'
 import {
     MODEL_BINDING_ALLOWED_MODES,
@@ -289,10 +289,34 @@ export class PlatformService {
     }
 
     async resolveToolMask(arg: ToolMaskArg) {
+        const masks: ToolMask[] = []
         for (const name in this._toolMaskResolvers) {
             const mask = await this._toolMaskResolvers[name](arg)
             if (mask) {
-                return mask
+                masks.push(mask)
+            }
+        }
+
+        if (masks.length < 1) return
+
+        const names = Object.keys(this._tools)
+        const allow = names.filter((name) =>
+            masks.every((mask) => applyToolMask(name, mask))
+        )
+        const calls = names.filter((name) =>
+            masks.every((mask) =>
+                applyToolMask(name, mask.toolCallMask ?? mask)
+            )
+        )
+
+        return {
+            mode: 'allow' as const,
+            allow,
+            deny: [],
+            toolCallMask: {
+                mode: 'allow' as const,
+                allow: calls,
+                deny: []
             }
         }
     }
