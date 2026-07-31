@@ -29,7 +29,7 @@ import { StructuredTool } from '@langchain/core/tools'
 import { computed, ComputedRef, reactive } from '@vue/reactivity'
 import { randomUUID } from 'crypto'
 import { RunnableConfig } from '@langchain/core/runnables'
-import { applyToolMask, ToolMask } from '../agent'
+import { applyToolMask, ToolMask } from 'koishi-plugin-chatluna/llm-core/agent'
 import type { ConversationRecord } from '../../types'
 import {
     MODEL_BINDING_ALLOWED_MODES,
