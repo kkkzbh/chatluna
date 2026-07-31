@@ -104,9 +104,6 @@ function snapshotMessage(
                 kind: 'model_input',
                 name: 'direct model input'
             } satisfies ContextTraceSource),
-        purpose:
-            entry?.purpose ??
-            (msg.additional_kwargs.purpose as string | undefined),
         qqbotContext: qqbot
             ? {
                   source: qqbot.source,

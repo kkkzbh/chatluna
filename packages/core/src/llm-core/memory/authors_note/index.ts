@@ -33,7 +33,6 @@ export function apply(ctx: Context, config: Config): void {
                     value: {
                         blockId: block.id,
                         content: block.content,
-                        anchor: block.anchor,
                         maxTokens: block.maxTokens
                     },
                     priority: block.budgetPriority,

@@ -106,10 +106,6 @@ it('keeps canonical preset entry indexes after lore matching and sorting', async
                     enabled: true,
                     budgetPriority: 0,
                     maxTokens: 100,
-                    anchor: {
-                        type: 'role',
-                        position: 'afterCharacterDefinitions'
-                    },
                     prompt: '{input}',
                     defaults: { recursiveScan: false },
                     entries
@@ -166,9 +162,7 @@ it('keeps canonical preset entry indexes after lore matching and sorting', async
             .map((entry) => entry.source.path),
         ['blocks.lore.entries.2', 'blocks.lore.entries.1']
     )
-    const rendered = trace.entries.filter(
-        (entry) => entry.role !== 'document'
-    )
+    const rendered = trace.entries.filter((entry) => entry.role !== 'document')
     assert.lengthOf(rendered, 1)
     assert.equal(rendered[0].source.kind, 'lore')
     assert.equal(rendered[0].source.path, 'blocks.lore')
@@ -207,10 +201,6 @@ it('charges lore budgets for the rendered message', async () => {
                     enabled: true,
                     budgetPriority: 0,
                     maxTokens: 10,
-                    anchor: {
-                        type: 'role',
-                        position: 'afterCharacterDefinitions'
-                    },
                     prompt: 'LONG WRAPPER {input}',
                     defaults: {},
                     entries: matched.map(({ entry }) => entry)

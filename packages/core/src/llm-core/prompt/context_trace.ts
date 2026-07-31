@@ -130,7 +130,6 @@ export interface ContextTraceEntry {
     stage: ContextTraceStage
     source: ContextTraceSource
     role: MessageType | 'document'
-    purpose?: string
     content: MessageContent
     tokenEstimate: number
     status: ContextTraceStatus
@@ -165,7 +164,6 @@ export interface ModelCallIdentity {
 export interface TraceMessageOptions {
     stage: ContextTraceStage
     source: ContextTraceSource
-    purpose?: string
     tokenEstimate: number
     status: ContextTraceStatus
     reason?: ContextTraceDropReason
@@ -179,7 +177,6 @@ export interface ModelContextMessage {
     tokenEstimate: number
     stage: ContextTraceStage
     source: ContextTraceSource
-    purpose?: string
     qqbotContext?: {
         source?: string
         title?: string
@@ -796,9 +793,6 @@ export function traceMessage(
         current.stage = opts.stage
         current.source = source
         current.content = msg.content
-        current.purpose =
-            opts.purpose ??
-            (msg.additional_kwargs.purpose as string | undefined)
         current.tokenEstimate = opts.tokenEstimate
         current.status = opts.status
         current.reason = opts.reason
@@ -811,9 +805,6 @@ export function traceMessage(
         stage: opts.stage,
         source,
         role: msg.getType(),
-        purpose:
-            opts.purpose ??
-            (msg.additional_kwargs.purpose as string | undefined),
         content: msg.content,
         tokenEstimate: opts.tokenEstimate,
         status: opts.status,

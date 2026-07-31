@@ -7,11 +7,7 @@ import {
 import { Document } from '@langchain/core/documents'
 import { HumanMessagePromptTemplate } from '@langchain/core/prompts'
 import { ChainValues } from '@langchain/core/utils/types'
-import {
-    CompiledPreset,
-    ContextAnchor,
-    ContextPresetCompileError
-} from './type'
+import { CompiledPreset, ContextPresetCompileError } from './type'
 import type {
     ChatLunaPromptRenderService,
     RenderConfigurable
@@ -266,100 +262,10 @@ export function appendBlockMessages(
 
 export function assembleContextMessages(runtime: PromptContextRuntime) {
     const definition = runtime.preset.definition
-    const definitionIndex = new Map(
-        definition.blocks.map((block, index) => [block.id, index] as const)
-    )
-    const before = new Map<string, string[]>()
-    const after = new Map<string, string[]>()
-    const roleAnchors: { blockId: string; anchor: ContextAnchor }[] = []
-    const historyAnchors: { blockId: string; anchor: ContextAnchor }[] = []
-    const anchored = new Set<string>()
-
-    for (const block of definition.blocks) {
-        if (block.type !== 'lore' && block.type !== 'authorsNote') continue
-        anchored.add(block.id)
-        if (block.anchor.type === 'role') {
-            roleAnchors.push({ blockId: block.id, anchor: block.anchor })
-            continue
-        }
-        if (block.anchor.type === 'chatHistory') {
-            historyAnchors.push({ blockId: block.id, anchor: block.anchor })
-            continue
-        }
-        const target = block.anchor.position === 'before' ? before : after
-        const children = target.get(block.anchor.blockId) ?? []
-        children.push(block.id)
-        target.set(block.anchor.blockId, children)
-    }
-
-    const sortByDefinition = (ids: string[]) =>
-        ids.sort(
-            (left, right) =>
-                definitionIndex.get(left)! - definitionIndex.get(right)!
-        )
-    for (const ids of before.values()) sortByDefinition(ids)
-    for (const ids of after.values()) sortByDefinition(ids)
-    roleAnchors.sort(
-        (left, right) =>
-            definitionIndex.get(left.blockId)! -
-            definitionIndex.get(right.blockId)!
-    )
-    historyAnchors.sort(
-        (left, right) =>
-            definitionIndex.get(left.blockId)! -
-            definitionIndex.get(right.blockId)!
-    )
-
-    const emit = (blockId: string): BaseMessage[] => [
-        ...(before.get(blockId) ?? []).flatMap(emit),
-        ...(runtime.blockSegments.get(blockId) ?? []),
-        ...(after.get(blockId) ?? []).flatMap(emit)
-    ]
-
     const roleBlock = definition.blocks.find((block) => block.type === 'role')!
-    const roleMessages = runtime.blockSegments.get(roleBlock.id) ?? []
-    const roleInsertions = new Map<number, BaseMessage[]>()
-    for (const { blockId, anchor } of roleAnchors) {
-        const index = findRoleAnchorIndex(roleMessages, anchor)
-        const messages = roleInsertions.get(index) ?? []
-        messages.push(...emit(blockId))
-        roleInsertions.set(index, messages)
-    }
-    if (roleInsertions.size > 0) {
-        const merged: BaseMessage[] = []
-        for (let index = 0; index <= roleMessages.length; index++) {
-            merged.push(...(roleInsertions.get(index) ?? []))
-            if (index < roleMessages.length) merged.push(roleMessages[index])
-        }
-        runtime.blockSegments.set(roleBlock.id, merged)
-    }
-
-    const historyBlock = definition.blocks.find(
-        (block) => block.type === 'chatHistory' && block.enabled
+    const result = definition.blocks.flatMap(
+        (block) => runtime.blockSegments.get(block.id) ?? []
     )
-    if (historyBlock != null && historyAnchors.length > 0) {
-        const historyMessages = runtime.blockSegments.get(historyBlock.id) ?? []
-        const historyInsertions = new Map<number, BaseMessage[]>()
-        for (const { blockId, anchor } of historyAnchors) {
-            const depth = anchor.type === 'chatHistory' ? anchor.depth : 0
-            const index = Math.max(0, historyMessages.length - depth)
-            const messages = historyInsertions.get(index) ?? []
-            messages.push(...emit(blockId))
-            historyInsertions.set(index, messages)
-        }
-        const merged: BaseMessage[] = []
-        for (let index = 0; index <= historyMessages.length; index++) {
-            merged.push(...(historyInsertions.get(index) ?? []))
-            if (index < historyMessages.length) {
-                merged.push(historyMessages[index])
-            }
-        }
-        runtime.blockSegments.set(historyBlock.id, merged)
-    }
-
-    const result = definition.blocks
-        .filter((block) => !anchored.has(block.id))
-        .flatMap((block) => emit(block.id))
     const inputBlock = definition.blocks.find(
         (block) => block.type === 'currentInput'
     )!
@@ -424,54 +330,6 @@ export function assembleContextMessages(runtime: PromptContextRuntime) {
     }
 
     runtime.result = result
-}
-
-function findRoleAnchorIndex(messages: BaseMessage[], anchor: ContextAnchor) {
-    if (anchor.type !== 'role') return messages.length
-    const purposeIndex = (purpose: string) =>
-        messages.findIndex(
-            (message) => message.additional_kwargs?.purpose === purpose
-        )
-    const description = purposeIndex('description')
-    const personality = purposeIndex('personality')
-    const scenario = purposeIndex('scenario')
-    const exampleStart = purposeIndex('exampleStart')
-    const exampleEnd = purposeIndex('exampleEnd')
-    const firstMessage = purposeIndex('firstMessage')
-    const characterStart = [description, personality]
-        .filter((index) => index >= 0)
-        .sort((left, right) => left - right)[0]
-    const characterEnd = Math.max(description, personality)
-
-    if (anchor.position === 'beforeCharacterDefinitions') {
-        return characterStart ?? 0
-    }
-    if (anchor.position === 'afterCharacterDefinitions') {
-        return characterEnd >= 0 ? characterEnd + 1 : messages.length
-    }
-    if (anchor.position === 'beforeScenario') {
-        return scenario >= 0
-            ? scenario
-            : characterEnd >= 0
-              ? characterEnd + 1
-              : messages.length
-    }
-    if (anchor.position === 'afterScenario') {
-        return scenario >= 0
-            ? scenario + 1
-            : characterEnd >= 0
-              ? characterEnd + 1
-              : messages.length
-    }
-    if (anchor.position === 'beforeExampleMessages') {
-        if (exampleStart >= 0) return exampleStart
-        if (firstMessage >= 0) return firstMessage
-        if (scenario >= 0) return scenario + 1
-        return characterEnd >= 0 ? characterEnd + 1 : messages.length
-    }
-    if (exampleEnd >= 0) return exampleEnd + 1
-    if (firstMessage >= 0) return firstMessage + 1
-    return messages.length
 }
 
 // ---------------------------------------------------------------------------

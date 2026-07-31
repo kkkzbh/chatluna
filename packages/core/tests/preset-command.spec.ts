@@ -31,7 +31,6 @@ it('rejects an empty preset message list with a typed command error', () => {
 it('only exposes the single-message preset shape to the set command', () => {
     const message: PresetMessage = {
         role: 'system',
-        purpose: 'description',
         content: 'old content'
     }
 

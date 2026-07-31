@@ -7,12 +7,7 @@ import {
     PromptContextMiddleware,
     PromptContextRuntime
 } from './context_manager'
-import {
-    CompiledPreset,
-    ContextAnchor,
-    LoreInsertPosition,
-    MatchedLoreEntry
-} from './type'
+import { MatchedLoreEntry } from './type'
 import { logger } from 'koishi-plugin-chatluna/utils/logger'
 import { traceDocument, traceMessage } from './context_trace'
 import { countMessageTokens } from './system_prompts'
@@ -215,64 +210,6 @@ async function applyPreparedLoreBooks(
 }
 
 /**
- * Find the index in the result list where a lore book should be inserted
- * based on its `insertPosition` setting.
- */
-function findMessageIndex(
-    chatHistory: BaseMessage[],
-    systemPrompts: BaseMessage[],
-    insertPosition: LoreInsertPosition | 'inChat' | 'afterCharacterDefinitions'
-): number {
-    if (insertPosition === 'inChat') {
-        return chatHistory.length - 1
-    }
-
-    const findIndexByType = (type: string) =>
-        chatHistory.findIndex(
-            (message) => message?.additional_kwargs?.purpose === type
-        )
-
-    const descriptionIndex = findIndexByType('description')
-    const personalityIndex = findIndexByType('personality')
-    const scenarioIndex = findIndexByType('scenario')
-    const exampleMessageStartIndex = findIndexByType('exampleStart')
-    const exampleMessageEndIndex = findIndexByType('exampleEnd')
-    const firstMessageIndex = findIndexByType('firstMessage')
-
-    const charStartIndex = [descriptionIndex, personalityIndex]
-        .filter((idx) => idx >= 0)
-        .sort((a, b) => a - b)[0]
-    const charEndIndex = Math.max(descriptionIndex, personalityIndex)
-
-    switch (insertPosition) {
-        case 'beforeCharacterDefinitions':
-            return charStartIndex ?? 1
-        case 'afterCharacterDefinitions':
-            return charEndIndex !== -1 ? charEndIndex + 1 : systemPrompts.length
-        case 'beforeScenario':
-            if (scenarioIndex !== -1) return scenarioIndex
-            return charEndIndex !== -1 ? charEndIndex + 1 : systemPrompts.length
-        case 'afterScenario':
-            if (scenarioIndex !== -1) return scenarioIndex + 1
-            return charEndIndex !== -1 ? charEndIndex + 1 : systemPrompts.length
-        case 'beforeExampleMessages':
-            if (exampleMessageStartIndex !== -1) return exampleMessageStartIndex
-            if (firstMessageIndex !== -1) return firstMessageIndex
-            return scenarioIndex !== -1
-                ? scenarioIndex + 1
-                : charEndIndex !== -1
-                  ? charEndIndex + 1
-                  : systemPrompts.length
-        case 'afterExampleMessages':
-            if (exampleMessageEndIndex !== -1) return exampleMessageEndIndex + 1
-            if (firstMessageIndex !== -1) return firstMessageIndex + 1
-            return chatHistory.length
-        default:
-            return chatHistory.length
-    }
-}
-
-/**
  * Register the lore_books injection middleware on the context manager.
  */
 export function registerLoreBooksMiddleware(
@@ -283,22 +220,4 @@ export function registerLoreBooksMiddleware(
         createLoreBooksMiddleware(),
         0
     )
-}
-
-// Re-export findMessageIndex for use by other middlewares (e.g. authors_note)
-export { findMessageIndex }
-
-export function resolveAnchorPosition(
-    anchor: ContextAnchor,
-    preset: CompiledPreset
-): LoreInsertPosition | 'inChat' {
-    if (anchor.type === 'role') return anchor.position
-    if (anchor.type === 'chatHistory') return 'inChat'
-    const target = preset.definition.blocks.find(
-        (block) => block.id === anchor.blockId
-    )!
-    if (target.type !== 'role') return 'inChat'
-    return anchor.position === 'before'
-        ? 'beforeCharacterDefinitions'
-        : 'afterCharacterDefinitions'
 }

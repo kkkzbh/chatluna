@@ -40,29 +40,11 @@ function definition(): ContextPresetDefinitionV1 {
                 rolePresetId: 'shared-role'
             },
             {
-                id: 'documents',
-                type: 'requestDocuments',
-                enabled: true,
-                budgetPriority: 0,
-                maxTokens: null
-            },
-            {
-                id: 'history',
-                type: 'chatHistory',
-                enabled: true,
-                budgetPriority: 10,
-                maxTokens: null
-            },
-            {
                 id: 'lore-one',
                 type: 'lore',
                 enabled: true,
                 budgetPriority: 20,
                 maxTokens: 100,
-                anchor: {
-                    type: 'role',
-                    position: 'afterCharacterDefinitions'
-                },
                 prompt: null,
                 defaults: {},
                 entries: [
@@ -78,11 +60,6 @@ function definition(): ContextPresetDefinitionV1 {
                 enabled: true,
                 budgetPriority: 20,
                 maxTokens: 100,
-                anchor: {
-                    type: 'block',
-                    blockId: 'history',
-                    position: 'after'
-                },
                 prompt: null,
                 defaults: {},
                 entries: [
@@ -91,6 +68,20 @@ function definition(): ContextPresetDefinitionV1 {
                         content: 'Lore two'
                     }
                 ]
+            },
+            {
+                id: 'documents',
+                type: 'requestDocuments',
+                enabled: true,
+                budgetPriority: 0,
+                maxTokens: null
+            },
+            {
+                id: 'history',
+                type: 'chatHistory',
+                enabled: true,
+                budgetPriority: 10,
+                maxTokens: null
             },
             {
                 id: 'input',
@@ -117,126 +108,78 @@ it('validates required boundaries and permits repeatable lore blocks', () => {
     )
 })
 
-it('fails missing role and invalid anchors with typed compile errors', () => {
-    assert.throws(
-        () =>
-            compileContextPreset(definition(), undefined, {
-                source: 'ephemeral',
-                raw: 'context'
-            }),
-        ContextPresetCompileError
-    )
-    const invalid = definition()
-    const lore = invalid.blocks.find((block) => block.id === 'lore-two')!
-    if (lore.type === 'lore') {
-        lore.anchor = {
-            type: 'block',
-            blockId: 'missing',
-            position: 'after'
-        }
+it('fails missing roles and invalid fixed block placement with typed errors', () => {
+    try {
+        compileContextPreset(definition(), undefined, {
+            source: 'ephemeral',
+            raw: 'context'
+        })
+        assert.fail('Expected a missing role error.')
+    } catch (err) {
+        assert.instanceOf(err, ContextPresetCompileError)
+        assert.equal((err as ContextPresetCompileError).code, 'missing_role')
+        assert.equal((err as ContextPresetCompileError).stage, 'role')
     }
+
+    const invalid = definition()
+    const loreIndex = invalid.blocks.findIndex(
+        (block) => block.id === 'lore-two'
+    )
+    const [lore] = invalid.blocks.splice(loreIndex, 1)
+    const historyIndex = invalid.blocks.findIndex(
+        (block) => block.type === 'chatHistory'
+    )
+    invalid.blocks.splice(historyIndex + 1, 0, lore)
     try {
         compileContextPreset(invalid, role, {
             source: 'ephemeral',
             raw: 'context'
         })
-        assert.fail('Expected an invalid anchor error.')
+        assert.fail('Expected an invalid block placement error.')
     } catch (err) {
         assert.instanceOf(err, ContextPresetCompileError)
-        assert.equal((err as ContextPresetCompileError).code, 'invalid_anchor')
+        assert.equal((err as ContextPresetCompileError).code, 'invalid_schema')
+        assert.equal((err as ContextPresetCompileError).stage, 'schema')
         assert.equal((err as ContextPresetCompileError).blockId, 'lore-two')
     }
 })
 
-it('rejects anchor cycles and anchors that require disabled history', () => {
-    const cyclic = definition()
-    const first = cyclic.blocks.find((block) => block.id === 'lore-one')!
-    const second = cyclic.blocks.find((block) => block.id === 'lore-two')!
-    if (first.type === 'lore' && second.type === 'lore') {
-        first.anchor = {
-            type: 'block',
-            blockId: second.id,
-            position: 'after'
-        }
-        second.anchor = {
-            type: 'block',
-            blockId: first.id,
-            position: 'after'
-        }
-    }
+it('requires authors notes to immediately precede current input', () => {
+    const invalid = definition()
+    const documents = invalid.blocks.findIndex(
+        (block) => block.type === 'requestDocuments'
+    )
+    invalid.blocks.splice(documents + 1, 0, {
+        id: 'author',
+        type: 'authorsNote',
+        enabled: true,
+        budgetPriority: 30,
+        maxTokens: 100,
+        content: 'Author note',
+        insertFrequency: 1
+    })
     try {
-        compileContextPreset(cyclic, role, {
+        compileContextPreset(invalid, role, {
             source: 'ephemeral',
-            raw: 'cyclic'
+            raw: 'invalid-author-position'
         })
-        assert.fail('Expected an anchor cycle error.')
+        assert.fail('Expected an invalid author note placement error.')
     } catch (err) {
         assert.instanceOf(err, ContextPresetCompileError)
-        assert.equal((err as ContextPresetCompileError).code, 'invalid_anchor')
-        assert.equal((err as ContextPresetCompileError).stage, 'anchor')
-        assert.equal((err as ContextPresetCompileError).blockId, 'lore-one')
-    }
-
-    const disabledHistory = definition()
-    const history = disabledHistory.blocks.find(
-        (block) => block.id === 'history'
-    )!
-    const lore = disabledHistory.blocks.find(
-        (block) => block.id === 'lore-two'
-    )!
-    if (history.type === 'chatHistory' && lore.type === 'lore') {
-        history.enabled = false
-        lore.anchor = { type: 'chatHistory', depth: 0 }
-    }
-    try {
-        compileContextPreset(disabledHistory, role, {
-            source: 'ephemeral',
-            raw: 'disabled-history'
-        })
-        assert.fail('Expected a disabled history anchor error.')
-    } catch (err) {
-        assert.instanceOf(err, ContextPresetCompileError)
-        assert.equal((err as ContextPresetCompileError).code, 'invalid_anchor')
-        assert.equal((err as ContextPresetCompileError).blockId, 'lore-two')
+        assert.equal((err as ContextPresetCompileError).code, 'invalid_schema')
+        assert.equal((err as ContextPresetCompileError).stage, 'schema')
+        assert.equal((err as ContextPresetCompileError).blockId, 'history')
     }
 })
 
-it('assembles block segments in structural and explicit anchor order', () => {
+it('assembles block segments in definition order with fixed context zones', () => {
     const ordered = definition()
-    const first = ordered.blocks.find((block) => block.id === 'lore-one')!
-    const second = ordered.blocks.find((block) => block.id === 'lore-two')!
-    if (first.type === 'lore' && second.type === 'lore') {
-        first.anchor = {
-            type: 'block',
-            blockId: 'history',
-            position: 'before'
-        }
-        second.anchor = {
-            type: 'block',
-            blockId: 'history',
-            position: 'before'
-        }
-    }
     const input = ordered.blocks.findIndex(
         (block) => block.type === 'currentInput'
     )
     ordered.blocks.splice(
         input,
         0,
-        {
-            id: 'author',
-            type: 'authorsNote',
-            enabled: true,
-            budgetPriority: 30,
-            maxTokens: 100,
-            anchor: {
-                type: 'block',
-                blockId: 'history',
-                position: 'after'
-            },
-            content: 'Author note',
-            insertFrequency: 1
-        },
         {
             id: 'knowledge',
             type: 'knowledge',
@@ -245,6 +188,15 @@ it('assembles block segments in structural and explicit anchor order', () => {
             maxTokens: 100,
             sources: ['manual'],
             prompt: null
+        },
+        {
+            id: 'author',
+            type: 'authorsNote',
+            enabled: true,
+            budgetPriority: 30,
+            maxTokens: 100,
+            content: 'Author note',
+            insertFrequency: 1
         }
     )
     const preset = compileContextPreset(ordered, role, {
@@ -271,42 +223,7 @@ it('assembles block segments in structural and explicit anchor order', () => {
 
     assert.deepEqual(
         runtime.result.map((message) => message.content),
-        ['ROLE', 'A', 'L1', 'L2', 'B', 'AFTER', 'C', 'INPUT']
-    )
-})
-
-it('places chat-history depth zero after the latest history message', () => {
-    const anchored = definition()
-    const lore = anchored.blocks.find((block) => block.id === 'lore-one')!
-    if (lore.type === 'lore') {
-        lore.anchor = { type: 'chatHistory', depth: 0 }
-    }
-    const preset = compileContextPreset(anchored, role, {
-        source: 'ephemeral',
-        raw: 'history-depth-zero'
-    })
-    const runtime = {
-        preset,
-        result: [],
-        blockSegments: new Map([
-            ['role', [new SystemMessage('ROLE')]],
-            [
-                'history',
-                [new HumanMessage('OLDER'), new HumanMessage('LATEST')]
-            ],
-            ['lore-one', [new HumanMessage('DEPTH ZERO')]],
-            ['input', [new HumanMessage('INPUT')]]
-        ]),
-        runtimeInjectionSegments: []
-    }
-
-    assembleContextMessages(runtime as never)
-
-    assert.isBelow(
-        runtime.result.findIndex((message) => message.content === 'LATEST'),
-        runtime.result.findIndex(
-            (message) => message.content === 'DEPTH ZERO'
-        )
+        ['ROLE', 'L1', 'L2', 'A', 'B', 'C', 'AFTER', 'INPUT']
     )
 })
 

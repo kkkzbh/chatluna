@@ -49,8 +49,7 @@ it('keeps concurrent traces for the same outer request isolated', () => {
                 authority: 'reference',
                 trust: 'trusted',
                 ttl: 'turn'
-            },
-            purpose: 'personality'
+            }
         }
     })
 
@@ -67,7 +66,6 @@ it('keeps concurrent traces for the same outer request isolated', () => {
     assert.equal(entry.source.kind, 'runtime')
     assert.equal(entry.source.name, 'qqbot_memory')
     assert.equal(entry.source.authority, 'reference')
-    assert.equal(entry.purpose, 'personality')
     assert.equal(takeContextTrace(concurrentTrace.traceId), concurrentTrace)
     assert.equal(takeContextTrace(trace.traceId), trace)
     assert.equal(takeContextTrace(trace.traceId), undefined)

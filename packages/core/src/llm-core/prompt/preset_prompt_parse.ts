@@ -67,9 +67,7 @@ function compileContent(
 
 function compileMessage(message: PresetMessage): BaseMessage {
     const fields: BaseMessageFields = {
-        content: compileContent(message.content),
-        additional_kwargs:
-            message.purpose == null ? {} : { purpose: message.purpose }
+        content: compileContent(message.content)
     }
     if (message.role === 'assistant') return new AIMessage(fields)
     if (message.role === 'user') return new HumanMessage(fields)
@@ -126,8 +124,8 @@ export function compileContextPreset(
                 : undefined
         const block = index == null ? undefined : definition.blocks?.[index]
         throw new ContextPresetCompileError(
-            issue.path.includes('anchor') ? 'invalid_anchor' : 'invalid_schema',
-            issue.path.includes('anchor') ? 'anchor' : 'schema',
+            'invalid_schema',
+            'schema',
             issue.message,
             block?.id,
             undefined,
@@ -143,61 +141,6 @@ export function compileContextPreset(
             `Role preset does not exist: ${roleBlock.rolePresetId}`,
             roleBlock.id
         )
-    }
-    const blockAnchors = new Map<string, string>()
-    for (const block of preset.blocks) {
-        if (block.type !== 'lore' && block.type !== 'authorsNote') continue
-        if (block.anchor.type === 'chatHistory') {
-            const history = preset.blocks.find(
-                (candidate) =>
-                    candidate.type === 'chatHistory' && candidate.enabled
-            )
-            if (history == null) {
-                throw new ContextPresetCompileError(
-                    'invalid_anchor',
-                    'anchor',
-                    `Block ${block.id} requires an enabled chatHistory block.`,
-                    block.id
-                )
-            }
-            continue
-        }
-        if (block.anchor.type !== 'block') continue
-
-        const anchor = block.anchor
-        const target = preset.blocks.find(
-            (candidate) => candidate.id === anchor.blockId
-        )!
-        if (
-            ('enabled' in target && !target.enabled) ||
-            target.type === 'modelOutput' ||
-            target.type === 'agentScratchpad' ||
-            (target.type === 'currentInput' && anchor.position === 'after')
-        ) {
-            throw new ContextPresetCompileError(
-                'invalid_anchor',
-                'anchor',
-                `Block ${block.id} has an unsafe anchor target.`,
-                block.id
-            )
-        }
-        blockAnchors.set(block.id, target.id)
-    }
-    for (const blockId of blockAnchors.keys()) {
-        const visited = new Set<string>()
-        let current = blockId
-        while (blockAnchors.has(current)) {
-            if (visited.has(current)) {
-                throw new ContextPresetCompileError(
-                    'invalid_anchor',
-                    'anchor',
-                    `Block ${blockId} creates an anchor cycle.`,
-                    blockId
-                )
-            }
-            visited.add(current)
-            current = blockAnchors.get(current)!
-        }
     }
     const output = preset.blocks.find((block) => block.type === 'modelOutput')!
     const post = output.postHandler
@@ -371,6 +314,10 @@ export function previewContextPreset(
     const input = definition.blocks.findIndex(
         (block) => block.type === 'currentInput'
     )
+    let loreEnd = 0
+    while (definition.blocks[loreEnd + 1]?.type === 'lore') loreEnd++
+    let noteStart = input
+    while (definition.blocks[noteStart - 1]?.type === 'authorsNote') noteStart--
     const stored = definition.blocks.map((block) => {
         const locked =
             block.type === 'role' ||
@@ -385,6 +332,13 @@ export function previewContextPreset(
                   : block.type === 'authorsNote'
                     ? block.content
                     : null
+        const range =
+            block.type === 'lore'
+                ? { minIndex: 1, maxIndex: loreEnd }
+                : block.type === 'authorsNote'
+                  ? { minIndex: noteStart, maxIndex: input - 1 }
+                  : { minIndex: loreEnd + 1, maxIndex: noteStart - 1 }
+        const movable = !locked && range.minIndex < range.maxIndex
         return {
             id: block.id,
             type: block.type,
@@ -394,7 +348,7 @@ export function previewContextPreset(
                     ? ('role' as const)
                     : ('context' as const),
             locked,
-            movable: !locked,
+            movable,
             enabled: 'enabled' in block ? block.enabled : true,
             staticTokens: text == null ? null : Math.ceil(text.length / 4),
             budget:
@@ -404,7 +358,7 @@ export function previewContextPreset(
                           maxTokens: block.maxTokens
                       }
                     : null,
-            legalDropRange: locked ? null : { minIndex: 1, maxIndex: input - 1 }
+            legalDropRange: movable ? range : null
         }
     })
     const runtime = (opts.runtimeBlocks ?? []).map((type) => ({

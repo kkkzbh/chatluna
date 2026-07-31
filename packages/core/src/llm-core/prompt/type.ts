@@ -8,14 +8,6 @@ import type { PostHandler } from '../../utils/types'
 export const PresetIdSchema = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
 export const ContextPresetBlockIdSchema = PresetIdSchema
 export const PresetMessageRoleSchema = z.enum(['system', 'user', 'assistant'])
-export const PresetMessagePurposeSchema = z.enum([
-    'description',
-    'personality',
-    'scenario',
-    'firstMessage',
-    'exampleStart',
-    'exampleEnd'
-])
 
 const PromptTextSchema = z.string().refine((value) => value.trim().length > 0, {
     message: 'Prompt text must contain at least one non-whitespace character.'
@@ -56,22 +48,12 @@ export const PresetContentBlockSchema = z.discriminatedUnion('type', [
 export const PresetMessageSchema = z
     .object({
         role: PresetMessageRoleSchema,
-        purpose: PresetMessagePurposeSchema.optional(),
         content: z.union([
             PromptTextSchema,
             z.array(PresetContentBlockSchema).min(1)
         ])
     })
     .strict() as z.ZodType<PresetMessage>
-
-export const LoreInsertPositionSchema = z.enum([
-    'beforeCharacterDefinitions',
-    'afterCharacterDefinitions',
-    'beforeScenario',
-    'afterScenario',
-    'beforeExampleMessages',
-    'afterExampleMessages'
-])
 export const LoreDefaultsSchema = z
     .object({
         scanDepth: z.number().int().nonnegative().optional(),
@@ -102,28 +84,6 @@ export const PresetPostHandlerSchema = z
         variables: z.record(z.string())
     })
     .strict() as z.ZodType<PresetPostHandlerConfig>
-export const ContextAnchorSchema = z.discriminatedUnion('type', [
-    z
-        .object({
-            type: z.literal('role'),
-            position: LoreInsertPositionSchema
-        })
-        .strict(),
-    z
-        .object({
-            type: z.literal('block'),
-            blockId: ContextPresetBlockIdSchema,
-            position: z.enum(['before', 'after'])
-        })
-        .strict(),
-    z
-        .object({
-            type: z.literal('chatHistory'),
-            depth: z.number().int().nonnegative()
-        })
-        .strict()
-]) as z.ZodType<ContextAnchor>
-
 const BudgetSchema = {
     enabled: z.boolean(),
     budgetPriority: z.number().int().nonnegative(),
@@ -167,7 +127,6 @@ export const ContextPresetBlockSchema = z.discriminatedUnion('type', [
             id: ContextPresetBlockIdSchema,
             type: z.literal('lore'),
             ...BudgetSchema,
-            anchor: ContextAnchorSchema,
             prompt: PromptTextSchema.nullable(),
             defaults: LoreDefaultsSchema,
             entries: z.array(LoreEntrySchema)
@@ -178,7 +137,6 @@ export const ContextPresetBlockSchema = z.discriminatedUnion('type', [
             id: ContextPresetBlockIdSchema,
             type: z.literal('authorsNote'),
             ...BudgetSchema,
-            anchor: ContextAnchorSchema,
             content: PromptTextSchema,
             insertFrequency: z.number().int().nonnegative()
         })
@@ -337,34 +295,38 @@ export const ContextPresetDefinitionV1Schema = z
                 path: ['blocks', scratch]
             })
         }
-        for (const [index, block] of preset.blocks.entries()) {
-            if (
-                (block.type !== 'lore' && block.type !== 'authorsNote') ||
-                block.anchor.type !== 'block'
-            ) {
+        let roleBoundaryEnded = false
+        let authorsNoteBoundaryStarted = false
+        for (let index = 1; index < input; index++) {
+            const block = preset.blocks[index]
+            if (block.type === 'lore') {
+                if (roleBoundaryEnded) {
+                    ctx.addIssue({
+                        code: z.ZodIssueCode.custom,
+                        message:
+                            'Lore blocks must immediately follow the role block.',
+                        path: ['blocks', index]
+                    })
+                }
                 continue
             }
-            if (
-                !ids.has(block.anchor.blockId) ||
-                block.anchor.blockId === block.id
-            ) {
+            roleBoundaryEnded = true
+            if (block.type === 'authorsNote') {
+                authorsNoteBoundaryStarted = true
+                continue
+            }
+            if (authorsNoteBoundaryStarted) {
                 ctx.addIssue({
                     code: z.ZodIssueCode.custom,
-                    message: `Invalid anchor target: ${block.anchor.blockId}`,
-                    path: ['blocks', index, 'anchor', 'blockId']
+                    message:
+                        'AuthorsNote blocks must immediately precede the currentInput block.',
+                    path: ['blocks', index]
                 })
             }
         }
     }) as z.ZodType<ContextPresetDefinitionV1>
 
 export type PresetMessageRole = 'system' | 'user' | 'assistant'
-export type PresetMessagePurpose =
-    | 'description'
-    | 'personality'
-    | 'scenario'
-    | 'firstMessage'
-    | 'exampleStart'
-    | 'exampleEnd'
 export type PresetContentBlock =
     | { type: 'text'; text: string }
     | { type: 'image'; url: string; detail?: 'auto' | 'low' | 'high' }
@@ -375,16 +337,8 @@ export type PresetContentBlock =
       }
 export interface PresetMessage {
     role: PresetMessageRole
-    purpose?: PresetMessagePurpose
     content: string | PresetContentBlock[]
 }
-export type LoreInsertPosition =
-    | 'beforeCharacterDefinitions'
-    | 'afterCharacterDefinitions'
-    | 'beforeScenario'
-    | 'afterScenario'
-    | 'beforeExampleMessages'
-    | 'afterExampleMessages'
 export interface LoreDefaults {
     scanDepth?: number
     recursiveScan?: boolean
@@ -402,10 +356,6 @@ export interface LoreEntry {
     enabled?: boolean
     order?: number
 }
-export type ContextAnchor =
-    | { type: 'role'; position: LoreInsertPosition }
-    | { type: 'block'; blockId: string; position: 'before' | 'after' }
-    | { type: 'chatHistory'; depth: number }
 export interface ContextBudgetBlock {
     id: string
     enabled: boolean
@@ -424,14 +374,12 @@ export type ContextPresetBlock =
     | (ContextBudgetBlock & { type: 'requestDocuments' })
     | (ContextBudgetBlock & {
           type: 'lore'
-          anchor: ContextAnchor
           prompt: string | null
           defaults: LoreDefaults
           entries: LoreEntry[]
       })
     | (ContextBudgetBlock & {
           type: 'authorsNote'
-          anchor: ContextAnchor
           content: string
           insertFrequency: number
       })
@@ -480,7 +428,6 @@ export interface MatchedLoreEntry {
 export interface AuthorsNote {
     blockId: string
     content: string
-    anchor: ContextAnchor
     maxTokens: number | null
 }
 export interface PresetKnowledgeMetadata {
@@ -566,7 +513,6 @@ export interface ContextPresetPreview {
 export type ContextPresetCompileStage =
     | 'schema'
     | 'role'
-    | 'anchor'
     | 'budget'
     | 'structure'
     | 'post_handler'
@@ -575,7 +521,6 @@ export class ContextPresetCompileError extends Error {
         public readonly code:
             | 'invalid_schema'
             | 'missing_role'
-            | 'invalid_anchor'
             | 'required_block_over_limit'
             | 'unregistered_post_handler',
         public readonly stage: ContextPresetCompileStage,

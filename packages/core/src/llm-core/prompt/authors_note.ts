@@ -6,7 +6,6 @@ import {
     PromptContextMiddleware
 } from './context_manager'
 import { AuthorsNote } from './type'
-import { findMessageIndex, resolveAnchorPosition } from './lore_books'
 import { countMessageTokens } from './system_prompts'
 import { traceMessage } from './context_trace'
 
@@ -49,30 +48,7 @@ export function createAuthorsNoteMiddleware(): PromptContextMiddleware {
             return next()
         }
 
-        const rawPosition = resolveAnchorPosition(
-            authorsNote.anchor,
-            runtime.preset
-        )
-
-        const insertPosition = findMessageIndex(
-            runtime.result,
-            runtime.systemPrompts,
-            rawPosition
-        )
-
-        if (rawPosition === 'inChat') {
-            const safeInsertPosition = Math.max(
-                0,
-                insertPosition -
-                    (authorsNote.anchor.type === 'chatHistory'
-                        ? authorsNote.anchor.depth
-                        : 0)
-            )
-
-            runtime.result.splice(safeInsertPosition, 0, message)
-        } else {
-            runtime.result.splice(insertPosition, 0, message)
-        }
+        runtime.result.push(message)
         appendBlockMessages(runtime, authorsNote.blockId, [message])
         traceMessage(runtime.trace, message, {
             stage: 'injections',
