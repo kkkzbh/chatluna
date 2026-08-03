@@ -25,7 +25,11 @@ import {
 } from '../prompt/preset_prompt_parse'
 import type { CompiledPreset } from '../prompt/type'
 import { getMessageContent } from 'koishi-plugin-chatluna/utils/string'
-import { createAgentRunner, createToolsRef } from './creator'
+import {
+    createAgentRunner,
+    createToolsRef,
+    permitInternalContractTools
+} from './creator'
 import type { AgentRunnerOutput } from './executor'
 import type {
     AgentEvent,
@@ -140,10 +144,14 @@ export function createAgent(options: CreateAgentOptions): ChatLunaAgent {
                     chatPlatform: input.session?.platform
                 }
             }
-            const toolMask =
+            const requestedToolMask =
                 input.subagentContext?.toolMask ??
                 input.toolMask ??
                 options.toolMask
+            const toolMask = permitInternalContractTools(
+                requestedToolMask,
+                options.tools.value
+            )
             const ctx = {
                 kind: input.subagentContext ? 'subagent' : 'main',
                 agentId: id,

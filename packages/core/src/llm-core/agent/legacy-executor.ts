@@ -242,6 +242,24 @@ type AgentFinalResponseContract = {
     schema: Record<string, unknown> | null
     name?: string
     instruction?: string
+    terminalTool?: string
+}
+
+export type AgentTerminalContractErrorCode =
+    | 'TERMINAL_TOOL_UNAVAILABLE'
+    | 'DIRECT_FINISH_FORBIDDEN'
+    | 'PARALLEL_ACTIONS_FORBIDDEN'
+    | 'WRONG_DIRECT_TOOL'
+    | 'ITERATION_LIMIT'
+
+export class AgentTerminalContractError extends Error {
+    constructor(
+        readonly code: AgentTerminalContractErrorCode,
+        message: string
+    ) {
+        super(message)
+        this.name = 'AgentTerminalContractError'
+    }
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -267,15 +285,21 @@ function normalizeFinalResponseContract(
         rawContract['name'].trim().length > 0
             ? rawContract['name'].trim()
             : undefined
+    const terminalTool =
+        typeof rawContract['terminalTool'] === 'string' &&
+        rawContract['terminalTool'].trim().length > 0
+            ? rawContract['terminalTool'].trim()
+            : undefined
 
-    if (schema == null && instruction == null) {
+    if (schema == null && instruction == null && terminalTool == null) {
         return null
     }
 
     return {
         schema,
         name,
-        instruction
+        instruction,
+        terminalTool
     }
 }
 
@@ -361,6 +385,13 @@ export async function* runAgent(
     const finalResponseContract = normalizeFinalResponseContract(
         options.input['qqbot_final_response_contract']
     )
+    const terminalToolName = finalResponseContract?.terminalTool?.toLowerCase()
+    if (terminalToolName && toolMap[terminalToolName] == null) {
+        throw new AgentTerminalContractError(
+            'TERMINAL_TOOL_UNAVAILABLE',
+            `Agent final response terminal tool is unavailable: ${finalResponseContract?.terminalTool}.`
+        )
+    }
 
     let iterations = 0
 
@@ -424,6 +455,12 @@ export async function* runAgent(
         checkAborted(signal)
 
         if (isAgentFinish(output)) {
+            if (terminalToolName) {
+                throw new AgentTerminalContractError(
+                    'DIRECT_FINISH_FORBIDDEN',
+                    `Agent attempted to finish without terminal tool ${finalResponseContract?.terminalTool}.`
+                )
+            }
             const message = output.returnValues['message'] as AIMessageChunk
 
             yield {
@@ -451,6 +488,28 @@ export async function* runAgent(
         }
 
         if (output.length > 0) {
+            if (terminalToolName && output.length !== 1) {
+                throw new AgentTerminalContractError(
+                    'PARALLEL_ACTIONS_FORBIDDEN',
+                    `Agent final response contract requires one tool action per round; received ${output.length}.`
+                )
+            }
+            const wrongDirect = terminalToolName
+                ? output.find((action) => {
+                      const name = action.tool?.toLowerCase()
+                      return (
+                          name != null &&
+                          name !== terminalToolName &&
+                          toolMap[name]?.returnDirect === true
+                      )
+                  })
+                : undefined
+            if (wrongDirect) {
+                throw new AgentTerminalContractError(
+                    'WRONG_DIRECT_TOOL',
+                    `Agent attempted returnDirect tool ${wrongDirect.tool}; terminal tool ${finalResponseContract?.terminalTool} is required.`
+                )
+            }
             yield {
                 type: 'round-decision'
             }
@@ -510,6 +569,15 @@ export async function* runAgent(
             last != null &&
             (tool?.returnDirect || isDirectToolOutput(last.observation))
         ) {
+            if (
+                terminalToolName &&
+                last.action.tool?.toLowerCase() !== terminalToolName
+            ) {
+                throw new AgentTerminalContractError(
+                    'WRONG_DIRECT_TOOL',
+                    `Agent returned through ${last.action.tool}; terminal tool ${finalResponseContract?.terminalTool} is required.`
+                )
+            }
             yield {
                 type: 'round-decision',
                 canContinue: false
@@ -544,6 +612,13 @@ export async function* runAgent(
         }
 
         iterations += 1
+    }
+
+    if (terminalToolName) {
+        throw new AgentTerminalContractError(
+            'ITERATION_LIMIT',
+            `Agent reached the iteration limit without terminal tool ${finalResponseContract?.terminalTool}.`
+        )
     }
 
     yield {
@@ -870,6 +945,14 @@ export function toToolInputErrorObservation(
 function toOutput(value: unknown): string {
     if (typeof value === 'string') {
         return value
+    }
+
+    if (
+        isDirectToolOutput(value) &&
+        'output' in value &&
+        typeof value.output === 'string'
+    ) {
+        return value.output
     }
 
     if (Array.isArray(value) && value.every(isMessageContentText)) {

@@ -199,6 +199,7 @@ export type AgentObservationComplexContent =
 
 export type AgentDirectToolObservation = DirectToolOutput & {
     replyEmitted?: boolean
+    output?: string
 }
 
 export type AgentObservation =

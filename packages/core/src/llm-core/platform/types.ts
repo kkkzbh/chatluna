@@ -80,6 +80,7 @@ export interface ChatLunaToolDefaultAvailability {
 }
 
 export interface ChatLunaToolMeta {
+    internalContract?: boolean
     source?:
         | 'core'
         | 'extension'

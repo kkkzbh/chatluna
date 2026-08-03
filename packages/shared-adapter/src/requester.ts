@@ -330,8 +330,10 @@ export async function buildChatCompletionParams(
     )
     const workflowState = resolveRequiredToolWorkflowStateForParams(params)
     if (workflowState?.complete) {
-        request.tool_choice = 'none'
-        request.parallel_tool_calls = false
+        if (request.tool_choice == null) {
+            request.tool_choice = 'none'
+            request.parallel_tool_calls = false
+        }
     } else if (workflowState) {
         const name = requireWorkflowTool(params, workflowState)
         request.tool_choice = { type: 'function', function: { name } }
@@ -396,8 +398,10 @@ export async function buildResponseParams(
     )
     const workflowState = resolveRequiredToolWorkflowStateForParams(params)
     if (workflowState?.complete) {
-        request.tool_choice = 'none'
-        request.parallel_tool_calls = false
+        if (request.tool_choice == null) {
+            request.tool_choice = 'none'
+            request.parallel_tool_calls = false
+        }
     } else if (workflowState) {
         const name = requireWorkflowTool(params, workflowState)
         request.tool_choice = { type: 'function', name }

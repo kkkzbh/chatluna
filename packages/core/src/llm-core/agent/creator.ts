@@ -102,6 +102,40 @@ export interface CreateToolsRefOptions {
     toolMask?: ToolMask
 }
 
+function permitNamedTools(mask: ToolMask, names: Set<string>): ToolMask {
+    return {
+        ...mask,
+        tools: mask.tools ? [...new Set([...mask.tools, ...names])] : undefined,
+        allow:
+            mask.mode === 'allow'
+                ? [...new Set([...mask.allow, ...names])]
+                : [...mask.allow],
+        deny:
+            mask.mode === 'deny'
+                ? mask.deny.filter((name) => !names.has(name))
+                : [...mask.deny],
+        toolCallMask: mask.toolCallMask
+            ? permitNamedTools(mask.toolCallMask, names)
+            : undefined
+    }
+}
+
+export function permitInternalContractTools(
+    mask: ToolMask | undefined,
+    tools: ChatLunaTool[]
+): ToolMask | undefined {
+    if (!mask) return undefined
+
+    const names = new Set(
+        tools
+            .filter((tool) => tool.meta?.internalContract === true)
+            .map((tool) => tool.name)
+    )
+    if (names.size < 1) return mask
+
+    return permitNamedTools(mask, names)
+}
+
 export function createToolsRef(options: CreateToolsRefOptions) {
     const activeTools = shallowRef<ChatLunaTool[]>([])
 

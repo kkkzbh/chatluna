@@ -18,6 +18,7 @@ import {
     AgentRunner,
     createAgentRunner,
     createToolsRef,
+    permitInternalContractTools,
     ToolMask
 } from 'koishi-plugin-chatluna/llm-core/agent'
 import { BufferMemory } from 'koishi-plugin-chatluna/llm-core/memory/langchain'
@@ -225,7 +226,11 @@ export class ChatLunaPluginChain
             input: message
         }
         const nextVars = Object.assign({}, variables ?? {})
-        const toolMask = subagentContext?.toolMask ?? callToolMask
+        const requestedToolMask = subagentContext?.toolMask ?? callToolMask
+        const toolMask = permitInternalContractTools(
+            requestedToolMask,
+            this.tools.value
+        )
 
         const chatHistory = this.historyMemory
             .chatHistory as KoishiChatMessageHistory

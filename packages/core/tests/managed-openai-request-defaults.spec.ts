@@ -1,6 +1,7 @@
 /// <reference types="mocha" />
 
 import { assert } from 'chai'
+import { HumanMessage, ToolMessage } from '@langchain/core/messages'
 import type { ChatLunaPlugin } from '../src/services/chat'
 import type {
     ModelRequester,
@@ -65,6 +66,48 @@ it('wires managed Responses defaults into provider fields', async () => {
         type: REQUEST_DEFAULTS.thinkingMode
     })
     assert.notProperty(body, 'reasoning_effort')
+})
+
+it('preserves a required terminal tool after a forced workflow completes', async () => {
+    const workflow = {
+        qqbot_required_tool_sequence: ['workflow_finish'],
+        qqbot_required_tool_terminal: 'workflow_finish',
+        tool_choice: 'required',
+        parallel_tool_calls: false
+    }
+    const input = [
+        new HumanMessage({
+            content: 'finish the workflow',
+            additional_kwargs: { overrideRequestParams: workflow }
+        }),
+        new ToolMessage({
+            content: JSON.stringify({ valid: true }),
+            name: 'workflow_finish',
+            tool_call_id: 'workflow-call'
+        })
+    ]
+    const params = {
+        ...managedRequestParams('responses'),
+        input,
+        overrideRequestParams: workflow
+    }
+
+    const responseBody = await buildResponseParams(
+        params,
+        {} as ChatLunaPlugin,
+        {},
+        false
+    )
+    const chatBody = await buildChatCompletionParams(
+        params,
+        {} as ChatLunaPlugin,
+        false
+    )
+
+    assert.equal(responseBody.tool_choice, 'required')
+    assert.equal(responseBody.parallel_tool_calls, false)
+    assert.equal(chatBody.tool_choice, 'required')
+    assert.equal(chatBody.parallel_tool_calls, false)
 })
 
 function managedRequestParams(

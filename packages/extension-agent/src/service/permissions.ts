@@ -463,8 +463,9 @@ export class ChatLunaAgentPermissionService {
 
     getRegistry() {
         return Object.fromEntries(
-            Object.values(this.ctx.chatluna.platform.getToolRegistry()).map(
-                (item) => {
+            Object.values(this.ctx.chatluna.platform.getToolRegistry())
+                .filter((item) => item.meta?.internalContract !== true)
+                .map((item) => {
                     const saved = this.config.tool.registry?.[item.name]
                     const avail = {
                         ...(createToolDefaultAvailability(item.meta) ?? {}),
@@ -490,8 +491,7 @@ export class ChatLunaAgentPermissionService {
                             }
                         }
                     ]
-                }
-            )
+                })
         )
     }
 
