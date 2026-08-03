@@ -187,7 +187,7 @@ When to use:
 
             const timeout =
                 input.timeout ??
-                this.computer.config.computer.local.commandTimeoutMs
+                this.computer.config.computer.podman.commandTimeoutMs
             const result = await computer.execute(command, {
                 workdir: input.workdir,
                 timeout,

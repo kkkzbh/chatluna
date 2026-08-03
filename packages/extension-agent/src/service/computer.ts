@@ -23,14 +23,19 @@ import {
     ComputerCapability,
     ComputerDesktopState,
     ComputerStatus,
-    ComputerTerminalInfo
+    ComputerTerminalInfo,
+    SandboxIdentity
 } from '../types'
 import {
     buildComputerSessionKey,
     ComputerSessionStore
 } from '../computer/session'
-import { LocalComputerSession } from '../computer/backends/local'
-import { findGitBash, findPowerShell } from '../computer/backends/local/shell'
+import {
+    listPodmanWorkspaces,
+    PodmanComputerSession,
+    resetPodmanWorkspace,
+    stopPodmanWorkspace
+} from '../computer/backends/podman'
 import { OpenTerminalComputerSession } from '../computer/backends/open_terminal'
 import { E2BComputerSession } from '../computer/backends/e2b'
 import {
@@ -56,7 +61,7 @@ import { GrepTool } from '../computer/tools/grep'
 import { GlobTool } from '../computer/tools/glob'
 import { BashTool } from '../computer/tools/bash'
 import { quoteShell, quoteShellPath } from '../utils/shell'
-import { getComputerRootPath } from '../config/path'
+import { getSandboxIdentity } from '../computer/identity'
 
 export class ChatLunaAgentComputerService {
     private _sessions = new ComputerSessionStore()
@@ -67,6 +72,7 @@ export class ChatLunaAgentComputerService {
     private _proxy: ChatLunaAgentComputerProxy
     private _terminals = new Map<string, Map<string, ManagedTerminal>>()
     private _jobs = new Map<string, BackgroundJob>()
+    private _conversations = new Map<string, string>()
 
     readonly materializer = new SkillMaterializer()
 
@@ -95,6 +101,7 @@ export class ChatLunaAgentComputerService {
         await this.closeAllTerminals()
         this._jobs.clear()
         await this._sessions.clear()
+        this._conversations.clear()
         this._status = this.buildStatus()
         this._proxy.stop()
     }
@@ -103,6 +110,7 @@ export class ChatLunaAgentComputerService {
         await this.closeAllTerminals()
         this._jobs.clear()
         await this._sessions.clear()
+        this._conversations.clear()
         this._status = this.buildStatus()
         this.syncIdleCleanup()
         this.syncTools()
@@ -121,6 +129,15 @@ export class ChatLunaAgentComputerService {
         return this._sessions.getInfoBySessionId(sessionId)
     }
 
+    getSessionForConversation(
+        conversationId: string,
+        backend = this.resolveProvider()
+    ) {
+        if (!backend) return undefined
+        const id = this._conversations.get(`${backend}:${conversationId}`)
+        return id ? this._sessions.getBySessionId(id) : undefined
+    }
+
     getPromptWorkdir(conversationId?: string, backend?: ComputerBackendType) {
         if (!this._status.enabled) {
             return undefined
@@ -131,22 +148,13 @@ export class ChatLunaAgentComputerService {
             this.resolveProvider() ??
             this.config.computer.defaultProvider
         if (conversationId) {
-            const session = this._sessions.get(
-                buildComputerSessionKey({ backend: type, conversationId })
-            )
+            const id = this._conversations.get(`${type}:${conversationId}`)
+            const session = id ? this._sessions.getBySessionId(id) : undefined
             if (session) {
                 return session.cwd
             }
         }
-
-        if (type === 'local') {
-            return (
-                this.config.computer.local.scopePath ||
-                getComputerRootPath(this.ctx)
-            )
-        }
-
-        return '~'
+        return type === 'podman' ? '/workspace' : '~'
     }
 
     getTerminal(sessionId: string, terminalId: string) {
@@ -332,8 +340,8 @@ export class ChatLunaAgentComputerService {
     async getOrCreateSession(options: {
         backend?: ComputerBackendType
         allowedBackends?: ComputerBackendType[]
+        identity: SandboxIdentity
         conversationId?: string
-        userId?: string
     }) {
         const backend = this.resolveProvider(
             options.backend,
@@ -357,22 +365,27 @@ export class ChatLunaAgentComputerService {
         const session = await this._sessions.getOrCreate(
             buildComputerSessionKey({
                 backend,
-                conversationId: options.conversationId,
-                userId: options.userId
+                identity: options.identity
             }),
             {
                 backend,
-                conversationId: options.conversationId,
-                userId: options.userId
+                identity: options.identity
             },
             async () => {
                 const item = this.createTrackedSession(
-                    await this.createSession(backend, options.userId)
+                    await this.createSession(backend, options.identity)
                 )
                 await item.connect()
                 return item
             }
         )
+
+        if (options.conversationId) {
+            this._conversations.set(
+                `${backend}:${options.conversationId}`,
+                session.sessionId
+            )
+        }
 
         this.refreshStatus()
         return session
@@ -381,11 +394,18 @@ export class ChatLunaAgentComputerService {
     async destroySession(id: string) {
         await this.closeAllTerminals(id)
         await this._sessions.destroyBySessionId(id)
+        for (const [key, value] of this._conversations) {
+            if (value === id) this._conversations.delete(key)
+        }
         this.refreshStatus()
     }
 
     async testBackend(type: ComputerBackendType) {
-        const session = await this.createSession(type)
+        const session = await this.createSession(type, {
+            kind: 'console',
+            key: `console:test:${randomUUID()}`,
+            subjectId: 'test'
+        })
         try {
             await session.connect()
             await session.disconnect()
@@ -400,6 +420,10 @@ export class ChatLunaAgentComputerService {
                 state: 'error',
                 error: err instanceof Error ? err.message : String(err)
             } satisfies ComputerBackendStatus
+        } finally {
+            if (session instanceof PodmanComputerSession) {
+                await session.destroyWorkspace()
+            }
         }
     }
 
@@ -425,55 +449,7 @@ export class ChatLunaAgentComputerService {
             return false
         }
 
-        if (type === 'local') {
-            if (!this.config.computer.local.dangerouslySkipPermissions) {
-                if (
-                    this.config.computer.local.blockedCommands.some(
-                        (item) => item.toLowerCase() === name.toLowerCase()
-                    )
-                ) {
-                    return false
-                }
-
-                if (
-                    this.config.computer.local.allowedCommands.length > 0 &&
-                    !this.config.computer.local.allowedCommands.some(
-                        (item) => item.toLowerCase() === name.toLowerCase()
-                    )
-                ) {
-                    return false
-                }
-            }
-
-            if (process.platform === 'win32') {
-                const lower = name.toLowerCase()
-                if (
-                    lower === 'bash' ||
-                    lower === 'bash.exe' ||
-                    lower === 'sh' ||
-                    lower === 'sh.exe'
-                ) {
-                    return (await findGitBash()) != null
-                }
-
-                if (
-                    lower === 'pwsh' ||
-                    lower === 'pwsh.exe' ||
-                    lower === 'powershell' ||
-                    lower === 'powershell.exe'
-                ) {
-                    return findPowerShell() != null
-                }
-
-                if (lower === 'cmd' || lower === 'cmd.exe') {
-                    return true
-                }
-            }
-
-            return which.sync(name, { nothrow: true }) != null
-        }
-
-        const session = await this.getOrCreateSession({ backend: type }).catch(
+        const session = await this.getRemoteScanSession(type).catch(
             () => undefined
         )
         if (!session) {
@@ -498,6 +474,36 @@ export class ChatLunaAgentComputerService {
 
     listSessionInfos() {
         return this._sessions.list()
+    }
+
+    async listWorkspaces() {
+        return await listPodmanWorkspaces()
+    }
+
+    async stopWorkspace(id: string) {
+        for (const info of this._sessions.list()) {
+            const session = this._sessions.getBySessionId(info.id)
+            if (
+                session instanceof PodmanComputerSession &&
+                session.workspaceId === id
+            ) {
+                await this.destroySession(info.id)
+            }
+        }
+        await stopPodmanWorkspace(id)
+    }
+
+    async resetWorkspace(id: string) {
+        for (const info of this._sessions.list()) {
+            const session = this._sessions.getBySessionId(info.id)
+            if (
+                session instanceof PodmanComputerSession &&
+                session.workspaceId === id
+            ) {
+                await this.destroySession(info.id)
+            }
+        }
+        await resetPodmanWorkspace(id)
     }
 
     async createTerminal(
@@ -790,23 +796,27 @@ export class ChatLunaAgentComputerService {
     ) {
         return await this.getOrCreateSession({
             backend,
-            conversationId: `console:${clientId}`,
-            userId: clientId
+            identity: {
+                kind: 'console',
+                key: `console:${clientId}`,
+                subjectId: clientId
+            }
         })
     }
 
-    private async getRemoteScanSession() {
-        const backend = this.resolveProvider(
-            this.config.computer.defaultProvider
-        )
-        if (!backend || backend === 'local') {
+    private async getRemoteScanSession(type?: ComputerBackendType) {
+        const backend = type ?? this.resolveProvider()
+        if (!backend) {
             return undefined
         }
 
         return await this.getOrCreateSession({
             backend,
-            conversationId: `console:remote-scan:${backend}`,
-            userId: `console:remote-scan:${backend}`
+            identity: {
+                kind: 'console',
+                key: `console:remote-scan:${backend}`,
+                subjectId: `remote-scan:${backend}`
+            }
         })
     }
 
@@ -863,9 +873,27 @@ export class ChatLunaAgentComputerService {
                 sub?.parentConversationId ??
                 runConfig?.configurable?.agentContext?.conversationId ??
                 runConfig?.configurable?.conversationId,
-            userId:
-                runConfig?.configurable?.userId ??
-                runConfig?.configurable?.session?.userId
+            identity: getSandboxIdentity({
+                platform:
+                    runConfig?.configurable?.agentContext?.platform ??
+                    runConfig?.configurable?.session?.platform,
+                selfId:
+                    runConfig?.configurable?.agentContext?.selfId ??
+                    runConfig?.configurable?.session?.selfId,
+                isDirect:
+                    runConfig?.configurable?.agentContext?.isDirect ??
+                    runConfig?.configurable?.session?.isDirect,
+                userId:
+                    runConfig?.configurable?.agentContext?.userId ??
+                    runConfig?.configurable?.userId ??
+                    runConfig?.configurable?.session?.userId,
+                guildId:
+                    runConfig?.configurable?.agentContext?.guildId ??
+                    runConfig?.configurable?.session?.guildId,
+                channelId:
+                    runConfig?.configurable?.agentContext?.channelId ??
+                    runConfig?.configurable?.session?.channelId
+            })
         }
     }
 
@@ -889,7 +917,7 @@ export class ChatLunaAgentComputerService {
                   )
                 : undefined,
             conversationId: sub?.parentConversationId ?? context.conversationId,
-            userId: context.userId
+            identity: getSandboxIdentity(context)
         }
     }
 
@@ -957,19 +985,15 @@ export class ChatLunaAgentComputerService {
         )
     }
 
-    private async createSession(backend: ComputerBackendType, userId?: string) {
-        const localScopePath =
-            this.config.computer.local.scopePath ||
-            getComputerRootPath(this.ctx)
-        const cwd = !/^[A-Za-z]:/.test(localScopePath)
-            ? localScopePath.replaceAll('\\', '/')
-            : undefined
-
-        if (backend === 'local') {
-            return new LocalComputerSession({
-                ...this.config.computer.local,
-                scopePath: localScopePath
-            })
+    private async createSession(
+        backend: ComputerBackendType,
+        identity: SandboxIdentity
+    ) {
+        if (backend === 'podman') {
+            return new PodmanComputerSession(
+                this.config.computer.podman,
+                identity
+            )
         }
 
         if (backend === 'open-terminal') {
@@ -981,7 +1005,7 @@ export class ChatLunaAgentComputerService {
                         this.config.computer.openTerminal.apiKey
                     )
                 },
-                { userId, cwd }
+                { userId: identity.subjectId }
             )
         }
 
@@ -991,7 +1015,7 @@ export class ChatLunaAgentComputerService {
                 ...this.config.computer.e2b,
                 apiKey: this.resolveSecret(this.config.computer.e2b.apiKey)
             },
-            { cwd }
+            {}
         )
     }
 
@@ -1088,8 +1112,7 @@ export class ChatLunaAgentComputerService {
                         '<computer_use>',
                         `Default provider: ${this.resolveProvider() ?? this.config.computer.defaultProvider}`,
                         `Available capabilities: ${capabilities.join(', ')}`,
-                        'Prefer isolated backends when available. ' +
-                            'Local computer access runs directly on the host machine and should only be used when explicitly enabled.',
+                        'Podman workspaces are isolated per group or private user.',
                         'Use these capabilities when file operations, code search, shell execution, terminal interaction, or preview access are needed.',
                         '</computer_use>'
                     ].join('\n')
@@ -1108,14 +1131,14 @@ export class ChatLunaAgentComputerService {
     private refreshStatus() {
         const status = this.buildStatus()
         const sessions = this._sessions.list()
-        const counts = { local: 0, e2b: 0, 'open-terminal': 0 }
+        const counts = { podman: 0, e2b: 0, 'open-terminal': 0 }
 
         for (const item of sessions) {
             counts[item.backend] += 1
         }
 
         status.activeSessions = sessions.length
-        status.backends.local.sessionCount = counts.local
+        status.backends.podman.sessionCount = counts.podman
         status.backends.e2b.sessionCount = counts.e2b
         status.backends['open-terminal'].sessionCount = counts['open-terminal']
 
@@ -1123,10 +1146,14 @@ export class ChatLunaAgentComputerService {
     }
 
     private buildStatus(): ComputerStatus {
-        const local = buildBackendStatus(
-            'local',
-            this.config.computer.local.enabled,
-            BASE_CAPABILITIES
+        const podman = buildBackendStatus(
+            'podman',
+            this.config.computer.podman.enabled,
+            BASE_CAPABILITIES,
+            this.config.computer.podman.enabled &&
+                !which.sync('podman', { nothrow: true })
+                ? 'Podman executable is unavailable.'
+                : undefined
         )
 
         const openTerminal = buildBackendStatus(
@@ -1153,12 +1180,12 @@ export class ChatLunaAgentComputerService {
 
         return {
             enabled:
-                isAvailableBackend(local) ||
+                isAvailableBackend(podman) ||
                 isAvailableBackend(openTerminal) ||
                 isAvailableBackend(e2b),
             defaultProvider: this.config.computer.defaultProvider,
             backends: {
-                local,
+                podman,
                 e2b,
                 'open-terminal': openTerminal
             },
@@ -1231,9 +1258,9 @@ const E2B_EXTRA: ComputerCapability[] = [
 ]
 
 const COMPUTER_BACKENDS: ComputerBackendType[] = [
+    'podman',
     'e2b',
-    'open-terminal',
-    'local'
+    'open-terminal'
 ]
 
 const COMPUTER_TOOLS = [

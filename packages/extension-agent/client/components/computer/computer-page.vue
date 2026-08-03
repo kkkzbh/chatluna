@@ -67,7 +67,7 @@
                         >
                             <el-option label="E2B（云端沙箱）" value="e2b" />
                             <el-option label="Open Terminal（远程/容器）" value="open-terminal" />
-                            <el-option label="Local（本机环境）" value="local" />
+                            <el-option label="Podman（隔离 Workspace）" value="podman" />
                         </el-select>
                     </div>
                 </div>
@@ -195,22 +195,14 @@ const props = withDefaults(
     }>(),
     {
         config: () => ({
-            defaultProvider: 'e2b',
+            defaultProvider: 'podman',
             idleTimeoutMs: 600000,
-            local: {
+            podman: {
                 enabled: false,
-                sandboxMode: 'workspace-write',
-                approvalMode: 'on-request',
-                dangerouslySkipPermissions: false,
-                preferredShell: 'auto',
-                scopePath: '',
-                readOnlyRoots: [],
-                denyRoots: [],
-                ignores: [],
-                allowedCommands: [],
-                blockedCommands: [],
-                commandTimeoutMs: 30000,
-                networkPolicy: 'block'
+                image: 'localhost/qqbot-agent-workspace:latest',
+                memoryMb: 1024,
+                pidsLimit: 256,
+                commandTimeoutMs: 30000
             },
             e2b: {
                 enabled: false,
@@ -230,10 +222,10 @@ const props = withDefaults(
         }),
         status: () => ({
             enabled: false,
-            defaultProvider: 'e2b',
+            defaultProvider: 'podman',
             backends: {
-                local: {
-                    type: 'local',
+                podman: {
+                    type: 'podman',
                     state: 'unsupported',
                     capabilities: [
                         'file_read',
@@ -292,23 +284,23 @@ const pendingJob = ref<ComputerBackgroundJobInfo>()
 const saving = ref(false)
 const reloading = ref(false)
 const testing = ref<Record<ComputerBackendType, boolean>>({
-    local: false,
+    podman: false,
     e2b: false,
     'open-terminal': false
 })
-const localDirty = ref(false)
+const podmanDirty = ref(false)
 
 watch(
     () => props.config,
     (value) => {
         const next = cloneConfig(value)
         if (JSON.stringify(draft.value) === JSON.stringify(next)) {
-            localDirty.value = false
+            podmanDirty.value = false
             draft.value = next
             return
         }
 
-        if (localDirty.value) {
+        if (podmanDirty.value) {
             return
         }
 
@@ -330,7 +322,7 @@ const busy = computed(() => {
 
 function updateConfig(value: ComputerConfig) {
     draft.value = cloneConfig(value)
-    localDirty.value = dirty.value
+    podmanDirty.value = dirty.value
 }
 
 function updateProvider(value: ComputerBackendType) {
@@ -338,7 +330,7 @@ function updateProvider(value: ComputerBackendType) {
         ...draft.value,
         defaultProvider: value
     }
-    localDirty.value = dirty.value
+    podmanDirty.value = dirty.value
 }
 
 function updateIdleTimeout(value: number | undefined) {
@@ -347,7 +339,7 @@ function updateIdleTimeout(value: number | undefined) {
         ...draft.value,
         idleTimeoutMs: value * 60000
     }
-    localDirty.value = dirty.value
+    podmanDirty.value = dirty.value
 }
 
 async function saveDraft() {
@@ -356,7 +348,7 @@ async function saveDraft() {
     }
 
     await send('chatluna-agent/saveComputer', cloneConfig(draft.value))
-    localDirty.value = false
+    podmanDirty.value = false
     return true
 }
 
@@ -438,7 +430,7 @@ function openJob(job: ComputerBackgroundJobInfo) {
 }
 
 function label(type: ComputerBackendType) {
-    if (type === 'local') return 'Local'
+    if (type === 'podman') return 'Podman'
     if (type === 'e2b') return 'E2B'
     return 'open-terminal'
 }

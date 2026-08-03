@@ -362,11 +362,9 @@ export class ChatLunaAgentSkillsService implements SkillToolService {
                     ?.getToolSession(input.runConfig)
                     .catch(() => undefined)
             } else if (input.conversationId) {
-                session = await computer
-                    ?.getOrCreateSession({
-                        conversationId: input.conversationId
-                    })
-                    .catch(() => undefined)
+                session = computer?.getSessionForConversation(
+                    input.conversationId
+                )
             }
         }
 
@@ -400,9 +398,7 @@ export class ChatLunaAgentSkillsService implements SkillToolService {
         if (!remote) return items
 
         const computer = this.ctx.chatluna_agent?.computer
-        const session = await computer
-            ?.getOrCreateSession({ conversationId })
-            .catch(() => undefined)
+        const session = computer?.getSessionForConversation(conversationId)
 
         return Promise.all(
             items.map(async (item) => {
@@ -513,9 +509,7 @@ export class ChatLunaAgentSkillsService implements SkillToolService {
                     this.ctx.chatluna_agent?.computer.getPromptWorkdir(
                         conversationId
                     )
-                const status = this.ctx.chatluna_agent?.computer.getStatus()
-                const remote =
-                    status != null && status.defaultProvider !== 'local'
+                const remote = true
                 const mask = (runtime.configurable as { toolMask?: ToolMask })
                     ?.toolMask
                 const hasTool =

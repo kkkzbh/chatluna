@@ -223,6 +223,9 @@ export interface AgentRunContext {
     requestId?: string
     source?: 'chatluna' | 'character'
     userId?: string
+    platform?: string
+    selfId?: string
+    isDirect?: boolean
     guildId?: string
     channelId?: string
     toolMask?: ToolMask

@@ -518,8 +518,8 @@ const rootLabel = computed(() => {
 })
 const keyword = computed(() => search.value.trim())
 const backendLabel = computed(() => {
-    if (props.config.defaultProvider === 'local') {
-        return 'Local'
+    if (props.config.defaultProvider === 'podman') {
+        return 'Podman'
     }
     if (props.config.defaultProvider === 'e2b') {
         return 'E2B'

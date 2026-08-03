@@ -107,7 +107,6 @@ function collectAgentcliCandidates(
     })
 
     for (const info of agent.computer.listSessionInfos()) {
-        if (info.backend === 'local') continue
         const session = agent.computer.getSession(info.id)
         if (!session) continue
         const remote = posix.join(

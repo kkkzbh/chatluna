@@ -370,9 +370,7 @@ export class ChatLunaAgentSubAgentService {
                 const agents = this.listRunnableAgents(session, source)
                 if (agents.length < 1) return next()
 
-                const status = this.ctx.chatluna_agent?.computer.getStatus()
-                const remote =
-                    status != null && status.defaultProvider !== 'local'
+                const remote = true
 
                 const msg = renderAvailableAgents(
                     agents.map((item) => ({

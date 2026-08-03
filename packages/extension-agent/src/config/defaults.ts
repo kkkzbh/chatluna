@@ -299,37 +299,14 @@ export function createDefaultSubAgentConfig(): SubAgentConfig {
 
 export function createDefaultComputerConfig(): ComputerConfig {
     return {
-        defaultProvider: 'e2b',
+        defaultProvider: 'podman',
         idleTimeoutMs: 600000,
-        local: {
+        podman: {
             enabled: false,
-            sandboxMode: 'workspace-write',
-            approvalMode: 'on-request',
-            dangerouslySkipPermissions: false,
-            preferredShell: 'auto',
-            scopePath: '',
-            readOnlyRoots: [],
-            denyRoots: [],
-            ignores: [
-                '**/node_modules/**',
-                '**/.git/**',
-                '**/dist/**',
-                '**/build/**',
-                '**/.yarn/**',
-                '**/coverage/**',
-                '**/.next/**',
-                '**/.nuxt/**',
-                '**/out/**',
-                '**/.cache/**',
-                '**/.vscode/**',
-                '**/.idea/**',
-                '**/temp/**',
-                '**/tmp/**'
-            ],
-            allowedCommands: [],
-            blockedCommands: [],
-            commandTimeoutMs: 30000,
-            networkPolicy: 'block'
+            image: 'localhost/qqbot-agent-workspace:latest',
+            memoryMb: 1024,
+            pidsLimit: 256,
+            commandTimeoutMs: 30000
         },
         e2b: {
             enabled: false,

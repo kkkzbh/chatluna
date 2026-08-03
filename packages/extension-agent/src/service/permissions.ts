@@ -551,7 +551,7 @@ function isWriteTool(name: string) {
 }
 
 function isComputerBackend(name: string): name is ComputerBackendType {
-    return name === 'local' || name === 'e2b' || name === 'open-terminal'
+    return name === 'podman' || name === 'e2b' || name === 'open-terminal'
 }
 
 export function createToolRule() {

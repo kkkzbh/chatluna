@@ -1,6 +1,6 @@
 /** @module computer/materialize */
 
-import { access, readFile, writeFile } from 'fs/promises'
+import { readFile } from 'fs/promises'
 import path, { posix } from 'path'
 import { Context } from 'koishi'
 import {
@@ -24,7 +24,6 @@ export class SkillMaterializer {
     }
 
     getPath(skill: ScannedSkill, session: ComputerSessionApi) {
-        if (session.backend === 'local') return skill.dir
         if (skill.remote) return skill.dir
         return getRemoteSkillDir(skill.name)
     }
@@ -35,23 +34,6 @@ export class SkillMaterializer {
         ctx?: Context
     ) {
         const root = this.getPath(skill, session)
-        if (session.backend === 'local') {
-            if (
-                skill.name === AGENTCLI_SKILL_NAME &&
-                skill.source === 'chatluna' &&
-                skill.scope === 'data' &&
-                ctx
-            ) {
-                const target = path.join(root, 'config.json')
-                try {
-                    await access(target)
-                } catch {
-                    await writeFile(target, await readHostConfigBytes(ctx))
-                }
-            }
-            return root
-        }
-
         if (skill.remote) {
             const map =
                 this._items.get(session.sessionId) ?? new Map<string, string>()

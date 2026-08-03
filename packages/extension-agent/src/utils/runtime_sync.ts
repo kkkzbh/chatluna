@@ -163,7 +163,7 @@ export class ChatLunaAgentRuntimeSyncService {
 
         try {
             const session = await agent.computer.getAgentSession(state.context)
-            if (session && session.backend !== 'local') {
+            if (session) {
                 await syncRuntimeSession(agent, session)
             }
 

@@ -138,7 +138,7 @@ const ready = computed(() =>
     backend.value.capabilities.includes('terminal_pty')
 )
 const backendLabel = computed(() => {
-    if (props.config.defaultProvider === 'local') return 'Local'
+    if (props.config.defaultProvider === 'podman') return 'Podman'
     if (props.config.defaultProvider === 'e2b') return 'E2B'
     return 'open-terminal'
 })

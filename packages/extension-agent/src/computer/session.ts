@@ -1,7 +1,10 @@
 /** @module computer/session */
 
-import { randomUUID } from 'crypto'
-import { ComputerBackendType, ComputerSessionInfo } from '../types'
+import {
+    ComputerBackendType,
+    ComputerSessionInfo,
+    SandboxIdentity
+} from '../types'
 import { ComputerSessionApi } from './types'
 
 export class ComputerSessionStore {
@@ -65,8 +68,7 @@ export class ComputerSessionStore {
                     info: {
                         id: session.sessionId,
                         backend: session.backend,
-                        userId: input.userId,
-                        conversationId: input.conversationId,
+                        identity: input.identity,
                         createdAt: now,
                         lastActiveAt: now,
                         cwd: session.cwd
@@ -144,11 +146,10 @@ export class ComputerSessionStore {
 }
 
 export function buildComputerSessionKey(opts: ComputerSessionKeyOptions) {
-    return `${opts.backend}:${opts.conversationId ?? opts.userId ?? randomUUID()}`
+    return `${opts.backend}:${opts.identity.key}`
 }
 
 export interface ComputerSessionKeyOptions {
     backend: ComputerBackendType
-    conversationId?: string
-    userId?: string
+    identity: SandboxIdentity
 }

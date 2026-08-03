@@ -55,25 +55,18 @@ Usage:
                 await this.formatLargeResult(computer, 'file-read', result)
             )
         } catch (err) {
-            if (computer.backend !== 'local') {
-                try {
-                    const result =
-                        await this.computer.readMaterializedSkillFile(
-                            computer,
-                            input.filePath,
-                            input.offset,
-                            input.limit ?? 2000
-                        )
-                    return this.withBackend(
-                        computer,
-                        await this.formatLargeResult(
-                            computer,
-                            'file-read',
-                            result
-                        )
-                    )
-                } catch {}
-            }
+            try {
+                const result = await this.computer.readMaterializedSkillFile(
+                    computer,
+                    input.filePath,
+                    input.offset,
+                    input.limit ?? 2000
+                )
+                return this.withBackend(
+                    computer,
+                    await this.formatLargeResult(computer, 'file-read', result)
+                )
+            } catch {}
 
             return this.formatResult(
                 false,

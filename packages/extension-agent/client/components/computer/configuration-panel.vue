@@ -152,67 +152,67 @@
             <div class="backend-head">
                 <div class="backend-intro">
                     <div class="backend-title-row">
-                        <div class="backend-title">本地环境</div>
-                        <el-tag size="small" effect="plain" type="danger">
-                            高风险
+                        <div class="backend-title">Podman Workspace</div>
+                        <el-tag size="small" effect="plain" type="success">
+                            隔离
                         </el-tag>
                         <el-tag
                             size="small"
                             effect="plain"
-                            :type="tagType(props.status.backends.local.state)"
+                            :type="tagType(props.status.backends.podman.state)"
                         >
-                            {{ stateLabel(props.status.backends.local.state) }}
+                            {{ stateLabel(props.status.backends.podman.state) }}
                         </el-tag>
                         <el-tag
-                            v-if="props.config.defaultProvider === 'local'"
+                            v-if="props.config.defaultProvider === 'podman'"
                             size="small"
                             effect="plain"
                         >
                             默认
                         </el-tag>
                         <el-tag size="small" effect="plain">
-                            {{ props.status.backends.local.sessionCount }}
+                            {{ props.status.backends.podman.sessionCount }}
                             个活跃会话
                         </el-tag>
                     </div>
                     <div v-if="!props.hideDesc" class="backend-copy">
-                        直接访问宿主机文件系统并运行系统命令。模型会以当前用户权限操作。
+                        每个群聊或私聊用户使用独立容器与 Workspace volume。
                     </div>
                     <div
-                        v-if="props.status.backends.local.error"
+                        v-if="props.status.backends.podman.error"
                         class="backend-error"
                     >
-                        {{ props.status.backends.local.error }}
+                        {{ props.status.backends.podman.error }}
                     </div>
                 </div>
 
                 <div class="backend-actions">
-                    <el-button text @click="openGuide('local')">
+                    <el-button text @click="openGuide('podman')">
                         配置指南
                     </el-button>
                     <el-button
                         class="test-link"
                         plain
-                        :loading="props.testing.local"
-                        @click="emit('test', 'local')"
+                        :loading="props.testing.podman"
+                        @click="emit('test', 'podman')"
                     >
                         测试连接
                     </el-button>
                     <el-button
                         :type="
-                            props.config.local.enabled ? 'danger' : 'success'
+                            props.config.podman.enabled ? 'danger' : 'success'
                         "
-                        @click="setLocalEnabled(!props.config.local.enabled)"
+                        @click="setPodmanEnabled(!props.config.podman.enabled)"
                     >
-                        {{ props.config.local.enabled ? '禁用' : '启用' }}
+                        {{ props.config.podman.enabled ? '禁用' : '启用' }}
                     </el-button>
                 </div>
             </div>
 
             <div class="backend-body">
-                <BackendLocal
-                    :config="props.config.local"
-                    @update="updateLocal"
+                <BackendPodman
+                    :config="props.config.podman"
+                    @update="updatePodman"
                 />
             </div>
         </section>
@@ -289,7 +289,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import BackendE2B from './config-backends/backend-e2b.vue'
-import BackendLocal from './config-backends/backend-local.vue'
+import BackendPodman from './config-backends/backend-podman.vue'
 import BackendOpenTerminal from './config-backends/backend-open-terminal.vue'
 import StatusPanel from './status-panel.vue'
 import type {
@@ -297,7 +297,7 @@ import type {
     ComputerConfig,
     ComputerStatus,
     E2BBackendConfig,
-    LocalBackendConfig,
+    PodmanBackendConfig,
     OpenTerminalBackendConfig
 } from '../../../src/types'
 
@@ -338,41 +338,30 @@ const guideOpen = ref(false)
 const guideType = ref<ComputerBackendType>('e2b')
 
 const guide = computed<GuideContent>(() => {
-    if (guideType.value === 'local') {
+    if (guideType.value === 'podman') {
         return {
-            title: 'Local 本地环境',
-            intro: 'Local 使用这台机器的文件系统和终端。适合需要直接操作本机项目时使用。',
-            warn: '开启“跳过沙箱与权限约束”后，不再使用 bwrap，也不会做路径保护、命令白名单和高危确认。',
+            title: 'Podman Workspace',
+            intro: 'Podman 为每个群聊或私聊用户创建独立的持久 Workspace。',
             sections: [
                 {
                     title: '配置顺序',
                     steps: [
-                        'Linux 先安装 bubblewrap (bwrap)。如果准备开启“跳过沙箱与权限约束”，可以不装。',
-                        '把“初始工作目录”设为常用项目目录。它只是起点，不限制访问范围。',
-                        '默认用“沙箱：只读”。需要改文件时再切到“沙箱：可写”。',
-                        '保留“按需审批”，高风险命令会先问你。',
-                        '不需要联网时，把网络策略设为“阻止”。',
-                        '保存后点“测试连接”，确认本机环境可用。'
+                        '安装 Podman，并准备配置中的 Workspace 镜像。',
+                        '设置每个容器的内存、进程数量和命令超时。',
+                        '保存后点“测试连接”，确认隔离容器可以启动。'
                     ]
                 },
                 {
                     title: '字段说明',
                     items: [
-                        '初始工作目录：终端和文件面板的起始路径，不是访问边界。',
-                        '只读根目录：这些路径可以读，不能写。',
-                        '禁止访问目录：这些路径不允许读写。',
-                        '忽略模式：减少搜索和文件列表里的噪音，比如 node_modules、dist。',
-                        '跳过沙箱与权限约束：直接运行，不使用 bwrap，也不拦高危命令。'
+                        'Workspace 镜像：容器运行时使用的本地镜像。',
+                        '内存限制：单个 Workspace 的最大内存。',
+                        '进程数量限制：容器内同时存在的最大进程数。',
+                        '命令超时：普通 Shell 命令的默认最长运行时间。'
                     ],
                     code: [
-                        '# Ubuntu / Debian',
-                        'sudo apt install bubblewrap',
-                        '',
-                        '# 建议起步',
-                        '初始工作目录: /path/to/project 或 C:\\repo\\project',
-                        '沙箱模式: read-only',
-                        '审批模式: on-request',
-                        '跳过沙箱与权限约束: false'
+                        'podman info',
+                        'podman image exists localhost/qqbot-agent-workspace:latest'
                     ].join('\n')
                 }
             ],
@@ -531,16 +520,16 @@ function openGuide(type: ComputerBackendType) {
     guideOpen.value = true
 }
 
-function updateLocal(value: LocalBackendConfig) {
+function updatePodman(value: PodmanBackendConfig) {
     emit('update:config', {
         ...props.config,
-        local: value
+        podman: value
     })
 }
 
-function setLocalEnabled(value: boolean) {
-    updateLocal({
-        ...props.config.local,
+function setPodmanEnabled(value: boolean) {
+    updatePodman({
+        ...props.config.podman,
         enabled: value
     })
 }
@@ -573,7 +562,7 @@ function setOpenTerminalEnabled(value: boolean) {
     })
 }
 
-function stateLabel(state: ComputerStatus['backends']['local']['state']) {
+function stateLabel(state: ComputerStatus['backends']['podman']['state']) {
     if (state === 'connected') return '已连接'
     if (state === 'connecting') return '连接中'
     if (state === 'idle') return '就绪'
@@ -581,7 +570,7 @@ function stateLabel(state: ComputerStatus['backends']['local']['state']) {
     return '未支持'
 }
 
-function tagType(state: ComputerStatus['backends']['local']['state']) {
+function tagType(state: ComputerStatus['backends']['podman']['state']) {
     if (state === 'connected') return 'success'
     if (state === 'idle') return 'info'
     if (state === 'error') return 'danger'

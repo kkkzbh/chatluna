@@ -46,10 +46,10 @@ function createEmptyStatus(ctx: Context): AgentStatus {
         },
         computer: {
             enabled: false,
-            defaultProvider: 'e2b',
+            defaultProvider: 'podman',
             backends: {
-                local: {
-                    type: 'local',
+                podman: {
+                    type: 'podman',
                     state: 'unsupported',
                     capabilities: [
                         'file_read',

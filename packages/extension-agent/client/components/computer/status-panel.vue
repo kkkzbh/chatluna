@@ -65,13 +65,13 @@ const backends = computed(() => [
         status: props.status.backends['open-terminal']
     },
     {
-        key: 'local',
-        label: 'Local',
-        status: props.status.backends.local
+        key: 'podman',
+        label: 'Podman',
+        status: props.status.backends.podman
     }
 ])
 
-function stateLabel(state: ComputerStatus['backends']['local']['state']) {
+function stateLabel(state: ComputerStatus['backends']['podman']['state']) {
     if (state === 'connected') return '已连接'
     if (state === 'connecting') return '连接中'
     if (state === 'idle') return '就绪'
@@ -79,7 +79,7 @@ function stateLabel(state: ComputerStatus['backends']['local']['state']) {
     return '未支持'
 }
 
-function tagType(state: ComputerStatus['backends']['local']['state']) {
+function tagType(state: ComputerStatus['backends']['podman']['state']) {
     if (state === 'connected') return 'success'
     if (state === 'idle') return 'info'
     if (state === 'error') return 'danger'

@@ -1,29 +1,27 @@
 /** @module types/computer */
 
-export type ComputerBackendType = 'local' | 'e2b' | 'open-terminal'
+export type ComputerBackendType = 'podman' | 'e2b' | 'open-terminal'
 
 export interface ComputerConfig {
     defaultProvider: ComputerBackendType
     idleTimeoutMs: number
-    local: LocalBackendConfig
+    podman: PodmanBackendConfig
     e2b: E2BBackendConfig
     openTerminal: OpenTerminalBackendConfig
 }
 
-export interface LocalBackendConfig {
+export interface PodmanBackendConfig {
     enabled: boolean
-    sandboxMode: 'read-only' | 'workspace-write'
-    approvalMode: 'on-request' | 'never'
-    dangerouslySkipPermissions: boolean
-    preferredShell: 'git-bash' | 'powershell' | 'cmd' | 'auto'
-    scopePath: string
-    readOnlyRoots: string[]
-    denyRoots: string[]
-    ignores: string[]
-    allowedCommands: string[]
-    blockedCommands: string[]
+    image: string
+    memoryMb: number
+    pidsLimit: number
     commandTimeoutMs: number
-    networkPolicy: 'block' | 'allow'
+}
+
+export interface SandboxIdentity {
+    kind: 'group' | 'private' | 'console'
+    key: string
+    subjectId: string
 }
 
 export interface E2BBackendConfig {
@@ -81,11 +79,17 @@ export interface ComputerStatus {
 export interface ComputerSessionInfo {
     id: string
     backend: ComputerBackendType
-    userId?: string
-    conversationId?: string
+    identity: SandboxIdentity
     createdAt: number
     lastActiveAt: number
     cwd: string
+}
+
+export interface PodmanWorkspaceInfo {
+    id: string
+    kind: SandboxIdentity['kind']
+    subjectId: string
+    state: string
 }
 
 export interface ComputerTerminalInfo {
