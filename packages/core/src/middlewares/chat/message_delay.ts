@@ -50,7 +50,7 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 return ChainMiddlewareRunStatus.CONTINUE
             }
 
-            context.options.messageId = randomUUID()
+            context.options.messageId ||= randomUUID()
 
             const { inputMessage } = context.options
             const resolved = context.options.conversation

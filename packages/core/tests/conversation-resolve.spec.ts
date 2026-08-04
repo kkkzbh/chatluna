@@ -1579,6 +1579,66 @@ it('message_delay uses the resolved conversation only', async () => {
     }
 })
 
+it('message_delay preserves a request id assigned by an earlier middleware', async () => {
+    const { app, ctx } = await createMemoryService()
+
+    try {
+        const session = createSession() as any
+        let run:
+            | ((
+                  session: any,
+                  context: any
+              ) => Promise<ChainMiddlewareRunStatus>)
+            | undefined
+
+        ctx.chatluna.conversationRuntime.appendPendingMessage = async () =>
+            true
+
+        applyMessageDelay(
+            ctx as never,
+            {
+                messageQueue: true,
+                messageQueueDelay: 0
+            } as never,
+            {
+                middleware: (_name, fn) => {
+                    run = fn as never
+                    return {
+                        after() {
+                            return this
+                        },
+                        before() {
+                            return this
+                        }
+                    }
+                }
+            } as never
+        )
+
+        const context = {
+            options: {
+                messageId: 'qqreply:assigned-request',
+                inputMessage: {
+                    content: 'hello',
+                    name: 'tester'
+                },
+                conversation: {
+                    conversation: createConversation({
+                        id: 'resolved-conversation'
+                    })
+                }
+            }
+        }
+
+        const status = await run!(session, context)
+
+        assert.equal(status, ChainMiddlewareRunStatus.STOP)
+        assert.equal(context.options.messageId, 'qqreply:assigned-request')
+    } finally {
+        await app.stop()
+    }
+})
+
 it('message_delay keeps collected messages in send order', async () => {
     const { app, ctx } = await createMemoryService()
 
