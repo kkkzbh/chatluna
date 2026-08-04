@@ -365,9 +365,14 @@ export class ChatLunaService extends Service<Config> {
     }
 
     async resolveCallbacks(input: ChatCallbackProviderInput) {
-        let merged = input.callbacks
+        let merged = CallbackManager.configure(input.callbacks)
         for (const provider of this._callbackProviders) {
-            merged = CallbackManager.configure(merged, await provider(input))
+            const provided = CallbackManager.configure(await provider(input))
+            if (!provided) continue
+            merged = (merged ?? new CallbackManager()).copy(
+                provided.handlers,
+                true
+            )
         }
 
         return merged
