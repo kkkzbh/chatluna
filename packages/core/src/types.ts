@@ -116,6 +116,7 @@ export interface MessageRecord {
 export interface ChatLunaMessageMeta {
     recordId?: string
     createdAt?: string
+    requestId?: string
     source?: 'user'
 }
 

@@ -1182,6 +1182,7 @@ export interface TriggerWakeupContext {
 export interface ChainMiddlewareContextOptions {
     conversation?: ConversationResolution
     triggerWakeup?: TriggerWakeupContext
+    requestSignal?: AbortSignal
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     [key: string]: any
 }

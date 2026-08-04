@@ -267,7 +267,11 @@ export class ChatLunaService extends Service<Config> {
     }
 
     async normalizeResearchReplyHistory(
-        room: { conversationId?: unknown },
+        room: {
+            conversationId?: unknown
+            requestId?: unknown
+            requestDisposition?: unknown
+        },
         finalVisibleText: string,
         updatedAt?: Date
     ): Promise<ResearchReplyHistoryNormalizationResult> {
@@ -281,22 +285,50 @@ export class ChatLunaService extends Service<Config> {
                 'normalizeResearchReplyHistory requires conversationId.'
             )
         }
+        const requestId =
+            typeof room?.requestId === 'string' ? room.requestId.trim() : ''
+        if (requestId.length < 1) {
+            throw new Error('normalizeResearchReplyHistory requires requestId.')
+        }
+        const requestDisposition = room?.requestDisposition
+        if (
+            requestDisposition !== 'retain_request' &&
+            requestDisposition !== 'drop_request'
+        ) {
+            throw new Error(
+                'normalizeResearchReplyHistory requires requestDisposition.'
+            )
+        }
 
-        const history = new KoishiChatMessageHistory(
-            this.ctx,
+        return this._conversationRuntime.withConversationLock(
             conversationId,
-            10000,
-            this
-        )
-
-        return history.normalizeResearchReplyHistory(
-            finalVisibleText,
-            updatedAt
+            async () => {
+                const history = new KoishiChatMessageHistory(
+                    this.ctx,
+                    conversationId,
+                    10000,
+                    this
+                )
+                const result = await history.normalizeResearchReplyHistory(
+                    requestId,
+                    finalVisibleText,
+                    requestDisposition,
+                    updatedAt
+                )
+                await this._conversationRuntime.clearConversationCache(
+                    conversationId
+                )
+                return result
+            }
         )
     }
 
     async normalizeReplyAgentHistory(
-        room: { conversationId?: unknown },
+        room: {
+            conversationId?: unknown
+            requestId?: unknown
+            requestDisposition?: unknown
+        },
         finalVisibleText: string,
         updatedAt?: Date
     ): Promise<ResearchReplyHistoryNormalizationResult> {

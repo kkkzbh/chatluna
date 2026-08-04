@@ -117,6 +117,81 @@ it('ConversationRuntime chat preserves additional kwargs metadata', async () => 
     assert.equal(result.additionalReplyMessages?.length, 2)
 })
 
+it('ConversationRuntime rejects a request cancelled before registration without invoking the chain', async () => {
+    let chatCalls = 0
+    const runtime = new ConversationRuntime({
+        createChatInterface: async () => ({
+            chat: async () => {
+                chatCalls += 1
+                return { message: new HumanMessage('unexpected') }
+            }
+        }),
+        resolveModelBinding: async ({ workload }: { workload: string }) =>
+            workload === 'main.chat'
+                ? {
+                      mode: 'dedicated',
+                      model: 'platform/model',
+                      revision: 1
+                  }
+                : {
+                      mode: 'disabled',
+                      revision: 1
+                  },
+        awaitLoadPlatform: async () => {},
+        currentConfig: {
+            showThoughtMessage: false
+        },
+        platform: {
+            resolveToolMask: async () => undefined,
+            getClient: async () => ({
+                value: {
+                    configPool: {
+                        getConfig: () => ({
+                            value: {
+                                concurrentMaxSize: 1
+                            }
+                        })
+                    }
+                }
+            })
+        },
+        resolveCallbacks: async (input) => input.callbacks,
+        ctx: {
+            root: {
+                parallel: async () => {}
+            }
+        }
+    } as never)
+    const conversation = createConversation({
+        id: 'conversation-runtime-pre-cancelled',
+        model: 'platform/model'
+    })
+    const cancellation = new Error('request cancelled before ChatLuna registration')
+    const controller = new AbortController()
+    controller.abort(cancellation)
+
+    let rejection: unknown
+    try {
+        await runtime.chat(
+            createSession(),
+            conversation,
+            { content: 'hello' },
+            {
+                requestId: 'pre-cancelled-request',
+                signal: controller.signal
+            }
+        )
+    } catch (error) {
+        rejection = error
+    }
+    assert.strictEqual(rejection, cancellation)
+    assert.equal(chatCalls, 0)
+    assert.equal(
+        runtime.activeByConversation.has(conversation.id),
+        false
+    )
+})
+
 it('ConversationRuntime appendPendingMessage waits for plugin round decisions', async () => {
     const runtime = new ConversationRuntime({} as never)
     const activeRequest = runtime.registerRequest(

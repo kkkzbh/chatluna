@@ -39,8 +39,10 @@ type SessionWithReplyRequestModelHandler = Session & {
     state?: Record<string, unknown> & {
         qqReplyTransport?: {
             handleRequestModelError?: (
-                error: unknown
+                error: unknown,
+                requestState: { requestBoundaryPersisted: boolean }
             ) => Promise<string | void> | string | void
+            handleRequestBoundaryPersisted?: () => Promise<void> | void
         }
     }
 }
@@ -176,8 +178,12 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                 config,
                 bufferText
             )
+            const requestSignal =
+                context.options.requestSignal ?? wakeup?.signal
+            let requestBoundaryPersisted = false
 
             try {
+                requestSignal?.throwIfAborted()
                 ;[responseMessage] = await Promise.all([
                     ctx.chatluna.conversationRuntime.chat(
                         session,
@@ -199,16 +205,43 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
                             requestId,
                             presetResolution: resolved.presetResolution,
                             toolMask: wakeup?.toolMask,
-                            signal: wakeup?.signal
+                            signal: requestSignal,
+                            onRequestBoundaryPersisted: async () => {
+                                requestBoundaryPersisted = true
+                                await (
+                                    session as SessionWithReplyRequestModelHandler
+                                ).state?.qqReplyTransport?.handleRequestBoundaryPersisted?.()
+                            }
                         }
                     ),
                     streamPromise
                 ])
+                if (requestSignal?.aborted) {
+                    await maybeHandleReplyRequestModelError(
+                        session as SessionWithReplyRequestModelHandler,
+                        requestSignal.reason,
+                        { requestBoundaryPersisted }
+                    )
+                    context.options.responseMessage = null
+                    context.options.finalResponseMessage = null
+                    context.message = null
+                    return ChainMiddlewareRunStatus.STOP
+                }
             } catch (e) {
+                const requestError = requestSignal?.aborted
+                    ? requestSignal.reason
+                    : e
                 const userMessage = await maybeHandleReplyRequestModelError(
                     session as SessionWithReplyRequestModelHandler,
-                    e
+                    requestError,
+                    { requestBoundaryPersisted }
                 )
+                if (requestSignal?.aborted) {
+                    context.options.responseMessage = null
+                    context.options.finalResponseMessage = null
+                    context.message = null
+                    return ChainMiddlewareRunStatus.STOP
+                }
                 if (
                     typeof userMessage === 'string' &&
                     e instanceof ChatLunaError
@@ -246,13 +279,14 @@ export function apply(ctx: Context, config: Config, chain: ChatChain) {
 
 async function maybeHandleReplyRequestModelError(
     session: SessionWithReplyRequestModelHandler,
-    error: unknown
+    error: unknown,
+    requestState: { requestBoundaryPersisted: boolean }
 ): Promise<string | void> {
     const handler = session.state?.qqReplyTransport?.handleRequestModelError
     if (typeof handler !== 'function') {
         return
     }
-    return handler(error)
+    return handler(error, requestState)
 }
 
 function createChatCallbacks(

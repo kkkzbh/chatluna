@@ -52,6 +52,7 @@ export interface ChatLunaLLMCallArg {
     maxToken?: number
     messageQueue?: MessageQueue
     onAgentEvent?: (event: AgentEvent) => Promise<void> | void
+    onRequestBoundaryPersisted?: () => Promise<void> | void
     toolMask?: ToolMask
     subagentContext?: SubagentContext
     callbacks?: Callbacks

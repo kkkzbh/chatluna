@@ -171,6 +171,113 @@ it('rejects parallel actions before any contracted tool is executed', async () =
     assert.equal(executions, 0)
 })
 
+it('allows parallel ordinary tools before a later terminal reply', async () => {
+    const executions: string[] = []
+    class OrdinaryTool extends StructuredTool {
+        name: string
+        description = 'read-only ordinary tool'
+        schema = z.object({})
+
+        constructor(name: string) {
+            super({})
+            this.name = name
+        }
+
+        async _call() {
+            executions.push(this.name)
+            return `${this.name}:done`
+        }
+    }
+    let rounds = 0
+    const agent = {
+        async *stream() {
+            rounds += 1
+            if (rounds === 1) {
+                yield [
+                    { tool: 'read_a', toolInput: {}, log: '' },
+                    { tool: 'read_b', toolInput: {}, log: '' }
+                ]
+                return
+            }
+            yield {
+                tool: 'submit_reply',
+                toolInput: { text: 'after reads' },
+                log: ''
+            }
+        }
+    }
+    const events = []
+
+    for await (const event of runAgent({
+        agent: agent as never,
+        tools: [
+            new TerminalTool({}),
+            new OrdinaryTool('read_a'),
+            new OrdinaryTool('read_b')
+        ],
+        input: terminalContractInput(),
+        maxIterations: 3
+    })) {
+        events.push(event)
+    }
+
+    assert.deepEqual(executions.sort(), ['read_a', 'read_b'])
+    assert.deepInclude(
+        events.find((event) => event.type === 'done'),
+        { type: 'done', output: 'encoded:after reads' }
+    )
+})
+
+it('rejects a terminal action in the last parallel position before any tool runs', async () => {
+    let executions = 0
+    class SideEffectTool extends StructuredTool {
+        name = 'side_effect_last'
+        description = 'must not run'
+        schema = z.object({})
+
+        async _call() {
+            executions += 1
+            return 'done'
+        }
+    }
+    const agent = {
+        async *stream() {
+            yield [
+                {
+                    tool: 'side_effect_last',
+                    toolInput: {},
+                    log: ''
+                },
+                {
+                    tool: 'submit_reply',
+                    toolInput: { text: 'done' },
+                    log: ''
+                }
+            ]
+        }
+    }
+    let error: unknown
+
+    try {
+        for await (const event of runAgent({
+            agent: agent as never,
+            tools: [new TerminalTool({}), new SideEffectTool({})],
+            input: terminalContractInput()
+        })) {
+            assert.property(event, 'type')
+        }
+    } catch (caught) {
+        error = caught
+    }
+
+    assert.instanceOf(error, AgentTerminalContractError)
+    assert.equal(
+        (error as AgentTerminalContractError).code,
+        'PARALLEL_ACTIONS_FORBIDDEN'
+    )
+    assert.equal(executions, 0)
+})
+
 it('rejects a non-terminal returnDirect tool before invocation', async () => {
     let calls = 0
     class WrongDirectTool extends StructuredTool {

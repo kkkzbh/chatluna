@@ -37,7 +37,10 @@ export interface ResearchReplyHistoryNormalizationResult {
     latestId: string | null
     normalizedMessageId: string | null
     normalizedText: string
+    requestBoundaryFound: boolean
 }
+
+export type ResearchReplyRequestDisposition = 'retain_request' | 'drop_request'
 
 const TRANSIENT_ADDITIONAL_KWARG_KEYS = [
     'qqbot_final_response_contract',
@@ -156,16 +159,36 @@ export class KoishiChatMessageHistory extends BaseChatMessageHistory {
     }
 
     async normalizeResearchReplyHistory(
+        expectedRequestId: string,
         finalVisibleText: string,
+        disposition: ResearchReplyRequestDisposition,
         updatedAt: Date = new Date()
     ): Promise<ResearchReplyHistoryNormalizationResult> {
+        const requestId = expectedRequestId.trim()
+        if (requestId.length < 1) {
+            throw new Error(
+                'research reply history normalization requires expectedRequestId.'
+            )
+        }
+        if (
+            disposition !== 'retain_request' &&
+            disposition !== 'drop_request'
+        ) {
+            throw new Error(
+                'research reply history normalization requires a request disposition.'
+            )
+        }
         await this.loadConversation()
 
         const latestId = this._latestId
         if (latestId == null) {
-            throw new Error(
-                `research reply history normalization failed: conversation has no latestId (${this.conversationId})`
-            )
+            return {
+                deletedMessageIds: [],
+                latestId: null,
+                normalizedMessageId: null,
+                normalizedText: '',
+                requestBoundaryFound: false
+            }
         }
 
         const messageMap = new Map(
@@ -181,11 +204,13 @@ export class KoishiChatMessageHistory extends BaseChatMessageHistory {
 
         const deletedMessageIds: string[] = []
         let boundaryParentId: string | null = null
+        let boundaryRequestId: string | null = null
         const latestRole = current.role
 
         while (current) {
             if (isConversationBoundaryRole(current.role)) {
                 boundaryParentId = current.id
+                boundaryRequestId = await readRecordRequestId(current)
                 break
             }
 
@@ -212,6 +237,16 @@ export class KoishiChatMessageHistory extends BaseChatMessageHistory {
             current = parent
         }
 
+        if (current?.role !== 'human' || boundaryRequestId !== requestId) {
+            return {
+                deletedMessageIds: [],
+                latestId,
+                normalizedMessageId: null,
+                normalizedText: '',
+                requestBoundaryFound: false
+            }
+        }
+
         if (
             deletedMessageIds.length === 0 &&
             !isConversationBoundaryRole(latestRole)
@@ -222,39 +257,68 @@ export class KoishiChatMessageHistory extends BaseChatMessageHistory {
         }
 
         const normalizedText = finalVisibleText.trim()
+        if (disposition === 'drop_request' && normalizedText.length > 0) {
+            throw new Error(
+                'research reply history normalization cannot attach visible text to a dropped request.'
+            )
+        }
 
-        if (deletedMessageIds.length > 0) {
-            await this._ctx.database.remove('chatluna_message', {
-                id: deletedMessageIds
-            })
+        if (disposition === 'drop_request') {
+            deletedMessageIds.push(current.id)
+            boundaryParentId = current.parentId ?? null
         }
 
         let normalizedMessageId: string | null = null
+        let normalizedMessage: MessageRecord | null = null
 
         if (normalizedText.length > 0) {
-            const normalizedMessage = await serializeMessage(
+            normalizedMessage = await serializeMessage(
                 new AIMessage(normalizedText),
                 this.conversationId,
                 boundaryParentId
             )
 
             normalizedMessageId = normalizedMessage.id
-            await this._ctx.database.upsert('chatluna_message', [
-                normalizedMessage
-            ])
         }
 
-        this._latestId = normalizedMessageId ?? boundaryParentId
-        this._updatedAt = updatedAt
+        const nextLatestId = normalizedMessageId ?? boundaryParentId
+        const hasKwargs =
+            this._additional_kwargs &&
+            Object.keys(this._additional_kwargs).length > 0
 
-        await this._saveConversation(updatedAt)
+        await this._ctx.database.withTransaction(async (database) => {
+            if (normalizedMessage) {
+                await database.upsert('chatluna_message', [normalizedMessage])
+            }
+
+            await database.upsert('chatluna_conversation', [
+                {
+                    id: this.conversationId,
+                    latestMessageId: nextLatestId,
+                    additional_kwargs: hasKwargs
+                        ? JSON.stringify(this._additional_kwargs)
+                        : null,
+                    updatedAt
+                }
+            ])
+
+            if (deletedMessageIds.length > 0) {
+                await database.remove('chatluna_message', {
+                    id: deletedMessageIds
+                })
+            }
+        })
+
+        this._latestId = nextLatestId
+        this._updatedAt = updatedAt
         this._chatHistory = await this._loadMessages()
 
         return {
             deletedMessageIds,
             latestId: this._latestId,
             normalizedMessageId,
-            normalizedText
+            normalizedText,
+            requestBoundaryFound: true
         }
     }
 
@@ -649,6 +713,21 @@ async function serializeMessage(
         conversationId,
         createdAt
     }
+}
+
+async function readRecordRequestId(
+    message: MessageRecord
+): Promise<string | null> {
+    if (message.response_metadata_binary == null) {
+        return null
+    }
+    const metadata = JSON.parse(
+        await gzipDecode(message.response_metadata_binary)
+    ) as { chatluna?: { requestId?: unknown } }
+    const requestId = metadata.chatluna?.requestId
+    return typeof requestId === 'string' && requestId.trim().length > 0
+        ? requestId.trim()
+        : null
 }
 
 function createAgentToolMessages(steps: AgentStep[]): BaseMessage[] {

@@ -30,6 +30,7 @@ export interface ChatOptions {
     toolMask?: ToolMask
     callbacks?: Callbacks
     signal?: AbortSignal
+    onRequestBoundaryPersisted?: () => Promise<void> | void
 }
 
 export class ConversationRuntime {
@@ -88,6 +89,9 @@ export class ConversationRuntime {
         message: Message,
         options: ChatOptions = {}
     ): Promise<Message> {
+        if (options.signal != null) {
+            throwIfAborted(options.signal)
+        }
         const requestId = options.requestId ?? randomUUID()
         const [main, embeddings] = await Promise.all([
             this.service.resolveModelBinding({
@@ -179,6 +183,7 @@ export class ConversationRuntime {
         }
 
         try {
+            throwIfAborted(abortController.signal)
             const humanMessage = buildHumanMessage(
                 session,
                 message,
@@ -225,7 +230,8 @@ export class ConversationRuntime {
                     activeRequest.lastDecision = agentEvent.canContinue
                     if (agentEvent.canContinue == null) return
                     flushRoundDecision(activeRequest, agentEvent.canContinue)
-                }
+                },
+                onRequestBoundaryPersisted: options.onRequestBoundaryPersisted
             })
 
             return this.buildReply(chainValues.message as AIMessage)
@@ -635,6 +641,14 @@ function linkAbortSignal(controller: AbortController, upstream?: AbortSignal) {
     const onAbort = () => controller.abort(upstream.reason)
     upstream.addEventListener('abort', onAbort, { once: true })
     return () => upstream.removeEventListener('abort', onAbort)
+}
+
+function throwIfAborted(signal: AbortSignal) {
+    if (!signal.aborted) return
+    throw (
+        signal.reason ??
+        new ChatLunaError(ChatLunaErrorCode.ABORTED, undefined, true)
+    )
 }
 
 function buildHumanMessage(

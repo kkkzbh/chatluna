@@ -153,8 +153,19 @@ export class ChatInterface {
                 return
             }
 
+            arg.message.response_metadata = {
+                ...(arg.message.response_metadata ?? {}),
+                chatluna: {
+                    ...((arg.message.response_metadata?.chatluna as Record<
+                        string,
+                        unknown
+                    >) ?? {}),
+                    requestId: arg.requestId
+                }
+            }
             await this._chatHistory.addMessage(arg.message)
             hasSavedUser = true
+            await arg.onRequestBoundaryPersisted?.()
         }
 
         // Compress chat history before starting

@@ -217,6 +217,18 @@ export class FakeDatabase {
         this.tables[table] = []
     }
 
+    async withTransaction(
+        callback: (database: this) => Promise<void>
+    ): Promise<void> {
+        const snapshot = structuredClone(this.tables)
+        try {
+            await callback(this)
+        } catch (error) {
+            this.tables = snapshot
+            throw error
+        }
+    }
+
     private samePrimary(table: string, left: TableRow, right: TableRow) {
         if (table === 'chatluna_binding') {
             return left.bindingKey === right.bindingKey

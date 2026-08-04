@@ -206,6 +206,198 @@ it('request_conversation uses resolved conversation state instead of legacy top-
     }
 })
 
+it('request_conversation silently stops a cancelled wakeup-scoped reply request', async () => {
+    const { app, ctx } = await createMemoryService()
+
+    try {
+        const conversation = createConversation({
+            id: 'cancelled-before-runtime-registration',
+            preset: 'cancel-test-preset',
+            model: 'test-platform/test-model'
+        })
+        const cancellation = new Error('superseded reply run')
+        const controller = new AbortController()
+        controller.abort(cancellation)
+        let handledError: unknown
+        let handledRequestState: unknown
+        let run:
+            | ((session: any, context: any) => Promise<ChainMiddlewareRunStatus>)
+            | undefined
+
+        const session = createSession() as any
+        session.bot = { selfId: 'test-bot' }
+        session.event = { user: { id: 'user-1', name: 'Tester' } }
+        session.state = {
+            qqReplyTransport: {
+                handleRequestModelError: async (
+                    error: unknown,
+                    requestState: unknown
+                ) => {
+                    handledError = error
+                    handledRequestState = requestState
+                }
+            }
+        }
+        ctx.chatluna.conversation.ensureActiveConversation = async () => ({
+            conversation,
+            conversationId: conversation.id,
+            bindingKey: 'shared:test:bot:channel',
+            presetLane: null
+        }) as never
+        ctx.chatluna.preset.getContextPreset = () => ({
+            value: {
+                promptConfig: {}
+            }
+        }) as never
+        applyRequest(
+            ctx as never,
+            {
+                streamResponse: false,
+                splitMessage: false
+            } as never,
+            {
+                middleware: (_name, fn) => {
+                    run = fn as never
+                    return {
+                        after() {
+                            return this
+                        }
+                    }
+                }
+            } as never
+        )
+        const context = {
+            message: 'must not be sent',
+            options: {
+                inputMessage: {
+                    content: 'hello',
+                    additional_kwargs: {}
+                },
+                triggerWakeup: {
+                    signal: controller.signal,
+                    source: { kind: 'agent-task' }
+                },
+                responseMessage: { content: 'stale response' },
+                finalResponseMessage: { content: 'stale final response' }
+            }
+        }
+
+        const status = await run!(session, context)
+
+        assert.equal(status, ChainMiddlewareRunStatus.STOP)
+        assert.strictEqual(handledError, cancellation)
+        assert.deepEqual(handledRequestState, {
+            requestBoundaryPersisted: false
+        })
+        assert.equal(context.message, null)
+        assert.equal(context.options.responseMessage, null)
+        assert.equal(context.options.finalResponseMessage, null)
+    } finally {
+        await app.stop()
+    }
+})
+
+it('request_conversation discards a response when cancellation wins after model resolution', async () => {
+    const { app, ctx } = await createMemoryService()
+
+    try {
+        const conversation = createConversation({
+            id: 'cancelled-after-model-resolution',
+            preset: 'cancel-test-preset',
+            model: 'test-platform/test-model'
+        })
+        const cancellation = new Error('superseded after model resolution')
+        const controller = new AbortController()
+        let handledError: unknown
+        let handledRequestState: unknown
+        let run:
+            | ((session: any, context: any) => Promise<ChainMiddlewareRunStatus>)
+            | undefined
+
+        const session = createSession() as any
+        session.bot = { selfId: 'test-bot' }
+        session.event = { user: { id: 'user-1', name: 'Tester' } }
+        session.state = {
+            qqReplyTransport: {
+                handleRequestModelError: async (
+                    error: unknown,
+                    requestState: unknown
+                ) => {
+                    handledError = error
+                    handledRequestState = requestState
+                }
+            }
+        }
+        ctx.chatluna.conversation.ensureActiveConversation = async () => ({
+            conversation,
+            conversationId: conversation.id,
+            bindingKey: 'shared:test:bot:channel',
+            presetLane: null
+        }) as never
+        ctx.chatluna.preset.getContextPreset = () => ({
+            value: {
+                promptConfig: {}
+            }
+        }) as never
+        ctx.chatluna.conversationRuntime.chat = async (
+            _session,
+            _conversation,
+            _message,
+            options
+        ) => {
+            options.onRequestBoundaryPersisted?.()
+            controller.abort(cancellation)
+            return {
+                content: 'stale response',
+                additional_kwargs: {}
+            } as never
+        }
+        applyRequest(
+            ctx as never,
+            {
+                botNames: ['test-bot'],
+                streamResponse: false,
+                splitMessage: false
+            } as never,
+            {
+                middleware: (_name, fn) => {
+                    run = fn as never
+                    return {
+                        after() {
+                            return this
+                        }
+                    }
+                }
+            } as never
+        )
+        const context = {
+            message: 'must not be sent',
+            options: {
+                inputMessage: {
+                    content: 'hello',
+                    additional_kwargs: {}
+                },
+                requestSignal: controller.signal,
+                responseMessage: null,
+                finalResponseMessage: null
+            }
+        }
+
+        const status = await run!(session, context)
+
+        assert.equal(status, ChainMiddlewareRunStatus.STOP)
+        assert.strictEqual(handledError, cancellation)
+        assert.deepEqual(handledRequestState, {
+            requestBoundaryPersisted: true
+        })
+        assert.equal(context.message, null)
+        assert.equal(context.options.responseMessage, null)
+        assert.equal(context.options.finalResponseMessage, null)
+    } finally {
+        await app.stop()
+    }
+})
+
 it('resolve_conversation restores target suggestions for mistyped explicit targets', async () => {
     const { app, ctx } = await createMemoryService()
 

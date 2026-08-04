@@ -488,7 +488,13 @@ export async function* runAgent(
         }
 
         if (output.length > 0) {
-            if (terminalToolName && output.length !== 1) {
+            if (
+                terminalToolName &&
+                output.length !== 1 &&
+                output.some(
+                    (action) => action.tool?.toLowerCase() === terminalToolName
+                )
+            ) {
                 throw new AgentTerminalContractError(
                     'PARALLEL_ACTIONS_FORBIDDEN',
                     `Agent final response contract requires one tool action per round; received ${output.length}.`
