@@ -226,6 +226,12 @@ export class ConversationRuntime {
                 }),
                 onAgentEvent: async (agentEvent) => {
                     touch()
+                    await this.service.emitAgentEvent({
+                        session,
+                        conversation,
+                        requestId,
+                        event: agentEvent
+                    })
                     if (agentEvent.type !== 'round-decision') return
                     activeRequest.lastDecision = agentEvent.canContinue
                     if (agentEvent.canContinue == null) return

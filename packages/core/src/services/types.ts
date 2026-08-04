@@ -24,7 +24,7 @@ import {
     ToolMask
 } from 'koishi-plugin-chatluna/llm-core/agent'
 import type { ChatInterface } from '../llm-core/chat/app'
-import { MessageQueue } from '../llm-core/agent/types'
+import { type AgentEvent, MessageQueue } from '../llm-core/agent/types'
 import type { PostHandler } from '../utils/types'
 import type { ChainMiddlewareContext } from '../chains'
 import type {
@@ -121,6 +121,17 @@ export interface ChatCallbackProviderInput {
 export type ChatCallbacksProvider = (
     input: ChatCallbackProviderInput
 ) => Awaitable<Callbacks | undefined>
+
+export interface ChatAgentEventProviderInput {
+    session: Session
+    conversation: ConversationRecord
+    requestId: string
+    event: AgentEvent
+}
+
+export type ChatAgentEventProvider = (
+    input: ChatAgentEventProviderInput
+) => Awaitable<void>
 
 export interface AllowReplyResolverArg {
     session: Session

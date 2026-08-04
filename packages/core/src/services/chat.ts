@@ -58,6 +58,8 @@ import { MessageTransformer } from './message_transform'
 import type {
     AllowReplyResolver,
     AllowReplyResolverArg,
+    ChatAgentEventProvider,
+    ChatAgentEventProviderInput,
     ChatCallbackProviderInput,
     ChatCallbacksProvider
 } from './types'
@@ -101,6 +103,7 @@ export class ChatLunaService extends Service<Config> {
     private readonly _conversation: ConversationService
     private readonly _conversationRuntime: ConversationRuntime
     private readonly _callbackProviders = new Set<ChatCallbacksProvider>()
+    private readonly _agentEventProviders = new Set<ChatAgentEventProvider>()
     private readonly _allowReplyResolvers = new Map<
         string,
         AllowReplyResolver
@@ -362,6 +365,19 @@ export class ChatLunaService extends Service<Config> {
         return () => {
             this._callbackProviders.delete(provider)
         }
+    }
+
+    registerAgentEventProvider(provider: ChatAgentEventProvider) {
+        this._agentEventProviders.add(provider)
+        return () => {
+            this._agentEventProviders.delete(provider)
+        }
+    }
+
+    async emitAgentEvent(input: ChatAgentEventProviderInput) {
+        await Promise.all(
+            [...this._agentEventProviders].map((provider) => provider(input))
+        )
     }
 
     async resolveCallbacks(input: ChatCallbackProviderInput) {
