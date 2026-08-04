@@ -10,6 +10,8 @@ for (const mode of ['all', 'allow', 'deny'] as const) {
     it(`normalizes an explicit ${mode} mask at the main chat Agent boundary`, async () => {
         let selectedMask: ToolMask | undefined
         let invokedMask: ToolMask | undefined
+        let invokedOnAgentEvent: unknown
+        let invokedMessageQueue: unknown
         const chain = Object.create(
             ChatLunaPluginChain.prototype
         ) as ChatLunaPluginChain & Record<string, unknown>
@@ -55,9 +57,17 @@ for (const mode of ['all', 'allow', 'deny'] as const) {
                 withConfig: () => ({
                     invoke: async (
                         _input: unknown,
-                        config: { configurable?: { toolMask?: ToolMask } }
+                        config: {
+                            configurable?: {
+                                toolMask?: ToolMask
+                                onAgentEvent?: unknown
+                                messageQueue?: unknown
+                            }
+                        }
                     ) => {
                         invokedMask = config.configurable?.toolMask
+                        invokedOnAgentEvent = config.configurable?.onAgentEvent
+                        invokedMessageQueue = config.configurable?.messageQueue
                         return { message: new HumanMessage('done') }
                     }
                 })
@@ -77,6 +87,8 @@ for (const mode of ['all', 'allow', 'deny'] as const) {
             }
         }
 
+        const onAgentEvent = async () => {}
+        const messageQueue = { id: 'queue' }
         await chain.call({
             message: new HumanMessage('hello'),
             session: {
@@ -88,6 +100,8 @@ for (const mode of ['all', 'allow', 'deny'] as const) {
             conversationId: 'conversation',
             variables: {},
             toolMask: requestedMask,
+            onAgentEvent,
+            messageQueue,
             events: {}
         } as never)
 
@@ -96,5 +110,7 @@ for (const mode of ['all', 'allow', 'deny'] as const) {
             assert.isTrue(applyToolMask('submit_reply', mask))
             assert.isTrue(applyToolMask('submit_reply', mask?.toolCallMask))
         }
+        assert.equal(invokedOnAgentEvent, onAgentEvent)
+        assert.equal(invokedMessageQueue, messageQueue)
     })
 }

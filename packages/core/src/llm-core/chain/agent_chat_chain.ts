@@ -341,6 +341,8 @@ export class ChatLunaPluginChain
                         preset: preset.id,
                         userId: session.userId,
                         toolMask,
+                        messageQueue,
+                        onAgentEvent,
                         agentContext: ctx
                     }
                 }
