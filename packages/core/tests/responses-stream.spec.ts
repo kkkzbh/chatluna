@@ -3,6 +3,7 @@
 import { assert } from 'chai'
 import {
     processResponseApiStream,
+    PROVIDER_RESPONSE_DIAGNOSTIC_KEY,
     responseApiCompletionStream
 } from '../../shared-adapter/src/requester'
 import type { SSEEvent } from '../src/utils/sse'
@@ -67,6 +68,14 @@ it('emits final Responses API output text from completed events', async () => {
         chunks.some(
             (chunk) =>
                 chunk.message.additional_kwargs?.conversation?.id === 'conv_test'
+        )
+    )
+    assert.isTrue(
+        chunks.some(
+            (chunk) =>
+                chunk.message.additional_kwargs?.[
+                    PROVIDER_RESPONSE_DIAGNOSTIC_KEY
+                ]?.requestMode === 'responses'
         )
     )
 })

@@ -64,6 +64,116 @@ interface RequestContext<
     modelRequester: ModelRequester<T, R>
 }
 
+export const PROVIDER_RESPONSE_DIAGNOSTIC_KEY =
+    '__chatluna_provider_response_diagnostic_v1'
+
+export interface ProviderResponseDiagnostic {
+    requestMode: 'chat_completions' | 'responses'
+    providerToolCallCount: number
+    messageToolCallCount: number
+    toolCallChunkCount: number
+    unparseableToolCallCount: number
+    functionCallPresent: boolean
+    providerOutputTokens: number | null
+    rawMessageKeys: string[]
+    rawChoiceKeys: string[]
+    rawContentKind: string | null
+    rawContentLength: number | null
+}
+
+function createProviderResponseDiagnostic(args: {
+    requestMode: ProviderResponseDiagnostic['requestMode']
+    rawMessage: Record<string, unknown>
+    rawChoice: Record<string, unknown>
+    rawContent: unknown
+    message: AIMessageChunk
+    providerToolCallCount: number
+    providerOutputTokens: number | null
+    messageToolCallCount?: number
+    toolCallChunkCount?: number
+}): ProviderResponseDiagnostic {
+    return {
+        requestMode: args.requestMode,
+        providerToolCallCount: args.providerToolCallCount,
+        messageToolCallCount:
+            args.messageToolCallCount ?? args.message.tool_calls?.length ?? 0,
+        toolCallChunkCount:
+            args.toolCallChunkCount ??
+            args.message.tool_call_chunks?.length ??
+            0,
+        unparseableToolCallCount: args.message.invalid_tool_calls?.length ?? 0,
+        functionCallPresent:
+            args.message.additional_kwargs.function_call != null,
+        providerOutputTokens: args.providerOutputTokens,
+        rawMessageKeys: Object.keys(args.rawMessage).slice(0, 24),
+        rawChoiceKeys: Object.keys(args.rawChoice).slice(0, 24),
+        rawContentKind:
+            args.rawContent === undefined
+                ? null
+                : Array.isArray(args.rawContent)
+                  ? 'array'
+                  : args.rawContent === null
+                    ? 'null'
+                    : typeof args.rawContent,
+        rawContentLength:
+            typeof args.rawContent === 'string' ||
+            Array.isArray(args.rawContent)
+                ? args.rawContent.length
+                : args.rawContent != null && typeof args.rawContent === 'object'
+                  ? Object.keys(args.rawContent).length
+                  : args.rawContent === null
+                    ? 0
+                    : null
+    }
+}
+
+function attachProviderResponseDiagnostic(
+    message: AIMessageChunk,
+    diagnostic: ProviderResponseDiagnostic
+) {
+    message.additional_kwargs = {
+        ...message.additional_kwargs,
+        [PROVIDER_RESPONSE_DIAGNOSTIC_KEY]: diagnostic
+    }
+}
+
+function logProviderResponseDiagnostic(
+    requestContext: RequestContext,
+    diagnostic: ProviderResponseDiagnostic
+) {
+    if (
+        diagnostic.rawContentLength === 0 &&
+        diagnostic.messageToolCallCount === 0 &&
+        diagnostic.toolCallChunkCount === 0 &&
+        !diagnostic.functionCallPresent
+    ) {
+        requestContext.modelRequester.logger.warn(
+            'provider returned empty assistant finish: %s',
+            JSON.stringify(diagnostic)
+        )
+        return
+    }
+
+    if (diagnostic.unparseableToolCallCount > 0) {
+        requestContext.modelRequester.logger.warn(
+            'provider tool calls contained unparseable arguments: %s',
+            JSON.stringify(diagnostic)
+        )
+    }
+
+    if (
+        diagnostic.providerToolCallCount > 0 &&
+        diagnostic.messageToolCallCount === 0 &&
+        diagnostic.toolCallChunkCount === 0 &&
+        !diagnostic.functionCallPresent
+    ) {
+        requestContext.modelRequester.logger.warn(
+            'provider tool calls were not preserved on assistant finish: %s',
+            JSON.stringify(diagnostic)
+        )
+    }
+}
+
 export type ResponseImageProvider = (
     item: Extract<ResponseOutputItem, { type: 'image_generation_call' }>
 ) => Promise<string>
@@ -473,6 +583,24 @@ export async function* processStreamResponse<
                           }
                         : choice.message
                 )
+                if (messageChunk instanceof AIMessageChunk) {
+                    const diagnostic = createProviderResponseDiagnostic({
+                        requestMode: 'chat_completions',
+                        rawMessage: choice.message as unknown as Record<
+                            string,
+                            unknown
+                        >,
+                        rawChoice: choice as unknown as Record<string, unknown>,
+                        rawContent: choice.message.content,
+                        message: messageChunk,
+                        providerToolCallCount:
+                            choice.message.tool_calls?.length ?? 0,
+                        providerOutputTokens:
+                            data.usage?.completion_tokens ?? null
+                    })
+                    attachProviderResponseDiagnostic(messageChunk, diagnostic)
+                    logProviderResponseDiagnostic(requestContext, diagnostic)
+                }
 
                 reasoningState.content = ''
 
@@ -640,6 +768,20 @@ export async function processResponse<
 
         if (messageChunk instanceof AIMessageChunk) {
             messageChunk.usage_metadata = usageMetadata
+            const diagnostic = createProviderResponseDiagnostic({
+                requestMode: 'chat_completions',
+                rawMessage: choice.message as unknown as Record<
+                    string,
+                    unknown
+                >,
+                rawChoice: choice as unknown as Record<string, unknown>,
+                rawContent: choice.message.content,
+                message: messageChunk,
+                providerToolCallCount: choice.message.tool_calls?.length ?? 0,
+                providerOutputTokens: data.usage?.completion_tokens ?? null
+            })
+            attachProviderResponseDiagnostic(messageChunk, diagnostic)
+            logProviderResponseDiagnostic(requestContext, diagnostic)
         }
 
         return new ChatGenerationChunk({
@@ -724,6 +866,18 @@ export async function responseToChatGeneration(
             conversation: response.conversation
         }
     })
+    attachProviderResponseDiagnostic(
+        message,
+        createProviderResponseDiagnostic({
+            requestMode: 'responses',
+            rawMessage: response as unknown as Record<string, unknown>,
+            rawChoice: response as unknown as Record<string, unknown>,
+            rawContent: text,
+            message,
+            providerToolCallCount: toolCalls.length,
+            providerOutputTokens: response.usage?.output_tokens ?? null
+        })
+    )
 
     return new ChatGenerationChunk({
         generationInfo:
@@ -897,13 +1051,33 @@ export async function* processResponseApiStream<
 
                 if (!sentConversation) {
                     sentConversation = true
+                    const message = new AIMessageChunk({
+                        content: '',
+                        additional_kwargs: {
+                            conversation: data.response.conversation
+                        }
+                    })
+                    const toolCallCount = responseOutputToolCalls(
+                        data.response
+                    ).length
+                    const diagnostic = createProviderResponseDiagnostic({
+                        requestMode: 'responses',
+                        rawMessage: data.response as unknown as Record<
+                            string,
+                            unknown
+                        >,
+                        rawChoice: data as unknown as Record<string, unknown>,
+                        rawContent: responseOutputText(data.response),
+                        message,
+                        providerToolCallCount: toolCallCount,
+                        providerOutputTokens:
+                            data.response.usage?.output_tokens ?? null,
+                        messageToolCallCount: toolCallCount,
+                        toolCallChunkCount: toolCallCount
+                    })
+                    attachProviderResponseDiagnostic(message, diagnostic)
                     yield new ChatGenerationChunk({
-                        message: new AIMessageChunk({
-                            content: '',
-                            additional_kwargs: {
-                                conversation: data.response.conversation
-                            }
-                        }),
+                        message,
                         text: ''
                     })
                 }
